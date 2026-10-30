@@ -32,13 +32,27 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Configurar Android SDK (API 34)
-        uses: android-actions/setup-android@v3
-
-      - name: Instalar Build-Tools 34.0.0 e Plataforma Android 34
+      - name: Configurar Android SDK e Build-Tools (API 34)
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+
+          SDKMGR="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [[ ! -x "$SDKMGR" ]]; then
+            SDKMGR=$(find "$SDK_ROOT" -name sdkmanager -type f 2>/dev/null | sort -V | tail -n 1 || true)
+          fi
+          if [[ -z "$SDKMGR" || ! -x "$SDKMGR" ]]; then
+            SDKMGR=$(command -v sdkmanager || true)
+          fi
+
+          if [[ ! -f "$SDK_ROOT/platforms/android-34/android.jar" || ! -f "$SDK_ROOT/build-tools/34.0.0/aapt2" ]]; then
+            echo "Instalando platforms;android-34 e build-tools;34.0.0 via $SDKMGR..."
+            yes | "$SDKMGR" --sdk_root="$SDK_ROOT" --licenses > /dev/null || true
+            "$SDKMGR" --sdk_root="$SDK_ROOT" "platforms;android-34" "build-tools;34.0.0"
+          else
+            echo "Android SDK 34 e Build-Tools 34.0.0 pre-instalados em $SDK_ROOT."
+          fi
 
       - name: Compilar e Assinar SAMU_192_Orlandia.apk
         run: |
@@ -46,12 +60,15 @@ jobs:
 
       - name: Salvar certificado de assinatura fixo no repositório (apenas no 1º build)
         run: |
-          if [[ -n "$(git status --porcelain android-project/samu_orlandia_release.jks)" ]]; then
+          if [[ -f android-project/samu_orlandia_release.jks && -n "$(git status --porcelain android-project/samu_orlandia_release.jks)" ]]; then
             git config user.name "SAMU 192 Build Bot"
             git config user.email "actions@github.com"
-            git add android-project/samu_orlandia_release.jks
-            git commit -m "chore: salvar certificado fixo para auto-update do APK [skip ci]"
-            git push origin HEAD:main
+            git fetch origin main
+            if ! git cat-file -e origin/main:android-project/samu_orlandia_release.jks 2>/dev/null; then
+              git add android-project/samu_orlandia_release.jks
+              git commit -m "chore: salvar certificado fixo para auto-update do APK [skip ci]"
+              git pull --rebase origin main && git push origin HEAD:main || echo "Aviso: certificado ja salvo."
+            fi
           fi
 
       - name: Disponibilizar APK nos Artefatos da Execução
@@ -73,7 +90,12 @@ jobs:
           TAG="v${VER_NAME}-b${VER_CODE}-r${OTA_REV}"
 
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" SAMU_192_Orlandia.apk version.json --clobber
+            HAS_APK=$(gh release view "$TAG" --json assets -q '.assets[].name' | grep -Fx "SAMU_192_Orlandia.apk" || true)
+            if [[ -z "$HAS_APK" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+              gh release upload "$TAG" SAMU_192_Orlandia.apk version.json --clobber
+            else
+              echo "Release $TAG ja possui SAMU_192_Orlandia.apk publicado pela compilacao local."
+            fi
           else
             gh release create "$TAG" SAMU_192_Orlandia.apk version.json \
               --title "SAMU 192 Orlândia v${VER_NAME} (Build ${VER_CODE} • Rev #${OTA_REV})" \

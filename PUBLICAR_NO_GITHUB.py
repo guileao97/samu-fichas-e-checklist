@@ -210,18 +210,27 @@ def load_local_builder_module():
     return mod
 
 
-def ensure_keystore_synced_with_github(token, after_build=False):
+def ensure_keystore_synced_with_github(token, after_build=False, create_if_missing=False):
     ks_local = os.path.join(ROOT_DIR, "android-project", "samu_orlandia_release.jks")
     ks_repo_path = "android-project/samu_orlandia_release.jks"
     st_ks, ks_meta = gh_api("GET", f"/repos/{OWNER}/{REPO}/contents/{ks_repo_path}?ref={BRANCH}", token)
 
     if not after_build:
-        if not os.path.isfile(ks_local) and st_ks == 200 and ks_meta.get("content"):
-            print("🔑 Baixando certificado fixo samu_orlandia_release.jks do GitHub para manter assinatura compatível...")
-            raw_ks = base64.b64decode(ks_meta["content"])
-            os.makedirs(os.path.dirname(ks_local), exist_ok=True)
-            with open(ks_local, "wb") as kf:
-                kf.write(raw_ks)
+        if st_ks == 200 and ks_meta.get("content"):
+            if not os.path.isfile(ks_local):
+                print("🔑 Baixando certificado fixo samu_orlandia_release.jks do GitHub para manter assinatura compatível...")
+                raw_ks = base64.b64decode(ks_meta["content"])
+                os.makedirs(os.path.dirname(ks_local), exist_ok=True)
+                with open(ks_local, "wb") as kf:
+                    kf.write(raw_ks)
+        elif create_if_missing and not os.path.isfile(ks_local):
+            try:
+                bmod = load_local_builder_module()
+                if bmod and hasattr(bmod, "ensure_keystore_exists"):
+                    print("🔑 Gerando certificado fixo samu_orlandia_release.jks antes do envio para unificar assinatura local e nuvem...")
+                    bmod.ensure_keystore_exists()
+            except Exception:
+                pass
     else:
         if os.path.isfile(ks_local) and st_ks == 404:
             print("🔑 Salvando certificado fixo samu_orlandia_release.jks no GitHub para futuras compilações...")
@@ -523,6 +532,7 @@ def main():
 
     # Sincroniza assets/www com o web-app + version.json atualizados
     sync_local_assets_www()
+    ensure_keystore_synced_with_github(token, after_build=False, create_if_missing=True)
 
     if db_already_on_github:
         print("Base 'base_dados_samu.json' já existe no GitHub -> será PRESERVADA intacta!")
