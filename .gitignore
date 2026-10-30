@@ -1,0 +1,15 @@
+# Arquivos locais sensíveis (NUNCA subir token, base de pacientes ou chave JKS para o GitHub público!)
+.github_token.local
+.drive_url.local
+*.token
+*.local
+base_dados_samu.json
+samu_orlandia_release.jks
+*.jks
+*.keystore
+
+# Temporários
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
