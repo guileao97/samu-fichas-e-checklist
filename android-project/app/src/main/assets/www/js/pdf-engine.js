@@ -473,8 +473,8 @@
         g.save();
         for (const z of window.SAMU_SCHEMA.burnZones) {
           if (activeZones.includes(z.id)) {
-            g.fillStyle = 'rgba(220, 38, 38, 0.35)';
-            g.strokeStyle = '#dc2626';
+            g.fillStyle = 'rgba(18, 72, 196, 0.28)';
+            g.strokeStyle = INK_BLUE;
             g.lineWidth = 2;
             g.beginPath();
             g.ellipse(bxImg + z.cx * bwImg, byImg + z.cy * bhImg, z.rx * bwImg, z.ry * bhImg, 0, 0, Math.PI * 2);
@@ -1299,7 +1299,7 @@
         const px = ix + mk.x * iw;
         const py = iy + mk.y * ih;
         g2.save();
-        g2.fillStyle = '#dc2626';
+        g2.fillStyle = INK_BLUE;
         g2.strokeStyle = '#ffffff';
         g2.lineWidth = 3;
         g2.beginPath(); g2.arc(px, py, 20, 0, Math.PI * 2); g2.fill(); g2.stroke();

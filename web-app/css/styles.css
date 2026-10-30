@@ -588,10 +588,10 @@ body.sim-phone-mode .field-full-phone {
 }
 
 .chip-btn.selected {
-  background: #fef2f2;
-  border-color: var(--samu-red);
-  color: var(--samu-red-dark);
-  box-shadow: inset 0 0 0 1px var(--samu-red);
+  background: #eff6ff;
+  border-color: var(--ink-blue);
+  color: var(--ink-blue);
+  box-shadow: inset 0 0 0 1px var(--ink-blue);
 }
 
 .risk-grid {
@@ -763,8 +763,8 @@ body.sim-phone-mode .btn-now {
   font-weight: 800;
   cursor: pointer;
 }
-.yn-btn.active-yes { background: #dcfce7; border-color: #16a34a; color: #14532d; }
-.yn-btn.active-no { background: #fee2e2; border-color: #dc2626; color: #7f1d1d; }
+.yn-btn.active-yes { background: #eff6ff; border-color: var(--ink-blue); color: var(--ink-blue); box-shadow: inset 0 0 0 1px var(--ink-blue); }
+.yn-btn.active-no { background: var(--ink-blue); border-color: var(--ink-blue); color: #ffffff; }
 
 .pupil-selector {
   display: grid;
@@ -783,9 +783,9 @@ body.sim-phone-mode .btn-now {
 }
 
 .pupil-card.selected {
-  border-color: var(--samu-red);
-  background: #fef2f2;
-  box-shadow: inset 0 0 0 1px var(--samu-red);
+  border-color: var(--ink-blue);
+  background: #eff6ff;
+  box-shadow: inset 0 0 0 1px var(--ink-blue);
 }
 
 .pupil-card img {
@@ -980,8 +980,17 @@ body.sim-phone-mode .btn-now {
   font-weight: 800;
   cursor: pointer;
 }
-.code-pill.active-OK { background: #dcfce7; border-color: #16a34a; color: #14532d; }
-.code-pill.active-warn { background: #fee2e2; border-color: #dc2626; color: #991b1b; }
+.code-pill.active-OK {
+  background: #eff6ff;
+  border-color: var(--ink-blue);
+  color: var(--ink-blue);
+  box-shadow: inset 0 0 0 1px var(--ink-blue);
+}
+.code-pill.active-warn {
+  background: var(--ink-blue);
+  border-color: var(--ink-blue);
+  color: #ffffff;
+}
 
 .amb-damage-stage {
   position: relative;
@@ -1007,7 +1016,7 @@ body.sim-phone-mode .btn-now {
   width: 26px;
   height: 26px;
   border-radius: 50%;
-  background: #dc2626;
+  background: var(--ink-blue);
   color: #fff;
   border: 2px solid #fff;
   font-weight: 800;
@@ -1411,8 +1420,8 @@ body.sim-phone-mode .btn-now {
 }
 
 .select-box-option.is-selected {
-  background: #fef2f2;
-  color: var(--samu-red-dark);
+  background: #eff6ff;
+  color: var(--ink-blue);
 }
 
 .select-box-option.is-nega-opt {
@@ -1422,7 +1431,7 @@ body.sim-phone-mode .btn-now {
 }
 
 .select-box-option.is-nega-opt.is-selected {
-  background: #0f172a;
+  background: var(--ink-blue);
   color: #ffffff;
 }
 
@@ -1442,15 +1451,15 @@ body.sim-phone-mode .btn-now {
 }
 
 .select-box-option.is-selected .select-box-check {
-  background: var(--samu-red);
-  border-color: var(--samu-red);
+  background: var(--ink-blue);
+  border-color: var(--ink-blue);
   color: #ffffff;
 }
 
 .select-box-option.is-nega-opt.is-selected .select-box-check {
-  background: #16a34a;
-  border-color: #16a34a;
-  color: #ffffff;
+  background: #ffffff;
+  border-color: #ffffff;
+  color: var(--ink-blue);
 }
 
 .history-title {

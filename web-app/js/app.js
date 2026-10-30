@@ -6210,7 +6210,7 @@
           `;
         })()}
         <p style="margin:0 0 8px; font-size:0.83rem; color:var(--muted);">
-          Escolha o tipo de avaria abaixo e <strong>toque em cima do desenho da ambulância</strong> onde houver detalhe (toque num ponto vermelho para removê-lo quando for reparado):
+          Escolha o tipo de avaria abaixo e <strong>toque em cima do desenho da ambulância</strong> onde houver detalhe (toque num ponto azul marcado para removê-lo quando for reparado):
         </p>
         <div class="chips-wrap" style="margin-bottom:10px; justify-content:center;">
           ${['A', 'D', 'F', 'Q', 'R'].map(c => {
@@ -7145,6 +7145,7 @@
         }
         renderBottomNav();
         renderActiveView();
+        upgradeExistingSignaturesToBlueInk();
         window.scrollTo(0, 0);
       });
     });
