@@ -1,0 +1,10 @@
+# Arquivos locais sensíveis (NUNCA subir token para o GitHub!)
+.github_token.local
+*.token
+*.local
+
+# Temporários
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db

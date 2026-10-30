@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#c8102e" />
+  <title>SAMU 192 – Orlândia-SP | Ficha de Atendimento & Check List</title>
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <div id="toast-banner" class="toast-banner hidden"></div>
+
+  <!-- ===================== TELA DE LOGIN ===================== -->
+  <section id="login-screen" class="login-screen">
+    <div class="login-card">
+      <div class="login-logos">
+        <img id="login-logo-samu" alt="SAMU 192" />
+        <img id="login-logo-orlandia" alt="Prefeitura de Orlândia" />
+      </div>
+      <div class="login-title">
+        <h1>SAMU 192 – ORLÂNDIA-SP</h1>
+        <p>Ficha de Atendimento USB &amp; Check List Digital</p>
+      </div>
+
+      <div class="auth-mode-tabs">
+        <button type="button" class="auth-mode-tab active" id="tab-auth-login">🔐 Entrar</button>
+        <button type="button" class="auth-mode-tab" id="tab-auth-register">📝 Criar Cadastro</button>
+      </div>
+
+      <form id="login-form" autocomplete="off">
+        <div class="field">
+          <label for="login-user">Usuário (Login)</label>
+          <input type="text" id="login-user" placeholder="Ex: condutor, enfermagem ou admin" autocapitalize="none" required />
+        </div>
+        <div class="field">
+          <label for="login-pass">Senha</label>
+          <input type="password" id="login-pass" placeholder="Digite sua senha" required />
+        </div>
+        <button type="submit" class="btn btn-primary btn-block" id="btn-do-login">Entrar no Sistema</button>
+      </form>
+
+      <form id="register-form" class="hidden" autocomplete="off">
+        <div class="field">
+          <label>Sua Função no SAMU</label>
+          <div class="role-pick-grid">
+            <button type="button" class="role-pick-btn active" data-reg-role="enfermagem">🩺 Téc. Enferm. / Enfermeiro</button>
+            <button type="button" class="role-pick-btn" data-reg-role="condutor">🚑 Condutor Socorrista</button>
+          </div>
+          <input type="hidden" id="reg-role" value="enfermagem" />
+        </div>
+
+        <div class="field">
+          <label for="reg-name">Nome Completo (aparecerá na Ficha)</label>
+          <input type="text" id="reg-name" placeholder="Ex: Ana Paula Ferreira" required />
+        </div>
+
+        <div class="grid-2">
+          <div class="field">
+            <label for="reg-user">Criar Login</label>
+            <input type="text" id="reg-user" placeholder="Ex: ana.paula" autocapitalize="none" required />
+          </div>
+          <div class="field">
+            <label for="reg-pass">Criar Senha</label>
+            <input type="password" id="reg-pass" placeholder="Sua senha" required />
+          </div>
+        </div>
+
+        <div class="field" id="reg-coren-wrap">
+          <label for="reg-coren">COREN (já virá pré-preenchido nas suas fichas)</label>
+          <input type="text" id="reg-coren" placeholder="Ex: COREN-SP 542.810-TE" />
+        </div>
+
+        <div class="field">
+          <label for="reg-cpf">CPF</label>
+          <input type="text" inputmode="numeric" id="reg-cpf" placeholder="000.000.000-00" required />
+        </div>
+
+        <button type="submit" class="btn btn-success btn-block" id="btn-do-register">📨 Enviar Cadastro p/ Aprovação do Adm</button>
+        <p style="margin:8px 0 0; font-size:0.76rem; color:var(--muted); text-align:center;">
+          Após enviar, o Administrador aprova na aba <strong>Aprovar</strong> do APK e seu acesso é liberado (funciona offline após sincronizado).
+        </p>
+      </form>
+
+      <div style="margin-top: 12px; text-align: center;">
+        <button type="button" class="btn btn-outline btn-sm" id="btn-toggle-login-drive">
+          ⚙️ Configurar Base GitHub &amp; Google Drive
+        </button>
+      </div>
+
+      <div id="login-drive-box" class="hidden" style="margin-top: 12px; padding: 12px; background: #f8fafc; border-radius: 12px; border: 1px solid #cbd5e1;">
+        <div class="field" style="margin-bottom: 8px;">
+          <label for="login-github-repo">Repositório GitHub (Base de Dados + Auto-Update)</label>
+          <input type="text" id="login-github-repo" placeholder="guileao97/samu-fichas-e-checklist" autocapitalize="none" />
+        </div>
+        <div class="field" style="margin-bottom: 8px;">
+          <label for="login-github-token">Token GitHub (p/ enviar cadastros e aprovações)</label>
+          <input type="password" id="login-github-token" placeholder="ghp_... ou github_pat_... (opcional p/ só leitura)" />
+        </div>
+        <div class="field" style="margin-bottom: 8px;">
+          <label for="login-script-url">URL Google Apps Script (p/ enviar PDFs ao Drive)</label>
+          <input type="url" id="login-script-url" placeholder="https://script.google.com/macros/s/.../exec" />
+        </div>
+        <button type="button" class="btn btn-orange btn-sm btn-block" id="btn-save-login-drive">Salvar e Consultar Base Agora</button>
+      </div>
+
+      <div class="login-demo-box">
+        <div><strong>Acessos iniciais configurados (editáveis pelo Adm):</strong></div>
+        <div>• <strong>Adm (vê tudo):</strong> <code>admin</code> / senha: <code>samu192</code></div>
+        <div>• <strong>Condutor:</strong> <code>condutor</code> / senha: <code>1234</code></div>
+        <div>• <strong>Téc. Enfermagem:</strong> <code>enfermagem</code> / senha: <code>1234</code></div>
+      </div>
+      <div id="login-version-footer" style="margin-top: 10px; text-align: center; font-size: 0.74rem; color: var(--muted); font-weight: 700;"></div>
+    </div>
+  </section>
+
+  <!-- BANNER GLOBAL DE ATUALIZAÇÃO AUTOMÁTICA DO APK VIA GITHUB -->
+  <div id="auto-update-banner" class="hidden" style="position: sticky; top: 0; z-index: 190; background: linear-gradient(135deg, #15803d 0%, #16a34a 100%); color: #fff; padding: 9px 14px; font-size: 0.82rem; font-weight: 700; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; box-shadow: 0 4px 12px rgba(0,0,0,0.2);">
+    <span id="auto-update-banner-text">🚀 Nova atualização disponível no GitHub!</span>
+    <button type="button" class="btn btn-sm" id="btn-auto-update-action" style="background: #fff; color: #14532d; font-weight: 800; padding: 5px 12px;">Atualizar Agora</button>
+  </div>
+
+  <!-- ===================== SHELL PRINCIPAL DO APP ===================== -->
+  <section id="app-shell" class="app-shell hidden">
+    <header class="topbar">
+      <div class="topbar-brand">
+        <img id="top-logo-samu" alt="SAMU" />
+        <div class="topbar-user">
+          <div class="topbar-user-name" id="top-user-name">Profissional</div>
+          <span class="topbar-role-badge" id="top-user-role">USB</span>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <button type="button" class="sync-pill" id="btn-sync-status" title="Sincronizar com Google Drive">
+          <span id="sync-status-text">Offline</span>
+        </button>
+        <button type="button" class="btn-logout" id="btn-logout">Sair</button>
+      </div>
+    </header>
+
+    <main class="main-container" id="main-view"></main>
+
+    <nav class="bottom-nav" id="bottom-nav"></nav>
+  </section>
+
+  <!-- ===================== MODAL DE VISUALIZAÇÃO DO PDF OFICIAL ===================== -->
+  <div id="pdf-preview-modal" class="preview-modal hidden">
+    <div class="preview-modal-card">
+      <div class="preview-header">
+        <div>
+          <strong id="preview-title">Visualização Oficial para Impressão / PDF</strong>
+          <div id="preview-drive-status" style="font-size: 0.78rem; color: #94a3b8;">2 Páginas A4 Oficiais</div>
+        </div>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <button type="button" class="btn btn-whatsapp btn-sm hidden" id="btn-preview-regulacao">📲 Cabeçalho Regulação (WhatsApp)</button>
+          <button type="button" class="btn btn-success btn-sm" id="btn-preview-drive">☁️ Enviar p/ Drive</button>
+          <button type="button" class="btn btn-orange btn-sm" id="btn-preview-share">📤 Salvar / WhatsApp PDF</button>
+          <button type="button" class="btn btn-primary btn-sm" id="btn-preview-print">🖨️ Imprimir</button>
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-preview-close">Fechar</button>
+        </div>
+      </div>
+      <div class="preview-pages-scroll" id="preview-pages-container"></div>
+    </div>
+  </div>
+
+  <!-- MODAL DA FOTO RECORTADA DO CABEÇALHO + HORÁRIOS P/ REGULAÇÃO MÉDICA (WHATSAPP) -->
+  <div id="regulacao-photo-modal" class="modal-overlay hidden">
+    <div class="preview-modal-card" style="max-width: 820px; height: auto; max-height: 92vh;">
+      <div class="preview-header">
+        <div>
+          <strong>📲 Foto do Cabeçalho p/ Regulação Médica</strong>
+          <div style="font-size: 0.78rem; color: #86efac;">Recorte frontal do início da ficha até os 8 Horários (Chamado, Saída, Chegada...)</div>
+        </div>
+        <div style="display: flex; gap: 7px; flex-wrap: wrap;">
+          <button type="button" class="btn btn-whatsapp btn-sm" id="btn-reg-send-whatsapp">📲 Enviar no WhatsApp da Regulação</button>
+          <button type="button" class="btn btn-outline btn-sm" id="btn-reg-copy-img" style="background:#fff;">📋 Copiar Foto</button>
+          <button type="button" class="btn btn-orange btn-sm" id="btn-reg-download-jpg">📥 Baixar .JPG</button>
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-reg-close">Fechar</button>
+        </div>
+      </div>
+      <div class="preview-pages-scroll" id="regulacao-photo-container" style="padding: 16px;"></div>
+    </div>
+  </div>
+
+  <script src="js/assets.js"></script>
+  <script src="js/schema.js"></script>
+  <script src="js/storage.js"></script>
+  <script src="js/signature.js"></script>
+  <script src="js/pdf-engine.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,1250 @@
+/* ============================================================================
+ * SAMU 192 – ORLÂNDIA-SP | ESTILO MOBILE-FIRST DE ALTA LEGIBILIDADE
+ * ============================================================================ */
+
+:root {
+  --samu-red: #c8102e;
+  --samu-red-dark: #990b22;
+  --samu-orange: #ea580c;
+  --samu-orange-light: #fff7ed;
+  --bg: #f1f5f9;
+  --card: #ffffff;
+  --text: #0f172a;
+  --muted: #475569;
+  --border: #cbd5e1;
+  --success: #16a34a;
+  --warning: #d97706;
+  --blue: #2563eb;
+  --radius: 14px;
+  --shadow: 0 4px 14px rgba(15, 23, 42, 0.07);
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1.45;
+  overscroll-behavior-y: none;
+}
+
+.hidden { display: none !important; }
+
+/* ===================== TELA DE LOGIN ===================== */
+.login-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px 16px;
+  background: linear-gradient(145deg, #7f1d1d 0%, #c8102e 50%, #ea580c 100%);
+}
+
+.login-card {
+  width: 100%;
+  max-width: 430px;
+  background: #ffffff;
+  border-radius: 20px;
+  padding: 26px 22px;
+  box-shadow: 0 20px 45px rgba(0, 0, 0, 0.28);
+}
+
+.login-logos {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  margin-bottom: 12px;
+}
+
+.login-logos img {
+  height: 64px;
+  width: auto;
+  object-fit: contain;
+}
+
+.login-title {
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+.login-title h1 {
+  margin: 0;
+  font-size: 1.35rem;
+  color: var(--samu-red);
+  font-weight: 800;
+}
+
+.login-title p {
+  margin: 4px 0 0;
+  font-size: 0.9rem;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.login-demo-box {
+  margin-top: 16px;
+  padding: 12px;
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  border-radius: 10px;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.login-demo-box strong { color: var(--text); }
+
+/* ===================== CABEÇALHO DO APP ===================== */
+.app-shell {
+  min-height: 100vh;
+  padding-bottom: 84px;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: linear-gradient(90deg, var(--samu-red-dark), var(--samu-red) 65%, var(--samu-orange));
+  color: #ffffff;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.16);
+}
+
+.topbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.topbar-brand img {
+  width: 38px;
+  height: 38px;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 2px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.topbar-user {
+  min-width: 0;
+}
+
+.topbar-user-name {
+  font-weight: 700;
+  font-size: 0.95rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar-role-badge {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  background: rgba(255, 255, 255, 0.22);
+  padding: 1px 7px;
+  border-radius: 99px;
+  letter-spacing: 0.4px;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.sync-pill {
+  border: none;
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+  font-size: 0.76rem;
+  font-weight: 700;
+  padding: 6px 10px;
+  border-radius: 99px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.sync-pill.pending { background: #f59e0b; color: #111827; }
+.sync-pill.synced { background: rgba(22, 163, 74, 0.88); }
+
+.btn-logout {
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  background: transparent;
+  color: #fff;
+  border-radius: 9px;
+  padding: 6px 10px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/* ===================== NAVEGAÇÃO INFERIOR ===================== */
+.bottom-nav {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 45;
+  background: #ffffff;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: space-around;
+  padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px));
+  box-shadow: 0 -4px 16px rgba(15, 23, 42, 0.08);
+}
+
+.nav-tab {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 2px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  border-radius: 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.nav-tab .nav-icon { font-size: 1.18rem; line-height: 1.1; position: relative; }
+.nav-tab.active {
+  color: var(--samu-red);
+  background: #fef2f2;
+}
+
+.nav-badge {
+  position: absolute;
+  top: 1px;
+  right: max(6px, calc(50% - 22px));
+  background: #dc2626;
+  color: #fff;
+  font-size: 0.64rem;
+  font-weight: 900;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 99px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid #fff;
+}
+
+/* ===================== LAYOUT PRINCIPAL E CARDS ===================== */
+.main-container {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 14px 12px 32px;
+}
+
+.card {
+  background: var(--card);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 14px;
+  box-shadow: var(--shadow);
+  border: 1px solid #e2e8f0;
+}
+
+.card-title {
+  margin: 0 0 12px;
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: var(--samu-red-dark);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.section-subtitle {
+  margin: 14px 0 8px;
+  font-size: 0.88rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  color: var(--muted);
+  letter-spacing: 0.4px;
+}
+
+/* ===================== FORMULÁRIOS E BOTÕES ===================== */
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+
+@media (max-width: 640px) {
+  .grid-3, .grid-4 { grid-template-columns: 1fr 1fr; }
+  .grid-2-mobile-1 { grid-template-columns: 1fr; }
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.field label {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #334155;
+  text-transform: uppercase;
+}
+
+.field input, .field select, .field textarea {
+  width: 100%;
+  padding: 11px 12px;
+  border: 1.5px solid var(--border);
+  border-radius: 10px;
+  font-size: 0.98rem;
+  font-family: inherit;
+  color: var(--text);
+  background: #ffffff;
+  transition: border-color 0.15s;
+}
+
+.field input:focus, .field select:focus, .field textarea:focus {
+  outline: none;
+  border-color: var(--samu-red);
+  box-shadow: 0 0 0 3px rgba(200, 16, 46, 0.12);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 11px 16px;
+  border-radius: 11px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  border: none;
+  cursor: pointer;
+  transition: transform 0.08s, opacity 0.15s;
+}
+
+.btn:active { transform: scale(0.98); }
+.btn-block { width: 100%; }
+.btn-sm { padding: 7px 11px; font-size: 0.82rem; border-radius: 8px; }
+.btn-primary { background: var(--samu-red); color: #ffffff; }
+.btn-orange { background: var(--samu-orange); color: #ffffff; }
+.btn-success { background: var(--success); color: #ffffff; }
+.btn-secondary { background: #e2e8f0; color: #1e293b; }
+.btn-outline { background: #ffffff; color: var(--text); border: 1.5px solid var(--border); }
+
+/* ===================== NAVEGAÇÃO POR ETAPAS DA FICHA ===================== */
+.step-pills {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+  margin-bottom: 12px;
+  scrollbar-width: none;
+}
+.step-pills::-webkit-scrollbar { display: none; }
+
+.step-pill {
+  flex-shrink: 0;
+  border: 1.5px solid var(--border);
+  background: #ffffff;
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 0.82rem;
+  padding: 8px 13px;
+  border-radius: 99px;
+  cursor: pointer;
+}
+
+.step-pill.active {
+  background: var(--samu-red);
+  border-color: var(--samu-red);
+  color: #ffffff;
+}
+
+/* ===================== CHIPS SELECIONÁVEIS & RISCO ===================== */
+.chips-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chip-btn {
+  border: 1.5px solid var(--border);
+  background: #f8fafc;
+  color: var(--text);
+  padding: 9px 13px;
+  border-radius: 10px;
+  font-size: 0.86rem;
+  font-weight: 700;
+  cursor: pointer;
+  user-select: none;
+}
+
+.chip-btn.selected {
+  background: #fef2f2;
+  border-color: var(--samu-red);
+  color: var(--samu-red-dark);
+  box-shadow: inset 0 0 0 1px var(--samu-red);
+}
+
+.risk-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+@media (max-width: 520px) {
+  .risk-grid { grid-template-columns: 1fr 1fr; }
+}
+
+.risk-btn {
+  padding: 12px 8px;
+  border-radius: 11px;
+  border: 2px solid var(--border);
+  background: #fff;
+  font-weight: 800;
+  font-size: 0.9rem;
+  cursor: pointer;
+  text-align: center;
+}
+
+/* ===================== HORÁRIOS COM BOTÃO AGORA ===================== */
+.time-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+@media (min-width: 720px) {
+  .time-grid { grid-template-columns: repeat(4, 1fr); }
+}
+
+.time-card {
+  border: 1.5px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 10px;
+  background: #f8fafc;
+}
+
+.time-card label {
+  display: block;
+  font-size: 0.74rem;
+  font-weight: 800;
+  color: #334155;
+  margin-bottom: 6px;
+}
+
+.time-input-row {
+  display: flex;
+  gap: 6px;
+}
+
+.time-input-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px;
+  font-size: 1rem;
+  font-weight: 800;
+  text-align: center;
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+}
+
+.btn-now {
+  background: var(--samu-orange);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 0 10px;
+  font-weight: 800;
+  font-size: 0.78rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* ===================== BONECO INTERATIVO REGRA DOS 9 ===================== */
+.burn-interactive-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  background: #fff;
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.burn-stage {
+  position: relative;
+  width: 270px;
+  height: 330px;
+  user-select: none;
+}
+
+.burn-stage img {
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  pointer-events: none;
+}
+
+.burn-zone-btn {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  border: 1.5px dashed rgba(220, 38, 38, 0.45);
+  background: rgba(254, 226, 226, 0.18);
+  border-radius: 50%;
+  cursor: pointer;
+  padding: 0;
+}
+
+.burn-zone-btn.active {
+  background: rgba(220, 38, 38, 0.48);
+  border: 2px solid #b91c1c;
+  box-shadow: 0 0 8px rgba(220, 38, 38, 0.5);
+}
+
+/* ===================== PUPILAS E SIM/NÃO ===================== */
+.yn-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  background: #f8fafc;
+  border-radius: 10px;
+  margin-bottom: 8px;
+  border: 1px solid #e2e8f0;
+}
+
+.yn-row span { font-weight: 700; font-size: 0.9rem; }
+.yn-btns { display: flex; gap: 6px; }
+.yn-btn {
+  padding: 7px 16px;
+  border-radius: 8px;
+  border: 1.5px solid var(--border);
+  background: #fff;
+  font-weight: 800;
+  cursor: pointer;
+}
+.yn-btn.active-yes { background: #dcfce7; border-color: #16a34a; color: #14532d; }
+.yn-btn.active-no { background: #fee2e2; border-color: #dc2626; color: #7f1d1d; }
+
+.pupil-selector {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.pupil-card {
+  border: 1.5px solid var(--border);
+  border-radius: 10px;
+  padding: 6px;
+  text-align: center;
+  background: #fff;
+  cursor: pointer;
+}
+
+.pupil-card.selected {
+  border-color: var(--samu-red);
+  background: #fef2f2;
+  box-shadow: inset 0 0 0 1px var(--samu-red);
+}
+
+.pupil-card img {
+  height: 36px;
+  width: 80px;
+  object-fit: cover;
+  object-position: left center;
+}
+
+.pupil-card small {
+  display: block;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+/* ===================== QUADROS DE ASSINATURA NO FORM ===================== */
+.sig-preview-box {
+  border: 2px dashed #94a3b8;
+  border-radius: 12px;
+  background: #f8fafc;
+  min-height: 96px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  cursor: pointer;
+  text-align: center;
+  margin-top: 6px;
+}
+
+.sig-preview-box.signed {
+  border-style: solid;
+  border-color: var(--success);
+  background: #ffffff;
+}
+
+.sig-preview-box img {
+  max-height: 76px;
+  max-width: 100%;
+  object-fit: contain;
+}
+
+.sig-preview-box span {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--samu-red);
+}
+
+/* ===================== MODAL DE ASSINATURA NA TELA ===================== */
+.sig-modal, .preview-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(15, 23, 42, 0.78);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+}
+
+.sig-modal-card {
+  background: #ffffff;
+  width: 100%;
+  max-width: 680px;
+  border-radius: 18px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sig-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+.sig-modal-header h3 { margin: 0; font-size: 1.1rem; color: var(--samu-red-dark); }
+.sig-modal-header p { margin: 2px 0 0; font-size: 0.84rem; color: var(--muted); }
+
+.btn-icon-close {
+  border: none;
+  background: #f1f5f9;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sig-canvas-wrap {
+  position: relative;
+  width: 100%;
+  height: 240px;
+  border: 2px solid #94a3b8;
+  border-radius: 12px;
+  background: #ffffff;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.sig-baseline {
+  position: absolute;
+  left: 24px;
+  right: 24px;
+  bottom: 42px;
+  border-bottom: 1.5px dashed #cbd5e1;
+  text-align: center;
+  pointer-events: none;
+}
+
+.sig-baseline span {
+  font-size: 0.72rem;
+  color: #94a3b8;
+  background: #fff;
+  padding: 0 8px;
+  position: relative;
+  top: 9px;
+}
+
+.sig-personal-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.83rem;
+}
+
+.sig-save-default-lbl {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.sig-modal-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sig-footer-right { display: flex; gap: 8px; }
+
+/* ===================== CHECK LIST CONDUTOR & DIAGRAMA VIATURA ===================== */
+.check-item-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 10px;
+  border-bottom: 1px solid #e2e8f0;
+}
+.check-item-row:last-child { border-bottom: none; }
+
+.check-item-info {
+  min-width: 0;
+  flex: 1;
+}
+.check-item-qty {
+  display: inline-block;
+  background: #e2e8f0;
+  color: #1e293b;
+  font-weight: 800;
+  font-size: 0.75rem;
+  padding: 2px 6px;
+  border-radius: 6px;
+  margin-right: 6px;
+}
+.check-item-name { font-weight: 700; font-size: 0.9rem; }
+
+.code-pills {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.code-pill {
+  border: 1.5px solid var(--border);
+  background: #fff;
+  border-radius: 7px;
+  padding: 6px 8px;
+  font-size: 0.78rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+.code-pill.active-OK { background: #dcfce7; border-color: #16a34a; color: #14532d; }
+.code-pill.active-warn { background: #fee2e2; border-color: #dc2626; color: #991b1b; }
+
+.amb-damage-stage {
+  position: relative;
+  width: 100%;
+  max-width: 440px;
+  margin: 0 auto;
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+  cursor: crosshair;
+}
+
+.amb-damage-stage img {
+  width: 100%;
+  display: block;
+  pointer-events: none;
+}
+
+.amb-pin {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #dc2626;
+  color: #fff;
+  border: 2px solid #fff;
+  font-weight: 800;
+  font-size: 0.78rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+}
+
+/* ===================== HISTÓRICO E BUSCA DE PACIENTES ===================== */
+.search-bar-box {
+  position: relative;
+  margin-bottom: 12px;
+}
+
+.search-bar-box input {
+  width: 100%;
+  padding: 13px 16px 13px 40px;
+  border-radius: 12px;
+  border: 2px solid var(--border);
+  font-size: 1rem;
+  font-weight: 600;
+  background: #ffffff;
+}
+
+.search-bar-box input:focus {
+  outline: none;
+  border-color: var(--samu-red);
+}
+
+.search-bar-icon {
+  position: absolute;
+  left: 13px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 1.1rem;
+}
+
+.history-card {
+  background: #ffffff;
+  border-radius: 13px;
+  padding: 14px;
+  margin-bottom: 10px;
+  border: 1px solid #e2e8f0;
+  box-shadow: var(--shadow);
+}
+
+.history-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.type-badge {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 800;
+  padding: 3px 8px;
+  border-radius: 6px;
+  text-transform: uppercase;
+}
+.type-ficha { background: #fee2e2; color: #991b1b; }
+.type-condutor { background: #ffedd5; color: #9a3412; }
+.type-enfermagem { background: #dcfce7; color: #166534; }
+
+.status-tag {
+  font-size: 0.74rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 99px;
+}
+.status-synced { background: #dcfce7; color: #15803d; }
+.status-pending { background: #fef3c7; color: #b45309; }
+.status-draft { background: #ede9fe; color: #6d28d9; border: 1px solid #c4b5fd; }
+
+/* ===================== BARRA FIXA DE ACESSO FÁCIL A RASCUNHOS ===================== */
+.quick-draft-bar {
+  position: sticky;
+  top: 56px;
+  z-index: 45;
+  background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+  color: #fff;
+  border-radius: 12px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: wrap;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.22);
+}
+
+.quick-draft-btns {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.btn-draft-save {
+  background: #f59e0b;
+  color: #111827;
+  border: none;
+  border-radius: 9px;
+  padding: 8px 11px;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+  flex: 1;
+  min-width: 128px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+.btn-draft-save:active { transform: scale(0.98); }
+
+.btn-draft-new {
+  background: #2563eb;
+  color: #fff;
+  border: none;
+  border-radius: 9px;
+  padding: 8px 11px;
+  font-size: 0.8rem;
+  font-weight: 800;
+  cursor: pointer;
+  flex: 1;
+  min-width: 132px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+.btn-draft-new:active { transform: scale(0.98); }
+
+.btn-draft-list {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 9px;
+  padding: 8px 10px;
+  font-size: 0.79rem;
+  font-weight: 800;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.draft-count-badge {
+  background: #ef4444;
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 900;
+  padding: 1px 6px;
+  border-radius: 99px;
+}
+
+/* ===================== LINHA INPUT + BOTÃO BUSCAR CEP / CPF ===================== */
+.input-action-row {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+.input-action-row input {
+  flex: 1;
+  min-width: 0;
+}
+.btn-lookup {
+  background: #0f172a;
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  padding: 0 12px;
+  font-size: 0.78rem;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.btn-lookup:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.field-hint {
+  font-size: 0.73rem;
+  margin-top: 3px;
+  font-weight: 700;
+}
+.hint-ok { color: #15803d; }
+.hint-warn { color: #b45309; }
+.hint-err { color: #dc2626; }
+
+/* ===================== CHIPS DE MEDICAMENTOS E ALERGIAS ===================== */
+.chip-btn.chip-nega {
+  border-color: #64748b;
+  font-weight: 800;
+}
+.chip-btn.chip-nega.selected {
+  background: #0f172a;
+  border-color: #0f172a;
+  color: #fff;
+}
+
+.med-filter-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1.5px dashed #cbd5e1;
+  border-radius: 9px;
+  font-size: 0.84rem;
+  margin-bottom: 8px;
+  background: #f8fafc;
+}
+
+.history-title {
+  margin: 4px 0;
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.history-meta {
+  font-size: 0.83rem;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+.history-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+/* ===================== MODAL DE VISUALIZAÇÃO DO PDF A4 ===================== */
+.preview-modal-card {
+  background: #1e293b;
+  color: #fff;
+  width: 100%;
+  max-width: 920px;
+  height: 92vh;
+  border-radius: 16px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.preview-header {
+  padding: 12px 16px;
+  background: #0f172a;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.preview-pages-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+}
+
+.preview-pages-scroll img {
+  width: 100%;
+  max-width: 780px;
+  background: #fff;
+  border-radius: 4px;
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.45);
+}
+
+.sticky-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+.sticky-form-actions .btn { flex: 1; min-width: 180px; }
+
+.toast-banner {
+  position: fixed;
+  top: 66px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 120;
+  background: #0f172a;
+  color: #fff;
+  padding: 10px 18px;
+  border-radius: 99px;
+  font-size: 0.88rem;
+  font-weight: 700;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+
+/* ===================== ABAS ENTRAR / CRIAR CADASTRO ===================== */
+.auth-mode-tabs {
+  display: flex;
+  background: #f1f5f9;
+  padding: 4px;
+  border-radius: 11px;
+  margin-bottom: 14px;
+  gap: 4px;
+}
+.auth-mode-tab {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: #475569;
+  padding: 9px 10px;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+.auth-mode-tab.active {
+  background: #ffffff;
+  color: var(--samu-red);
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.1);
+}
+
+.role-pick-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.role-pick-btn {
+  border: 2px solid #cbd5e1;
+  background: #f8fafc;
+  color: #334155;
+  border-radius: 10px;
+  padding: 9px 8px;
+  font-size: 0.79rem;
+  font-weight: 800;
+  cursor: pointer;
+  text-align: center;
+}
+.role-pick-btn.active {
+  border-color: var(--samu-red);
+  background: #fef2f2;
+  color: var(--samu-red-dark);
+}
+
+/* ===================== RECEBEDORES SALVOS DO HOSPITAL & APROVAÇÕES ===================== */
+.receiver-saved-box {
+  background: #f8fafc;
+  border: 1.5px dashed #cbd5e1;
+  border-radius: 10px;
+  padding: 9px 10px;
+  margin-top: 8px;
+  margin-bottom: 10px;
+}
+
+.receiver-chip-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.receiver-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: #ffffff;
+  border: 1.5px solid #94a3b8;
+  color: #0f172a;
+  border-radius: 99px;
+  padding: 5px 10px;
+  font-size: 0.78rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+.receiver-chip.active {
+  background: #0f172a;
+  border-color: #0f172a;
+  color: #ffffff;
+}
+.receiver-chip-del {
+  background: none;
+  border: none;
+  color: #ef4444;
+  font-weight: 900;
+  font-size: 0.85rem;
+  padding: 0 2px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.approval-card {
+  border: 2px solid #fbbf24;
+  background: #fffbeb;
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 10px;
+}
+.approval-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+/* ===================== BOTÃO WHATSAPP REGULAÇÃO MÉDICA ===================== */
+.btn-whatsapp {
+  background: linear-gradient(135deg, #128c7e 0%, #25d366 100%);
+  color: #ffffff;
+  border: none;
+  font-weight: 800;
+  box-shadow: 0 3px 10px rgba(18, 140, 126, 0.28);
+}
+.btn-whatsapp:active {
+  transform: scale(0.98);
+}
+
+.btn-draft-whatsapp {
+  background: linear-gradient(135deg, #128c7e 0%, #16a34a 100%);
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 9px;
+  padding: 8px 10px;
+  font-size: 0.79rem;
+  font-weight: 800;
+  cursor: pointer;
+  flex: 1;
+  min-width: 155px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.btn-draft-whatsapp:active {
+  transform: scale(0.98);
+}
+
+.regulacao-callout {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #f0fdf4;
+  border: 2px solid #22c55e;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}

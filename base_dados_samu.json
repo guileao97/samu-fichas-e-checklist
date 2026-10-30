@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 2,
+  "system": "SAMU 192 - Orlandia-SP",
+  "defaultHospital": "HBSA",
+  "updatedAt": "2026-10-30T12:00:00.000Z",
+  "deletedUsernames": [],
+  "users": [
+    {
+      "username": "admin",
+      "password": "samu192",
+      "name": "Coordenação SAMU Orlândia",
+      "role": "admin",
+      "cpf": "",
+      "coren": "",
+      "councilId": "ADM-192",
+      "status": "approved",
+      "active": true,
+      "updatedAt": "2026-10-30T12:00:00.000Z"
+    },
+    {
+      "username": "condutor",
+      "password": "1234",
+      "name": "Condutor Socorrista 01",
+      "role": "condutor",
+      "cpf": "111.222.333-44",
+      "coren": "",
+      "councilId": "",
+      "status": "approved",
+      "active": true,
+      "updatedAt": "2026-10-30T12:00:00.000Z"
+    },
+    {
+      "username": "enfermagem",
+      "password": "1234",
+      "name": "Técnico de Enfermagem 01",
+      "role": "enfermagem",
+      "cpf": "222.333.444-55",
+      "coren": "COREN-SP 542.810-TE",
+      "councilId": "COREN-SP 542.810-TE",
+      "status": "approved",
+      "active": true,
+      "updatedAt": "2026-10-30T12:00:00.000Z"
+    }
+  ],
+  "hospitalReceivers": [],
+  "patients": {}
+}
