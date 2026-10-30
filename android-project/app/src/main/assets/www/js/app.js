@@ -894,6 +894,8 @@
       activeCrew = null;
       const crewModal = document.getElementById('crew-modal');
       if (crewModal) crewModal.classList.add('hidden');
+      const pwModal = document.getElementById('password-modal');
+      if (pwModal) pwModal.classList.add('hidden');
       const topCrewBtn = document.getElementById('btn-top-crew');
       if (topCrewBtn) topCrewBtn.classList.add('hidden');
       document.getElementById('app-shell').classList.add('hidden');
@@ -908,6 +910,13 @@
       });
     }
 
+    const btnChangePass = document.getElementById('btn-change-pass');
+    if (btnChangePass) {
+      btnChangePass.addEventListener('click', () => {
+        openChangeOwnPasswordModal();
+      });
+    }
+
     // Atalho para o Simulador trocar de perfil em 1 clique
     window.__samuQuickSwitch = async function(target) {
       if (target === 'logout' || target === 'register') {
@@ -917,6 +926,8 @@
         activeCrew = null;
         const crewModal = document.getElementById('crew-modal');
         if (crewModal) crewModal.classList.add('hidden');
+        const passModal = document.getElementById('password-modal');
+        if (passModal) passModal.classList.add('hidden');
         document.getElementById('app-shell').classList.add('hidden');
         document.getElementById('login-screen').classList.remove('hidden');
         const tabBtn = document.getElementById(target === 'register' ? 'tab-auth-register' : 'tab-auth-login');
@@ -1047,6 +1058,11 @@
           previewCurrentRecord.syncStatus = 'pending';
         }
         const res = await window.SamuStorage.uploadRecordToDrive(previewCurrentRecord, previewGeneratedPdf.base64);
+        const delAdmBtn = document.getElementById('btn-preview-delete-admin');
+        if (delAdmBtn && currentUser && window.SamuStorage.isUserAdmin(currentUser)) {
+          delAdmBtn.classList.remove('hidden');
+          delAdmBtn.textContent = '🗑️ Excluir do App e Drive';
+        }
         await refreshDraftCount();
         await refreshSyncBadge();
         if (activeTab === 'historico') renderHistoricoView();
@@ -1062,6 +1078,14 @@
         btn.textContent = '☁️ Enviar p/ Drive';
       }
     });
+
+    const btnPrevDelAdmin = document.getElementById('btn-preview-delete-admin');
+    if (btnPrevDelAdmin) {
+      btnPrevDelAdmin.addEventListener('click', async () => {
+        if (!previewCurrentRecord || !previewCurrentRecord.id) return;
+        await deleteRecordCompletelyAsAdmin(previewCurrentRecord.id, btnPrevDelAdmin);
+      });
+    }
 
     // Sempre que detectar internet, puxa automaticamente a base de dados do GitHub + verifica atualização automática (OTA / APK)
     const updateLoginVersionFooter = () => {
@@ -1252,21 +1276,26 @@
       }
     }, 60000);
 
-    // Sincronização rápida a cada 8s entre os celulares da equipe durante o preenchimento da Ficha
+    // Sincronização ultra-rápida (a cada 2.5s na aba Ficha) entre os celulares da equipe durante o preenchimento
     let crewTickCounter = 0;
     setInterval(async () => {
       if (!currentUser || !window.SamuStorage.hasOperationalRole(currentUser) || document.hidden || !navigator.onLine) return;
       if (!window.SamuStorage.hasGitHubConfigured()) return;
+      if (crewPushInFlight) return;
       crewTickCounter++;
-      // Quando vinculado em equipe na aba Ficha sincroniza a cada 8s; se ainda sem vínculo, checa a cada 24s para detectar vínculo feito pelo colega
-      if (!activeCrew && (crewTickCounter % 3 !== 0)) return;
+      // Sem vínculo ativo: checa a cada ~20s p/ detectar vínculo feito pelo colega; vinculado fora da aba Ficha: ~7.5s; na aba Ficha: 2.5s!
+      if (!activeCrew) {
+        if (crewTickCounter % 8 !== 0) return;
+      } else if (activeTab !== 'ficha') {
+        if (crewTickCounter % 3 !== 0) return;
+      }
       try {
         await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: window.SamuStorage.getGitHubMeta().dirty });
         await pullAndApplyCrewFichaChanges({ fromNetwork: true });
         await refreshDraftCount();
         await refreshSyncBadge();
       } catch (e) {}
-    }, 8000);
+    }, 2500);
 
     const existingSession = window.SamuStorage.getSession();
     if (existingSession) {
@@ -1301,6 +1330,8 @@
     currentCrewIsLoadedRecord = Boolean(isLoadedRecord);
     currentFichaFieldTs = Object.assign({}, (existingFieldTs && typeof existingFieldTs === 'object') ? existingFieldTs : {});
     lastSyncedFichaSnapshot = JSON.parse(JSON.stringify(stateObj || {}));
+    lastFocusedFichaFieldId = '';
+    lastTypedFichaFieldId = '';
   }
 
   function stampChangedFichaFields(nowMs) {
@@ -1326,17 +1357,67 @@
     lastSyncedFichaSnapshot = JSON.parse(JSON.stringify(fichaState));
   }
 
-  function scheduleCrewCloudPush() {
+  let crewDirtySinceLastPush = false;
+  let crewPushInFlight = false;
+  let crewPushQueuedImmediate = false;
+  let crewTypingBurstStartTs = 0;
+  let lastFocusedFichaFieldId = '';
+  let lastTypedFichaFieldId = '';
+
+  async function runCrewCloudPushNow() {
     clearTimeout(crewPushTimer);
+    crewTypingBurstStartTs = 0;
     if (!navigator.onLine || !window.SamuStorage.hasGitHubConfigured()) return;
-    crewPushTimer = setTimeout(async () => {
-      try {
-        await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true });
-        await pullAndApplyCrewFichaChanges({ fromNetwork: true });
-        await refreshDraftCount();
-        await refreshSyncBadge();
-      } catch (e) {}
-    }, 2000);
+    if (crewPushInFlight) {
+      crewPushQueuedImmediate = true;
+      return;
+    }
+    crewPushInFlight = true;
+    crewDirtySinceLastPush = false;
+    crewPushQueuedImmediate = false;
+    try {
+      await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true });
+      await pullAndApplyCrewFichaChanges({ fromNetwork: true });
+      await refreshDraftCount();
+      await refreshSyncBadge();
+    } catch (e) {
+      crewDirtySinceLastPush = true;
+    } finally {
+      crewPushInFlight = false;
+      if (crewPushQueuedImmediate || crewDirtySinceLastPush) {
+        crewPushQueuedImmediate = false;
+        flushCrewCloudPushNow();
+      }
+    }
+  }
+
+  function flushCrewCloudPushNow() {
+    clearTimeout(crewPushTimer);
+    crewTypingBurstStartTs = 0;
+    if (!navigator.onLine || !window.SamuStorage.hasGitHubConfigured()) return;
+    crewPushTimer = setTimeout(() => {
+      runCrewCloudPushNow();
+    }, 50);
+  }
+
+  function scheduleCrewCloudPush(opts) {
+    crewDirtySinceLastPush = true;
+    if (!navigator.onLine || !window.SamuStorage.hasGitHubConfigured()) return;
+    if (opts && opts.immediate) {
+      flushCrewCloudPushNow();
+      return;
+    }
+    const now = Date.now();
+    if (!crewTypingBurstStartTs) crewTypingBurstStartTs = now;
+    const elapsed = now - crewTypingBurstStartTs;
+    if (elapsed >= 850) {
+      flushCrewCloudPushNow();
+      return;
+    }
+    clearTimeout(crewPushTimer);
+    crewPushTimer = setTimeout(() => {
+      runCrewCloudPushNow();
+    }, Math.max(120, 850 - elapsed));
   }
 
   function applyFichaValuesToDomWithoutStealingFocus(activeEl) {
@@ -1357,6 +1438,38 @@
         inp.value = hv;
       }
     });
+    container.querySelectorAll('[data-risco]').forEach(btn => {
+      const rId = btn.dataset.risco;
+      const rObj = (window.SAMU_SCHEMA.riscos || []).find(r => r.id === rId);
+      if (!rObj) return;
+      const sel = fichaState.risco === rId;
+      btn.style.background = sel ? rObj.color : rObj.bg;
+      btn.style.borderColor = rObj.color;
+      btn.style.color = sel ? '#fff' : rObj.color;
+    });
+    container.querySelectorAll('[data-arr]').forEach(btn => {
+      const arr = Array.isArray(fichaState[btn.dataset.arr]) ? fichaState[btn.dataset.arr] : [];
+      btn.classList.toggle('selected', arr.includes(btn.dataset.val));
+    });
+    container.querySelectorAll('[data-yn]').forEach(btn => {
+      const curVal = fichaState[btn.dataset.yn] || '';
+      const targetVal = btn.dataset.val;
+      if (targetVal === 'SIM') btn.classList.toggle('active-yes', curVal === 'SIM');
+      else if (targetVal === 'NAO') btn.classList.toggle('active-no', curVal === 'NAO');
+    });
+    container.querySelectorAll('[data-pupil]').forEach(card => {
+      card.classList.toggle('selected', fichaState[card.dataset.pupil] === card.dataset.val);
+    });
+    container.querySelectorAll('[data-burn]').forEach(btn => {
+      const burns = Array.isArray(fichaState.burnZonesSelected) ? fichaState.burnZonesSelected : [];
+      btn.classList.toggle('active', burns.includes(btn.dataset.burn));
+    });
+    if (openSelectBoxKey !== 'med' && document.getElementById('select-box-med')) {
+      updateSelectBoxInPlace('med');
+    }
+    if (openSelectBoxKey !== 'alergia' && document.getElementById('select-box-alergia')) {
+      updateSelectBoxInPlace('alergia');
+    }
   }
 
   async function pullAndApplyCrewFichaChanges(opts) {
@@ -1435,6 +1548,27 @@
       applyCrewToFichaState(fichaState, activeCrew, true);
       stampChangedFichaFields(Date.now());
       changed = true;
+    }
+
+    const delRecsMap = window.SamuStorage.getDeletedRecordsMap ? window.SamuStorage.getDeletedRecordsMap() : {};
+    if (editingFichaId && delRecsMap[editingFichaId]) {
+      editingFichaId = null;
+      fichaState = createEmptyFicha();
+      resetFichaSyncTracking(fichaState, uid('sf'), {}, false);
+      await window.SamuStorage.clearDraft(currentUser.username, 'ficha');
+      changed = true;
+    }
+    if (editingCondutorId && delRecsMap[editingCondutorId]) {
+      editingCondutorId = null;
+      condutorState = createEmptyCondutor();
+      await window.SamuStorage.clearDraft(currentUser.username, 'condutor');
+      if (activeTab === 'condutor') renderCondutorView();
+    }
+    if (editingEnfermagemId && delRecsMap[editingEnfermagemId]) {
+      editingEnfermagemId = null;
+      enfermagemState = createEmptyEnfermagem();
+      await window.SamuStorage.clearDraft(currentUser.username, 'enfermagem');
+      if (activeTab === 'enfermagem') renderEnfermagemView();
     }
 
     if (changed && activeTab === 'ficha') {
@@ -1694,6 +1828,228 @@
     modal.classList.remove('hidden');
   }
 
+  /* ==========================================================================
+   * TROCA DE SENHA PELO PRÓPRIO USUÁRIO + REDEFINIÇÃO DE SENHA PELO ADM
+   * ========================================================================== */
+  function openChangeOwnPasswordModal() {
+    if (!currentUser) return;
+    const modal = document.getElementById('password-modal');
+    const body = document.getElementById('password-modal-body');
+    if (!modal || !body) return;
+
+    body.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:8px;">
+        <div>
+          <h3 style="margin:0; font-size:1.05rem; color:var(--navy);">🔑 Trocar Minha Senha</h3>
+          <div style="font-size:0.78rem; color:var(--muted); margin-top:2px;">
+            Usuário: <strong>${escapeHtml(currentUser.name)}</strong> (<code>${escapeHtml(currentUser.username)}</code>)
+          </div>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-close-own-pass" style="padding:4px 10px;">✖</button>
+      </div>
+
+      <p style="margin:0 0 12px; font-size:0.82rem; color:#334155; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:8px 10px;">
+        Digite sua <strong>senha atual</strong> e escolha uma <strong>nova senha</strong> pessoal. Ela sincroniza na hora com o Google Drive para funcionar em qualquer celular da equipe.
+      </p>
+
+      <form id="form-change-own-pass" autocomplete="off">
+        <div class="field">
+          <label>Senha Atual (Antiga)</label>
+          <input type="password" id="own-pass-old" placeholder="Digite sua senha atual" required />
+        </div>
+        <div class="field">
+          <label>Nova Senha (mínimo 3 caracteres)</label>
+          <input type="password" id="own-pass-new" placeholder="Digite a nova senha" minlength="3" required />
+        </div>
+        <div class="field" style="margin-bottom:8px;">
+          <label>Confirmar Nova Senha</label>
+          <input type="password" id="own-pass-confirm" placeholder="Repita a nova senha" minlength="3" required />
+        </div>
+
+        <label style="display:inline-flex; align-items:center; gap:6px; font-size:0.8rem; font-weight:700; color:#475569; cursor:pointer; margin-bottom:12px;">
+          <input type="checkbox" id="chk-show-own-pass" style="width:16px; height:16px;" />
+          👁️ Mostrar senhas digitadas
+        </label>
+
+        <div id="own-pass-feedback" class="auth-feedback hidden" style="margin-bottom:10px;"></div>
+
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button type="submit" class="btn btn-success" id="btn-submit-own-pass" style="flex:1;">💾 Salvar Nova Senha</button>
+          <button type="button" class="btn btn-secondary" id="btn-cancel-own-pass">Cancelar</button>
+        </div>
+      </form>
+    `;
+
+    const closeModal = () => modal.classList.add('hidden');
+    document.getElementById('btn-close-own-pass').addEventListener('click', closeModal);
+    document.getElementById('btn-cancel-own-pass').addEventListener('click', closeModal);
+
+    const oldInp = document.getElementById('own-pass-old');
+    const newInp = document.getElementById('own-pass-new');
+    const confInp = document.getElementById('own-pass-confirm');
+    const chkShow = document.getElementById('chk-show-own-pass');
+    const fbEl = document.getElementById('own-pass-feedback');
+
+    const showFeedback = (msg, isErr) => {
+      if (!fbEl) return;
+      fbEl.textContent = msg;
+      fbEl.className = 'auth-feedback ' + (isErr ? 'err' : 'ok');
+    };
+
+    if (chkShow) {
+      chkShow.addEventListener('change', () => {
+        const t = chkShow.checked ? 'text' : 'password';
+        oldInp.type = t;
+        newInp.type = t;
+        confInp.type = t;
+      });
+    }
+
+    document.getElementById('form-change-own-pass').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const oldVal = oldInp.value.trim();
+      const newVal = newInp.value.trim();
+      const confVal = confInp.value.trim();
+
+      if (!oldVal) {
+        showFeedback('Informe sua senha atual.', true);
+        oldInp.focus();
+        return;
+      }
+      if (newVal.length < 3) {
+        showFeedback('A nova senha deve ter pelo menos 3 caracteres.', true);
+        newInp.focus();
+        return;
+      }
+      if (newVal !== confVal) {
+        showFeedback('A confirmação da nova senha não confere. Digite igual nos dois campos.', true);
+        confInp.focus();
+        return;
+      }
+
+      const btn = document.getElementById('btn-submit-own-pass');
+      btn.disabled = true;
+      btn.textContent = 'Salvando...';
+      try {
+        const res = await window.SamuStorage.changeOwnPassword(currentUser.username, oldVal, newVal);
+        currentUser.password = res.user.password;
+        window.SamuStorage.setSession(currentUser);
+        await refreshSyncBadge();
+        closeModal();
+        if (activeTab === 'aprovacoes') renderAprovacoesView(true);
+        else if (activeTab === 'admin') renderAdminView();
+        showToast(res.cloudSynced
+          ? '✅ Senha alterada e sincronizada com o Google Drive!'
+          : '✅ Senha alterada! (Sincronizará com o Google Drive assim que conectar)');
+      } catch (err) {
+        showFeedback(err.message || 'Não foi possível alterar a senha.', true);
+        btn.disabled = false;
+        btn.textContent = '💾 Salvar Nova Senha';
+      }
+    });
+
+    modal.classList.remove('hidden');
+    setTimeout(() => { if (oldInp) oldInp.focus(); }, 60);
+  }
+
+  function openAdminResetPasswordModal(targetUsername, onAfterSave) {
+    if (!currentUser || !window.SamuStorage.isUserAdmin(currentUser)) return;
+    const allUsers = window.SamuStorage.getLocalUsers();
+    const target = allUsers.find(u => u.username.toLowerCase() === String(targetUsername || '').trim().toLowerCase());
+    if (!target) {
+      samuAlert('Usuário não encontrado na base.');
+      return;
+    }
+
+    const modal = document.getElementById('password-modal');
+    const body = document.getElementById('password-modal-body');
+    if (!modal || !body) return;
+
+    const roleLbl = window.SamuStorage.getUserRoleLabel(target);
+    const roleIcon = window.SamuStorage.getUserRoleIcon(target);
+
+    body.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:8px;">
+        <div>
+          <h3 style="margin:0; font-size:1.05rem; color:var(--navy);">🔑 Ver / Editar Senha do Profissional</h3>
+          <div style="font-size:0.8rem; color:var(--muted); margin-top:2px;">
+            ${roleIcon} <strong>${escapeHtml(target.name)}</strong> (${escapeHtml(roleLbl)})
+          </div>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-close-adm-pass" style="padding:4px 10px;">✖</button>
+      </div>
+
+      <div style="background:#fffbeb; border:1.5px solid #fcd34d; border-radius:10px; padding:10px 12px; margin-bottom:12px; font-size:0.85rem; color:#78350f;">
+        <div>👤 Login: <strong><code>${escapeHtml(target.username)}</code></strong></div>
+        <div style="margin-top:4px;">🔑 Senha atual cadastrada: <code class="pw-pill" style="font-size:0.95rem;">${escapeHtml(target.password || '(sem senha)')}</code></div>
+      </div>
+
+      <form id="form-adm-reset-pass" autocomplete="off">
+        <div class="field">
+          <label>Nova Senha para "${escapeHtml(target.name)}" (mínimo 3 caracteres)</label>
+          <input type="text" id="adm-reset-new-pass" value="${escapeHtml(target.password || '')}" placeholder="Ex: 1234" minlength="3" required />
+        </div>
+        <div id="adm-pass-feedback" class="auth-feedback hidden" style="margin-bottom:10px;"></div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button type="submit" class="btn btn-success" id="btn-submit-adm-pass" style="flex:1;">💾 Salvar Nova Senha</button>
+          <button type="button" class="btn btn-secondary" id="btn-cancel-adm-pass">Fechar</button>
+        </div>
+      </form>
+    `;
+
+    const closeModal = () => modal.classList.add('hidden');
+    document.getElementById('btn-close-adm-pass').addEventListener('click', closeModal);
+    document.getElementById('btn-cancel-adm-pass').addEventListener('click', closeModal);
+
+    const newInp = document.getElementById('adm-reset-new-pass');
+    const fbEl = document.getElementById('adm-pass-feedback');
+
+    document.getElementById('form-adm-reset-pass').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const newVal = newInp.value.trim();
+      if (newVal.length < 3) {
+        if (fbEl) {
+          fbEl.textContent = 'A senha deve ter pelo menos 3 caracteres.';
+          fbEl.className = 'auth-feedback err';
+        }
+        newInp.focus();
+        return;
+      }
+
+      const btn = document.getElementById('btn-submit-adm-pass');
+      btn.disabled = true;
+      btn.textContent = 'Salvando...';
+      try {
+        const res = await window.SamuStorage.adminResetUserPassword(target.username, newVal, currentUser);
+        if (currentUser && target.username.toLowerCase() === currentUser.username.toLowerCase()) {
+          currentUser.password = res.user.password;
+          window.SamuStorage.setSession(currentUser);
+        }
+        await refreshSyncBadge();
+        closeModal();
+        if (typeof onAfterSave === 'function') onAfterSave();
+        showToast(res.cloudSynced
+          ? `✅ Senha de "${target.name}" alterada para "${res.user.password}" e sincronizada!`
+          : `✅ Senha de "${target.name}" alterada para "${res.user.password}"!`);
+      } catch (err) {
+        if (fbEl) {
+          fbEl.textContent = err.message || 'Erro ao salvar nova senha.';
+          fbEl.className = 'auth-feedback err';
+        }
+        btn.disabled = false;
+        btn.textContent = '💾 Salvar Nova Senha';
+      }
+    });
+
+    modal.classList.remove('hidden');
+    setTimeout(() => {
+      if (newInp) {
+        newInp.focus();
+        newInp.select();
+      }
+    }, 60);
+  }
+
   function updateTopbarUserHeader() {
     if (!currentUser) return;
     const nameEl = document.getElementById('top-user-name');
@@ -1724,6 +2080,7 @@
     if (freshLocal && freshLocal.active) {
       user = Object.assign({}, user, {
         name: freshLocal.name || user.name,
+        password: freshLocal.password || user.password,
         role: freshLocal.role || user.role,
         subRole: window.SamuStorage.getUserSubRole(freshLocal),
         isAdmin: window.SamuStorage.isUserAdmin(freshLocal),
@@ -1968,6 +2325,7 @@
 
     nav.querySelectorAll('.nav-tab').forEach(btn => {
       btn.addEventListener('click', () => {
+        if (crewDirtySinceLastPush) flushCrewCloudPushNow();
         activeTab = btn.dataset.tab;
         renderBottomNav();
         renderActiveView();
@@ -1985,7 +2343,7 @@
     if (activeTab === 'admin') return renderAdminView();
   }
 
-  function persistFichaDraft() {
+  function persistFichaDraft(opts) {
     if (!currentUser || !fichaState) return;
     if (editingFichaId) {
       window.SamuStorage.saveDraft(currentUser.username, 'ficha', { __editingId: editingFichaId, state: fichaState });
@@ -2010,7 +2368,7 @@
           fieldTs: currentFichaFieldTs,
           data: fichaState
         }, false);
-        scheduleCrewCloudPush();
+        scheduleCrewCloudPush(opts);
       }
     }
   }
@@ -3391,6 +3749,7 @@
 
     container.querySelectorAll('.step-pill').forEach(btn => {
       btn.addEventListener('click', () => {
+        if (crewDirtySinceLastPush) flushCrewCloudPushNow();
         openSelectBoxKey = '';
         fichaStep = Number(btn.dataset.step);
         renderFichaView();
@@ -3399,8 +3758,8 @@
 
     const prevBtn = document.getElementById('btn-prev-step');
     const nextBtn = document.getElementById('btn-next-step');
-    if (prevBtn) prevBtn.addEventListener('click', () => { if (fichaStep > 1) { openSelectBoxKey = ''; fichaStep--; renderFichaView(); window.scrollTo(0, 0); } });
-    if (nextBtn) nextBtn.addEventListener('click', () => { if (fichaStep < 6) { openSelectBoxKey = ''; fichaStep++; renderFichaView(); window.scrollTo(0, 0); } });
+    if (prevBtn) prevBtn.addEventListener('click', () => { if (fichaStep > 1) { if (crewDirtySinceLastPush) flushCrewCloudPushNow(); openSelectBoxKey = ''; fichaStep--; renderFichaView(); window.scrollTo(0, 0); } });
+    if (nextBtn) nextBtn.addEventListener('click', () => { if (fichaStep < 6) { if (crewDirtySinceLastPush) flushCrewCloudPushNow(); openSelectBoxKey = ''; fichaStep++; renderFichaView(); window.scrollTo(0, 0); } });
 
     container.querySelectorAll('.js-open-crew-modal').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -3505,7 +3864,7 @@
             const refEl = document.getElementById('inp-occ-ref');
             if (refEl) refEl.value = fichaState.ocorrenciaReferencia;
           }
-          persistFichaDraft();
+          persistFichaDraft({ immediate: true });
           if (hint) {
             hint.innerHTML = res.endereco
               ? `<span class="hint-ok">✅ ${escapeHtml(res.endereco)} (${escapeHtml(res.cidade)}-${escapeHtml(res.uf)})</span>`
@@ -3531,7 +3890,7 @@
             const endEl = document.getElementById('inp-vitima-end');
             if (endEl) endEl.value = res.endereco;
           }
-          persistFichaDraft();
+          persistFichaDraft({ immediate: true });
           if (hint) {
             hint.innerHTML = res.endereco
               ? `<span class="hint-ok">✅ Endereço puxado: ${escapeHtml(res.endereco)}</span>`
@@ -3606,7 +3965,7 @@
             fichaState.alergiasOutro = p.alergiasOutro;
           }
 
-          persistFichaDraft();
+          persistFichaDraft({ immediate: true });
           const srcLabel = res.source === 'samu_cloud' ? 'Base SAMU Drive' : (res.source === 'external_api' ? 'Consulta Online' : 'Histórico do Aparelho');
           if (hint) hint.innerHTML = `<span class="hint-ok">✅ Cadastro puxado automaticamente (${srcLabel})!</span>`;
           showToast(`✅ Paciente encontrado: ${p.vitimaNome || 'Dados preenchidos'}!`);
@@ -3634,8 +3993,36 @@
     const btnCpfLookup = document.getElementById('btn-lookup-cpf');
     if (btnCpfLookup) btnCpfLookup.addEventListener('click', () => executeCpfLookup(true));
 
+    // Sincronização instantânea ao pular de uma caixa de texto para outra (blur / change / focus / 1º caractere na nova caixa)
+    const bindFieldJumpInstantSync = (el, fieldKey) => {
+      el.addEventListener('focus', () => {
+        if (lastFocusedFichaFieldId && lastFocusedFichaFieldId !== fieldKey && crewDirtySinceLastPush) {
+          flushCrewCloudPushNow();
+        }
+        lastFocusedFichaFieldId = fieldKey;
+      });
+      el.addEventListener('blur', () => {
+        if (crewDirtySinceLastPush) {
+          flushCrewCloudPushNow();
+        }
+      });
+      el.addEventListener('change', () => {
+        if (el.tagName === 'SELECT' || el.type === 'date' || el.type === 'time' || crewDirtySinceLastPush) {
+          flushCrewCloudPushNow();
+        }
+      });
+    };
+
+    const persistTypedFieldWithJumpCheck = (fieldKey) => {
+      const switchedBox = Boolean(lastTypedFichaFieldId && lastTypedFichaFieldId !== fieldKey);
+      lastTypedFichaFieldId = fieldKey;
+      persistFichaDraft(switchedBox ? { immediate: true } : undefined);
+    };
+
     // Inputs simples
     container.querySelectorAll('[data-f]').forEach(inp => {
+      const fieldKey = 'f:' + inp.dataset.f;
+      bindFieldJumpInstantSync(inp, fieldKey);
       inp.addEventListener('input', () => {
         const key = inp.dataset.f;
         let val = inp.value;
@@ -3649,7 +4036,7 @@
           if (curDigits.length === 8 && curDigits !== prevDigits && navigator.onLine) {
             executeCepLookup(key === 'ocorrenciaCep' ? 'occ' : 'vitima', false);
           }
-          persistFichaDraft();
+          persistTypedFieldWithJumpCheck(fieldKey);
           return;
         }
 
@@ -3667,7 +4054,7 @@
               executeCpfLookup(false);
             }
           }
-          persistFichaDraft();
+          persistTypedFieldWithJumpCheck(fieldKey);
           return;
         }
 
@@ -3696,7 +4083,7 @@
             if (ageEl) ageEl.value = fichaState.vitimaIdade;
           }
         }
-        persistFichaDraft();
+        persistTypedFieldWithJumpCheck(fieldKey);
       });
     });
 
@@ -3764,7 +4151,7 @@
           else cur.push(val);
         }
         fichaState[stateProp] = cur;
-        persistFichaDraft();
+        persistFichaDraft({ immediate: true });
         updateSelectBoxInPlace(key);
       });
     });
@@ -3777,7 +4164,7 @@
         const val = rmBtn.dataset.sboxVal;
         const stateProp = (key === 'med') ? 'medicamentosSelecionados' : 'alergiasSelecionadas';
         fichaState[stateProp] = (fichaState[stateProp] || []).filter(x => x !== val);
-        persistFichaDraft();
+        persistFichaDraft({ immediate: true });
         updateSelectBoxInPlace(key);
       });
     });
@@ -3787,7 +4174,7 @@
       btn.addEventListener('click', () => {
         const r = btn.dataset.risco;
         fichaState.risco = (fichaState.risco === r) ? '' : r;
-        persistFichaDraft();
+        persistFichaDraft({ immediate: true });
         renderFichaView();
       });
     });
@@ -3802,7 +4189,7 @@
         if (i >= 0) cur.splice(i, 1);
         else cur.push(val);
         fichaState[arrKey] = cur;
-        persistFichaDraft();
+        persistFichaDraft({ immediate: true });
         renderFichaView();
       });
     });
@@ -3813,7 +4200,7 @@
       copyAddrBtn.addEventListener('click', () => {
         fichaState.vitimaEndereco = fichaState.ocorrenciaEndereco || '';
         fichaState.vitimaNumero = fichaState.ocorrenciaNumero || '';
-        persistFichaDraft();
+        persistFichaDraft({ immediate: true });
         renderFichaView();
         showToast('Endereço copiado para os dados da vítima!');
       });
@@ -3821,9 +4208,11 @@
 
     // Horários + botão AGORA
     container.querySelectorAll('[data-horario]').forEach(inp => {
+      const fieldKey = 'h:' + inp.dataset.horario;
+      bindFieldJumpInstantSync(inp, fieldKey);
       inp.addEventListener('input', () => {
         fichaState.horarios[inp.dataset.horario] = inp.value;
-        persistFichaDraft();
+        persistTypedFieldWithJumpCheck(fieldKey);
       });
     });
     container.querySelectorAll('[data-now]').forEach(btn => {
@@ -3831,7 +4220,7 @@
         const k = btn.dataset.now;
         const t = nowHHMM();
         fichaState.horarios[k] = t;
-        persistFichaDraft();
+        persistFichaDraft({ immediate: true });
         const inp = container.querySelector(`[data-horario="${k}"]`);
         if (inp) inp.value = t;
         showToast(`Horário registrado: ${t}`);
@@ -3859,7 +4248,7 @@
           fichaState.haQueimaduras = 'NAO';
           fichaState.queimadurasPorcentagem = '';
         }
-        persistFichaDraft();
+        persistFichaDraft({ immediate: true });
         renderFichaView();
       });
     });
@@ -3870,7 +4259,7 @@
         fichaState.burnZonesSelected = [];
         fichaState.haQueimaduras = 'NAO';
         fichaState.queimadurasPorcentagem = '';
-        persistFichaDraft();
+        persistFichaDraft({ immediate: true });
         renderFichaView();
       });
     }
@@ -3881,7 +4270,7 @@
         const k = btn.dataset.yn;
         const v = btn.dataset.val;
         fichaState[k] = (fichaState[k] === v) ? '' : v;
-        persistFichaDraft();
+        persistFichaDraft({ immediate: true });
         renderFichaView();
       });
     });
@@ -3893,7 +4282,7 @@
         fichaState.respiracao = 'SIM';
         fichaState.circulacao = 'SIM';
         fichaState.consciente = 'SIM';
-        persistFichaDraft();
+        persistFichaDraft({ immediate: true });
         renderFichaView();
       });
     }
@@ -3903,7 +4292,7 @@
         const k = card.dataset.pupil;
         const v = card.dataset.val;
         fichaState[k] = (fichaState[k] === v) ? '' : v;
-        persistFichaDraft();
+        persistFichaDraft({ immediate: true });
         renderFichaView();
       });
     });
@@ -3915,7 +4304,7 @@
         fichaState.pupilaEsqTamanho = 'MEDIA';
         fichaState.pupilaDirReativa = 'SIM';
         fichaState.pupilaEsqReativa = 'SIM';
-        persistFichaDraft();
+        persistFichaDraft({ immediate: true });
         renderFichaView();
       });
     }
@@ -3925,7 +4314,7 @@
       pullVitBtn.addEventListener('click', () => {
         fichaState.termoNome = fichaState.vitimaNome || '';
         fichaState.termoCpf = fichaState.vitimaCpf || '';
-        persistFichaDraft();
+        persistFichaDraft({ immediate: true });
         renderFichaView();
       });
     }
@@ -3938,7 +4327,7 @@
       btnDestHbsa.addEventListener('click', () => {
         const defHosp = (window.SamuStorage.getSettings().defaultHospital || 'HBSA').trim() || 'HBSA';
         fichaState.destino = defHosp;
-        persistFichaDraft();
+        persistFichaDraft({ immediate: true });
         renderFichaView();
         showToast(`🏥 Destino definido como ${defHosp}.`);
       });
@@ -4051,7 +4440,7 @@
         if (!found) return;
         fichaState.medicoRegulador = found.nome;
         window.SamuStorage.upsertMedicoRegulador(found);
-        persistFichaDraft();
+        persistFichaDraft({ immediate: true });
         renderFichaView();
         showToast(`👨‍⚕️ Médico Regulador preenchido: ${found.nome}`);
       });
@@ -4072,7 +4461,7 @@
           corenCrm,
           hospital: fichaState.destino || 'HBSA'
         });
-        persistFichaDraft();
+        persistFichaDraft({ immediate: true });
         renderFichaView();
         showToast(`✅ ${nome} salvo! Nas próximas fichas é só tocar no nome e assinar.`);
       });
@@ -4100,7 +4489,7 @@
         fichaState.recebidoPorNome = found.nome;
         fichaState.recebidoCorenCrm = found.corenCrm || '';
         window.SamuStorage.upsertHospitalReceiver(found);
-        persistFichaDraft();
+        persistFichaDraft({ immediate: true });
         renderFichaView();
 
         // Já abre direto a tela de assinatura para o profissional do hospital só assinar!
@@ -4111,7 +4500,7 @@
           username: ''
         }, (dataUrl) => {
           fichaState.sigRecebido = dataUrl;
-          persistFichaDraft();
+          persistFichaDraft({ immediate: true });
           renderFichaView();
           showToast(`✍️ Assinatura de ${found.nome} registrada!`);
         });
@@ -4141,7 +4530,7 @@
           if (currentUser && window.SamuStorage.hasOperationalRole(currentUser)) {
             activeCrew = window.SamuStorage.getActiveCrewForUser(currentUser.username);
           }
-          persistFichaDraft();
+          persistFichaDraft({ immediate: true });
           renderFichaView();
         });
       });
@@ -5343,6 +5732,12 @@
       });
     });
 
+    container.querySelectorAll('[data-h-del-admin]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        await deleteRecordCompletelyAsAdmin(btn.dataset.hDelAdmin, btn);
+      });
+    });
+
     container.querySelectorAll('[data-h-del-draft]').forEach(btn => {
       btn.addEventListener('click', async () => {
         const id = btn.dataset.hDelDraft;
@@ -5357,6 +5752,86 @@
         renderHistoricoView();
       });
     });
+  }
+
+  async function deleteRecordCompletelyAsAdmin(recordId, triggerBtn) {
+    if (!currentUser || !window.SamuStorage.isUserAdmin(currentUser)) {
+      samuAlert('Apenas usuários ADM podem apagar registros definitivamente.');
+      return false;
+    }
+    const cleanId = String(recordId || '').trim();
+    if (!cleanId) return false;
+
+    const rec = (await window.SamuStorage.getRecordById(cleanId)) ||
+      (previewCurrentRecord && previewCurrentRecord.id === cleanId ? previewCurrentRecord : null);
+
+    let typeLabel = 'Ficha de Atendimento';
+    let titleLabel = (rec && rec.patientName) || 'Paciente não identificado';
+    if (rec && rec.type === 'checklist_condutor') {
+      typeLabel = 'Check List Condutor';
+      titleLabel = rec.vehicle || 'Viatura USB';
+    } else if (rec && rec.type === 'checklist_enfermagem') {
+      typeLabel = 'Check List Enfermagem';
+      titleLabel = `Checagem Diária USB (${rec.shift || 'Plantão'})`;
+    }
+    const rawDate = (rec && rec.date) ? String(rec.date) : '';
+    const dParts = rawDate.split('-');
+    const dateBR = dParts.length === 3 ? `${dParts[2]}/${dParts[1]}/${dParts[0]}` : (rawDate || 'Sem data');
+    const isDraft = Boolean(rec && rec.syncStatus === 'draft');
+
+    const confirmMsg = isDraft
+      ? `Excluir PERMANENTEMENTE este rascunho de ${typeLabel}?\n\n• ${titleLabel} (${dateBR})\n\nEle será apagado de todos os celulares da equipe.`
+      : `Excluir PERMANENTEMENTE este registro (${typeLabel})?\n\n• ${titleLabel} (${dateBR})\n\nEsta ação apagará a ficha/checklist de TODOS os celulares do aplicativo, removerá da Planilha de Controle e excluirá o PDF do Google Drive.`;
+
+    if (!(await samuConfirm(confirmMsg))) return false;
+
+    const origText = triggerBtn ? triggerBtn.textContent : '';
+    if (triggerBtn) {
+      triggerBtn.disabled = true;
+      triggerBtn.textContent = '🗑️ Excluindo...';
+    }
+    try {
+      const res = await window.SamuStorage.adminDeleteRecordCompletely(cleanId, currentUser);
+
+      if (editingFichaId === cleanId) {
+        editingFichaId = null;
+        fichaState = createEmptyFicha();
+        resetFichaSyncTracking(fichaState, uid('sf'), {}, false);
+        await window.SamuStorage.clearDraft(currentUser.username, 'ficha');
+      }
+      if (editingCondutorId === cleanId) {
+        editingCondutorId = null;
+        condutorState = createEmptyCondutor();
+        await window.SamuStorage.clearDraft(currentUser.username, 'condutor');
+      }
+      if (editingEnfermagemId === cleanId) {
+        editingEnfermagemId = null;
+        enfermagemState = createEmptyEnfermagem();
+        await window.SamuStorage.clearDraft(currentUser.username, 'enfermagem');
+      }
+
+      if (previewCurrentRecord && previewCurrentRecord.id === cleanId) {
+        const prevModal = document.getElementById('pdf-preview-modal');
+        if (prevModal) prevModal.classList.add('hidden');
+        previewCurrentRecord = null;
+      }
+
+      await refreshDraftCount();
+      await refreshSyncBadge();
+      renderActiveView();
+
+      showToast(res.driveDeleted
+        ? `🗑️ ${typeLabel} excluído completamente do Aplicativo e do Google Drive!`
+        : `🗑️ ${typeLabel} excluído do Aplicativo! (O PDF no Google Drive será removido ao sincronizar)`);
+      return true;
+    } catch (err) {
+      samuAlert('Erro ao excluir registro: ' + (err.message || err));
+      if (triggerBtn) {
+        triggerBtn.disabled = false;
+        triggerBtn.textContent = origText;
+      }
+      return false;
+    }
   }
 
   function renderHistoryCardHtml(rec, isAdmin) {
@@ -5411,7 +5886,9 @@
           <button type="button" class="btn btn-primary btn-sm" data-h-pdf="${escapeHtml(rec.id)}">📄 Gerar / Imprimir PDF</button>
           ${rec.type === 'ficha' ? `<button type="button" class="btn btn-whatsapp btn-sm" data-h-reg="${escapeHtml(rec.id)}">📲 Cabeçalho Regulação</button>` : ''}
           ${rec.driveUrl ? `<a href="${escapeHtml(rec.driveUrl)}" target="_blank" rel="noopener" class="btn btn-success btn-sm" style="text-decoration:none;">☁️ Ver no Google Drive</a>` : ''}
-          ${isDraft ? `<button type="button" class="btn btn-secondary btn-sm" data-h-del-draft="${escapeHtml(rec.id)}">🗑️ Excluir</button>` : ''}
+          ${isAdmin
+            ? `<button type="button" class="btn btn-danger-outline btn-sm" data-h-del-admin="${escapeHtml(rec.id)}">${isDraft ? '🗑️ Excluir Rascunho' : '🗑️ Excluir do App e Drive'}</button>`
+            : (isDraft ? `<button type="button" class="btn btn-secondary btn-sm" data-h-del-draft="${escapeHtml(rec.id)}">🗑️ Excluir</button>` : '')}
         </div>
       </div>
     `;
@@ -5560,6 +6037,7 @@
 
               <div style="font-size:0.84rem; color:#334155; margin-bottom:8px; line-height:1.5;">
                 👤 Login solicitado: <strong><code>${escapeHtml(u.username)}</code></strong>
+                • 🔑 Senha criada: <code class="pw-pill">${escapeHtml(u.password || '(sem senha)')}</code>
                 • 🪪 CPF: <strong>${escapeHtml(u.cpf || 'Não informado')}</strong>
                 ${isEnf ? `<br>${roleIcon} COREN informado: <strong>${escapeHtml(u.coren || u.councilId || 'Não informado')}</strong>` : ''}
               </div>
@@ -5607,6 +6085,7 @@
                   <br>
                   <small style="color:var(--muted);">
                     Login: <code>${escapeHtml(u.username)}</code>
+                    • 🔑 Senha: <code class="pw-pill">${escapeHtml(u.password || '****')}</code>
                     ${u.cpf ? ` • CPF: ${escapeHtml(u.cpf)}` : ''}
                     ${corenTxt ? ` • <strong>${escapeHtml(corenTxt)}</strong>` : ''}
                   </small>
@@ -5617,6 +6096,7 @@
                   </select>
                   <input type="text" data-promote-coren="${escapeHtml(u.username)}" value="${escapeHtml(corenTxt)}" placeholder="COREN-SP..." style="width:155px; padding:8px 10px; border:1.5px solid var(--border); border-radius:8px; font-size:0.82rem; ${showCorenInp ? '' : 'display:none;'}" />
                   <button type="button" class="btn btn-primary btn-sm" data-promote-save="${escapeHtml(u.username)}">⬆️ Salvar Cargo</button>
+                  <button type="button" class="btn btn-outline btn-sm" data-aprov-pw-u="${escapeHtml(u.username)}">🔑 Trocar Senha</button>
                   ${!isSelf ? `<button type="button" class="btn btn-secondary btn-sm" data-aprov-del-u="${escapeHtml(u.username)}">🗑️ Excluir</button>` : ''}
                 </div>
               </div>
@@ -5809,6 +6289,12 @@
       });
     });
 
+    container.querySelectorAll('[data-aprov-pw-u]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        openAdminResetPasswordModal(btn.dataset.aprovPwU, () => renderAprovacoesView(true));
+      });
+    });
+
     container.querySelectorAll('[data-aprov-del-u]').forEach(btn => {
       btn.addEventListener('click', async () => {
         const ok = await deleteUserAccountWithSync(btn.dataset.aprovDelU);
@@ -5993,12 +6479,13 @@
                   ${isSelf ? `<span class="type-badge" style="background:#dcfce7; color:#14532d; margin-left:4px;">Você</span>` : ''}
                   <br>
                   <small style="color:var(--muted);">
-                    Login: <code>${escapeHtml(u.username)}</code> • Senha: <code>${escapeHtml(u.password || '****')}</code>
+                    Login: <code>${escapeHtml(u.username)}</code> • 🔑 Senha: <code class="pw-pill">${escapeHtml(u.password || '****')}</code>
                     ${u.cpf ? ` • CPF: ${escapeHtml(u.cpf)}` : ''}
                     ${corenVal ? ` • <strong>${escapeHtml(corenVal)}</strong>` : ''}
                   </small>
                 </div>
                 <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                  <button type="button" class="btn btn-outline btn-sm" data-adm-pw-u="${escapeHtml(u.username)}">🔑 Trocar Senha</button>
                   <button type="button" class="btn btn-outline btn-sm" data-edit-u="${escapeHtml(u.username)}">✏️ Editar</button>
                   ${!isSelf
                     ? `<button type="button" class="btn btn-secondary btn-sm" data-del-u="${escapeHtml(u.username)}">🗑️ Excluir Login</button>`
@@ -6271,6 +6758,12 @@
       }
     });
 
+    container.querySelectorAll('[data-adm-pw-u]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        openAdminResetPasswordModal(btn.dataset.admPwU, () => renderAdminView());
+      });
+    });
+
     container.querySelectorAll('[data-edit-u]').forEach(btn => {
       btn.addEventListener('click', () => {
         const target = users.find(u => u.username.toLowerCase() === btn.dataset.editU.toLowerCase());
@@ -6282,6 +6775,8 @@
         document.getElementById('u-cpf').value = target.cpf || '';
         document.getElementById('u-council').value = target.coren || target.councilId || '';
         syncRoleCorenVisibility();
+        const saveBtn = document.getElementById('btn-save-user');
+        if (saveBtn) saveBtn.textContent = `💾 Salvar Alterações de "${target.username}"`;
         document.getElementById('adm-user-form').scrollIntoView({ behavior: 'smooth', block: 'center' });
       });
     });
@@ -6324,6 +6819,16 @@
     const btnPrevReg = document.getElementById('btn-preview-regulacao');
     if (btnPrevReg) {
       btnPrevReg.classList.toggle('hidden', !record || record.type !== 'ficha');
+    }
+    const btnPrevDelAdmin = document.getElementById('btn-preview-delete-admin');
+    if (btnPrevDelAdmin) {
+      const isAdm = Boolean(currentUser && window.SamuStorage.isUserAdmin(currentUser));
+      const existingSaved = (isAdm && record && record.id) ? await window.SamuStorage.getRecordById(record.id) : null;
+      btnPrevDelAdmin.classList.toggle('hidden', !existingSaved);
+      btnPrevDelAdmin.disabled = false;
+      btnPrevDelAdmin.textContent = (existingSaved && existingSaved.syncStatus === 'draft')
+        ? '🗑️ Excluir Rascunho'
+        : '🗑️ Excluir do App e Drive';
     }
 
     modal.classList.remove('hidden');

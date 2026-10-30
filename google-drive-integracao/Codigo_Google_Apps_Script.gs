@@ -23,8 +23,9 @@ function doGet(e) {
     return jsonResponse_({
       ok: true,
       service: 'SAMU 192 Orlândia - Google Drive Sync',
-      version: 2,
+      version: 3,
       syncDatabaseReady: true,
+      deleteRecordReady: true,
       rootFolderUrl: env.rootFolder.getUrl(),
       spreadsheetUrl: env.ss.getUrl(),
       timestamp: new Date().toISOString()
@@ -48,8 +49,9 @@ function doPost(e) {
       migrateExistingPdfsToLinkView_(env);
       return jsonResponse_({
         ok: true,
-        version: 2,
+        version: 3,
         syncDatabaseReady: true,
+        deleteRecordReady: true,
         rootFolderUrl: env.rootFolder.getUrl(),
         spreadsheetUrl: env.ss.getUrl()
       });
@@ -151,9 +153,45 @@ function doPost(e) {
       });
     }
 
+    if (action === 'deleteRecord') {
+      if (!isCallerAdmin_(caller)) {
+        return jsonResponse_({ ok: false, error: 'Apenas Administradores podem excluir fichas e check lists.' });
+      }
+      var delId = String(body.recordId || '').trim();
+      if (!delId) {
+        return jsonResponse_({ ok: false, error: 'ID do registro não informado.' });
+      }
+      var delStats = deleteRecordsFromSheetAndDrive_(env, [{
+        id: delId,
+        driveFileId: String(body.driveFileId || '').trim(),
+        driveUrl: String(body.driveUrl || '').trim()
+      }]);
+      var nowDelIso = new Date().toISOString();
+      var serverDbDel = loadSyncDb_(env);
+      serverDbDel.deletedRecordsMap = Object.assign({}, serverDbDel.deletedRecordsMap || {});
+      serverDbDel.deletedRecordsMap[delId] = {
+        deletedAt: nowDelIso,
+        deletedBy: caller.username,
+        drivePurged: true
+      };
+      serverDbDel.deletedRecordsMap = pruneMapByTs_(serverDbDel.deletedRecordsMap, 600, function(v) {
+        return (v && typeof v === 'object') ? v.deletedAt : v;
+      });
+      cleanSharedFichasForDeletedRecordServer_(serverDbDel, delId, nowDelIso);
+      saveSyncDb_(env, serverDbDel);
+      return jsonResponse_({
+        ok: true,
+        id: delId,
+        deletedRows: delStats.deletedRows,
+        trashedFiles: delStats.trashedFiles,
+        deletedAt: nowDelIso
+      });
+    }
+
     if (action === 'listHistory') {
       migrateExistingPdfsToLinkView_(env);
-      var records = listRecordsForUser_(env.recordsSheet, caller);
+      var syncDbForList = loadSyncDb_(env);
+      var records = listRecordsForUser_(env.recordsSheet, caller, (syncDbForList && syncDbForList.deletedRecordsMap) || {});
       return jsonResponse_({
         ok: true,
         records: records,
@@ -536,7 +574,68 @@ function upsertRecord_(sh, rec, caller, driveFileId, driveFileUrl) {
   return { syncedAt: syncedAt };
 }
 
-function listRecordsForUser_(sh, caller) {
+function extractDriveFileIdFromUrl_(urlStr) {
+  var s = String(urlStr || '').trim();
+  if (!s) return '';
+  var m1 = s.match(/\/d\/([a-zA-Z0-9_-]{20,})/);
+  if (m1 && m1[1]) return m1[1];
+  var m2 = s.match(/[?&]id=([a-zA-Z0-9_-]{20,})/);
+  if (m2 && m2[1]) return m2[1];
+  return '';
+}
+
+function deleteRecordsFromSheetAndDrive_(env, recordSpecs) {
+  var specs = Array.isArray(recordSpecs) ? recordSpecs : [];
+  if (!specs.length) return { deletedRows: 0, trashedFiles: 0 };
+
+  var idMap = {};
+  var fileIdMap = {};
+  specs.forEach(function(sp) {
+    if (!sp || !sp.id) return;
+    var rid = String(sp.id).trim();
+    if (!rid) return;
+    idMap[rid] = true;
+    var f1 = String(sp.driveFileId || '').trim();
+    var f2 = extractDriveFileIdFromUrl_(sp.driveUrl);
+    if (f1) fileIdMap[f1] = true;
+    if (f2) fileIdMap[f2] = true;
+  });
+
+  var deletedRows = 0;
+  try {
+    var sh = env.recordsSheet;
+    var values = sh.getDataRange().getValues();
+    for (var i = values.length - 1; i >= 1; i--) {
+      var rowId = String(values[i][0] || '').trim();
+      if (rowId && idMap[rowId]) {
+        var rowFid = String(values[i][15] || '').trim();
+        var rowUrlFid = extractDriveFileIdFromUrl_(values[i][16]);
+        if (rowFid) fileIdMap[rowFid] = true;
+        if (rowUrlFid) fileIdMap[rowUrlFid] = true;
+        sh.deleteRow(i + 1);
+        deletedRows++;
+      }
+    }
+  } catch (eSheet) {}
+
+  var trashedFiles = 0;
+  Object.keys(fileIdMap).forEach(function(fid) {
+    if (!fid) return;
+    try {
+      var f = DriveApp.getFileById(fid);
+      try {
+        f.setSharing(DriveApp.Access.PRIVATE, DriveApp.Permission.NONE);
+      } catch (ePriv) {}
+      f.setTrashed(true);
+      trashedFiles++;
+    } catch (eFile) {}
+  });
+
+  return { deletedRows: deletedRows, trashedFiles: trashedFiles };
+}
+
+function listRecordsForUser_(sh, caller, deletedRecordsMap) {
+  var delMap = deletedRecordsMap || {};
   var values = sh.getDataRange().getValues();
   var out = [];
   var isAdmin = isCallerAdmin_(caller);
@@ -545,6 +644,8 @@ function listRecordsForUser_(sh, caller) {
   for (var i = values.length - 1; i >= 1; i--) {
     var r = values[i];
     if (!r[0]) continue;
+    var recIdStr = String(r[0]);
+    if (delMap[recIdStr]) continue;
     var recOwner = String(r[5] || '').toLowerCase();
     // Regra de privacidade: Condutor e Técnico só recebem o próprio histórico; Adm recebe tudo
     if (!isAdmin && recOwner !== callerLower) {
@@ -726,6 +827,7 @@ function buildInitialSyncDbFromSheet_(env) {
     updatedAt: new Date().toISOString(),
     deletedUsersMap: {},
     deletedUsernames: [],
+    deletedRecordsMap: {},
     users: sheetUsers,
     hospitalReceivers: [],
     medicosReguladores: [],
@@ -883,6 +985,52 @@ function mergeSharedFichaDocsServer_(docA, docB, closedSessions) {
   };
 }
 
+function normalizeDeletedRecordEntryServer_(val, fallbackIso) {
+  if (!val) return null;
+  if (typeof val === 'string') {
+    return {
+      deletedAt: val,
+      driveFileId: '',
+      driveUrl: '',
+      deletedBy: '',
+      drivePurged: false
+    };
+  }
+  if (typeof val === 'object') {
+    return {
+      deletedAt: String(val.deletedAt || fallbackIso || new Date().toISOString()),
+      driveFileId: String(val.driveFileId || ''),
+      driveUrl: String(val.driveUrl || ''),
+      deletedBy: String(val.deletedBy || ''),
+      drivePurged: Boolean(val.drivePurged)
+    };
+  }
+  return null;
+}
+
+function cleanSharedFichasForDeletedRecordServer_(dbObj, delId, delIso) {
+  if (!dbObj || !dbObj.sharedFichas || !delId) return;
+  var ts = String(delIso || new Date().toISOString());
+  Object.keys(dbObj.sharedFichas).forEach(function(cid) {
+    var ws = dbObj.sharedFichas[cid];
+    if (!ws || typeof ws !== 'object') return;
+    if (ws.draftRecords && ws.draftRecords[delId]) {
+      delete ws.draftRecords[delId];
+      ws.closedDraftIds = Object.assign({}, ws.closedDraftIds || {});
+      ws.closedDraftIds[delId] = ts;
+      ws.updatedAt = ts;
+    }
+    if (ws.currentFicha && ws.currentFicha.recordId === delId) {
+      if (ws.currentFicha.sessionId) {
+        ws.closedSessions = Object.assign({}, ws.closedSessions || {});
+        ws.closedSessions[ws.currentFicha.sessionId] = { closedAt: ts, reason: 'deleted_by_admin' };
+      }
+      ws.currentFicha = null;
+      ws.updatedAt = ts;
+    }
+  });
+}
+
 function mergeSyncDatabases_(base, incoming) {
   var out = Object.assign({}, base || {});
   var inc = incoming || {};
@@ -890,6 +1038,49 @@ function mergeSyncDatabases_(base, incoming) {
   if (inc.defaultHospital && String(inc.defaultHospital).trim()) {
     out.defaultHospital = String(inc.defaultHospital).trim();
   }
+
+  // 0. Tombstones de Fichas e Check Lists excluídos pelo ADM (remove de todos os celulares + Google Drive + Planilha)
+  var mergedDelRecs = {};
+  var baseDelRecs = out.deletedRecordsMap || {};
+  Object.keys(baseDelRecs).forEach(function(rid) {
+    var norm = normalizeDeletedRecordEntryServer_(baseDelRecs[rid], out.updatedAt);
+    if (norm) mergedDelRecs[rid] = norm;
+  });
+  var incDelRecs = inc.deletedRecordsMap || {};
+  var toPurgeOnDrive = [];
+  Object.keys(incDelRecs).forEach(function(rid) {
+    var cleanRid = String(rid || '').trim();
+    if (!cleanRid) return;
+    var incEntry = normalizeDeletedRecordEntryServer_(incDelRecs[rid], inc.updatedAt);
+    if (!incEntry) return;
+    var curEntry = mergedDelRecs[cleanRid];
+    if (!curEntry) {
+      mergedDelRecs[cleanRid] = incEntry;
+      if (!incEntry.drivePurged) {
+        toPurgeOnDrive.push({ id: cleanRid, driveFileId: incEntry.driveFileId, driveUrl: incEntry.driveUrl });
+      }
+    } else {
+      var newerTs = String(incEntry.deletedAt) > String(curEntry.deletedAt) ? incEntry.deletedAt : curEntry.deletedAt;
+      var alreadyPurged = Boolean(curEntry.drivePurged);
+      mergedDelRecs[cleanRid] = {
+        deletedAt: newerTs,
+        driveFileId: incEntry.driveFileId || curEntry.driveFileId || '',
+        driveUrl: incEntry.driveUrl || curEntry.driveUrl || '',
+        deletedBy: incEntry.deletedBy || curEntry.deletedBy || '',
+        drivePurged: Boolean(curEntry.drivePurged || incEntry.drivePurged)
+      };
+      if (!alreadyPurged && !incEntry.drivePurged) {
+        toPurgeOnDrive.push({
+          id: cleanRid,
+          driveFileId: mergedDelRecs[cleanRid].driveFileId,
+          driveUrl: mergedDelRecs[cleanRid].driveUrl
+        });
+      }
+    }
+  });
+  mergedDelRecs = pruneMapByTs_(mergedDelRecs, 600, function(v) { return v && v.deletedAt; });
+  out.deletedRecordsMap = mergedDelRecs;
+  out._recordsToPurgeOnDrive = toPurgeOnDrive;
 
   // 1. Tombstones de usuários excluídos
   var mergedDel = Object.assign({}, out.deletedUsersMap || {});
@@ -1124,6 +1315,10 @@ function mergeSyncDatabases_(base, incoming) {
     }
   });
   out.sharedFichas = cleanShared;
+  Object.keys(out.deletedRecordsMap || {}).forEach(function(delId) {
+    var entry = out.deletedRecordsMap[delId];
+    cleanSharedFichasForDeletedRecordServer_(out, delId, entry && entry.deletedAt);
+  });
 
   return out;
 }
@@ -1136,7 +1331,19 @@ function handleSyncDatabase_(env, body) {
   if (body && body.pushChanges && body.clientDb && typeof body.clientDb === 'object') {
     serverDb = mergeSyncDatabases_(serverDb, body.clientDb);
     var shouldSyncSheet = Boolean(serverDb._usersChanged);
+    var recordsToPurge = Array.isArray(serverDb._recordsToPurgeOnDrive) ? serverDb._recordsToPurgeOnDrive : [];
     delete serverDb._usersChanged;
+    delete serverDb._recordsToPurgeOnDrive;
+
+    if (recordsToPurge.length > 0) {
+      deleteRecordsFromSheetAndDrive_(env, recordsToPurge);
+      recordsToPurge.forEach(function(sp) {
+        if (sp && sp.id && serverDb.deletedRecordsMap && serverDb.deletedRecordsMap[sp.id]) {
+          serverDb.deletedRecordsMap[sp.id].drivePurged = true;
+        }
+      });
+    }
+
     saveSyncDb_(env, serverDb);
     if (shouldSyncSheet) {
       syncUsersToSpreadsheetTab_(env.usersSheet, serverDb.users);
@@ -1146,8 +1353,9 @@ function handleSyncDatabase_(env, body) {
 
   return {
     ok: true,
-    version: 2,
+    version: 3,
     syncDatabaseReady: true,
+    deleteRecordReady: true,
     pushed: pushed,
     rootFolderUrl: env.rootFolder.getUrl(),
     spreadsheetUrl: env.ss.getUrl(),

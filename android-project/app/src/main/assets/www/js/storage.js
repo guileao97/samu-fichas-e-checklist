@@ -10,6 +10,7 @@
   const LS_SETTINGS = 'samu_settings_v1';
   const LS_USERS = 'samu_users_cache_v1';
   const LS_DELETED_USERS = 'samu_deleted_users_v1';
+  const LS_DELETED_RECORDS = 'samu_deleted_records_v1';
   const LS_HOSP_RECEIVERS = 'samu_hosp_receivers_v1';
   const LS_PATIENTS_DB = 'samu_patients_db_v1';
   const LS_GH_META = 'samu_github_meta_v1';
@@ -215,7 +216,7 @@
     try {
       const db = await openDB();
       if (!db || !db.objectStoreNames.contains('internal_kv')) return;
-      const keys = [LS_USERS, LS_DELETED_USERS, LS_HOSP_RECEIVERS, LS_MEDICOS_REGULADORES, LS_PATIENTS_DB, LS_SETTINGS, LS_LAST_KM, LS_CREW_TEAMS, LS_SHARED_FICHAS, LS_VIATURA_AVARIAS];
+      const keys = [LS_USERS, LS_DELETED_USERS, LS_DELETED_RECORDS, LS_HOSP_RECEIVERS, LS_MEDICOS_REGULADORES, LS_PATIENTS_DB, LS_SETTINGS, LS_LAST_KM, LS_CREW_TEAMS, LS_SHARED_FICHAS, LS_VIATURA_AVARIAS];
       await Promise.all(keys.map(k => new Promise((resolve) => {
         try {
           const cur = safeLS.getItem(k);
@@ -321,7 +322,10 @@
     return next;
   }
 
+  let localMutationSeq = 0;
+
   function markGitHubDirty() {
+    localMutationSeq += 1;
     setGitHubMeta({ dirty: true });
   }
 
@@ -734,6 +738,109 @@
       } catch (e) {}
     }
     return { ok: true };
+  }
+
+  async function changeOwnPassword(username, oldPassword, newPassword) {
+    const uname = String(username || '').trim().toLowerCase();
+    const oldP = String(oldPassword || '');
+    const newP = String(newPassword || '').trim();
+    if (!uname) throw new Error('Usuário inválido.');
+    if (!oldP) throw new Error('Informe a sua senha atual (antiga).');
+    if (newP.length < 3) throw new Error('A nova senha deve ter pelo menos 3 caracteres.');
+    if (newP === oldP) throw new Error('A nova senha deve ser diferente da senha antiga.');
+
+    if (navigator.onLine && hasGitHubConfigured()) {
+      try {
+        await syncInternalDbWithGitHub({ pushChanges: getGitHubMeta().dirty });
+      } catch (ePull) {}
+    }
+
+    const users = getLocalUsers();
+    const target = users.find(u => u.username.toLowerCase() === uname);
+    const sess = getSession();
+    const expectedOld = target ? String(target.password || '') : (sess && sess.username.toLowerCase() === uname ? String(sess.password || '') : '');
+    if (!target && (!sess || sess.username.toLowerCase() !== uname)) {
+      throw new Error('Usuário não encontrado na base interna.');
+    }
+    if (oldP !== expectedOld) {
+      throw new Error('A senha atual (antiga) informada está incorreta.');
+    }
+
+    const now = new Date().toISOString();
+    const baseObj = target || sess;
+    const updated = normalizeUserObj(Object.assign({}, baseObj, {
+      password: newP,
+      updatedAt: now
+    }));
+    upsertLocalUser(updated, false);
+
+    if (sess && sess.username && sess.username.toLowerCase() === uname) {
+      setSession(Object.assign({}, sess, { password: newP }));
+    }
+
+    let synced = false;
+    if (navigator.onLine && hasGitHubConfigured()) {
+      try {
+        const res = await syncInternalDbWithGitHub({ pushChanges: true });
+        synced = Boolean(res && res.pushed);
+      } catch (ePush) {}
+    }
+
+    return { ok: true, user: updated, synced };
+  }
+
+  async function adminResetUserPassword(targetUsername, newPassword, adminUser) {
+    const caller = adminUser || getSession();
+    if (!caller || !isUserAdmin(caller)) {
+      throw new Error('Apenas usuários ADM podem redefinir senhas da equipe.');
+    }
+    const uname = String(targetUsername || '').trim().toLowerCase();
+    const newP = String(newPassword || '').trim();
+    if (!uname) throw new Error('Usuário inválido.');
+    if (newP.length < 3) throw new Error('A nova senha deve ter pelo menos 3 caracteres.');
+
+    const users = getLocalUsers();
+    const target = users.find(u => u.username.toLowerCase() === uname);
+    if (!target) throw new Error('Profissional não encontrado na base interna.');
+
+    const now = new Date().toISOString();
+    const updated = normalizeUserObj(Object.assign({}, target, {
+      password: newP,
+      updatedAt: now
+    }));
+    upsertLocalUser(updated, false);
+
+    const sess = getSession();
+    if (sess && sess.username && sess.username.toLowerCase() === uname) {
+      setSession(Object.assign({}, sess, { password: newP }));
+    }
+
+    let synced = false;
+    if (navigator.onLine && hasGitHubConfigured()) {
+      try {
+        const res = await syncInternalDbWithGitHub({ pushChanges: true });
+        synced = Boolean(res && res.pushed);
+      } catch (ePush) {}
+    }
+
+    const settings = getSettings();
+    const curAuthPass = (sess && sess.username && sess.username.toLowerCase() === caller.username.toLowerCase())
+      ? sess.password
+      : caller.password;
+    if (navigator.onLine && settings.scriptUrl) {
+      try {
+        await apiPost({
+          action: 'saveUser',
+          authUser: caller.username,
+          authPass: curAuthPass,
+          authName: caller.name || caller.username,
+          authRole: getUserProfileChoice(caller),
+          userData: Object.assign({}, updated, { role: getUserProfileChoice(updated) })
+        });
+      } catch (eGs) {}
+    }
+
+    return { ok: true, user: updated, synced };
   }
 
   /* ===================== RECEBEDORES DO HOSPITAL (NOME + COREN/CRM SALVOS) ===================== */
@@ -1810,6 +1917,7 @@
       updatedAt: new Date().toISOString(),
       deletedUsersMap: delMap,
       deletedUsernames: Object.keys(delMap),
+      deletedRecordsMap: getDeletedRecordsMap(),
       users: getLocalUsers(),
       hospitalReceivers: getHospitalReceivers(),
       medicosReguladores: getMedicosReguladores(),
@@ -1820,9 +1928,123 @@
     };
   }
 
+  function normalizeDeletedRecordEntry(val, fallbackIso) {
+    if (!val) return null;
+    if (typeof val === 'string') {
+      return {
+        deletedAt: val,
+        driveFileId: '',
+        driveUrl: '',
+        deletedBy: '',
+        drivePurged: false
+      };
+    }
+    if (typeof val === 'object') {
+      return {
+        deletedAt: String(val.deletedAt || fallbackIso || new Date().toISOString()),
+        driveFileId: String(val.driveFileId || ''),
+        driveUrl: String(val.driveUrl || ''),
+        deletedBy: String(val.deletedBy || ''),
+        drivePurged: Boolean(val.drivePurged)
+      };
+    }
+    return null;
+  }
+
+  function getDeletedRecordsMap() {
+    try {
+      const raw = safeLS.getItem(LS_DELETED_RECORDS);
+      const parsed = raw ? JSON.parse(raw) : {};
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+      const out = {};
+      Object.keys(parsed).forEach(rid => {
+        const cleanRid = String(rid || '').trim();
+        if (!cleanRid) return;
+        const norm = normalizeDeletedRecordEntry(parsed[rid]);
+        if (norm) out[cleanRid] = norm;
+      });
+      return out;
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function setDeletedRecordsMap(mapObj) {
+    const pruned = pruneMapByTimestamp(mapObj || {}, 600, v => (v && v.deletedAt) || v || '');
+    saveInternalJson(LS_DELETED_RECORDS, pruned);
+    return pruned;
+  }
+
+  function cleanLocalSharedFichasForDeletedRecord(recordId, delIso) {
+    if (!recordId) return false;
+    const sharedMap = getSharedFichasMap();
+    const ts = String(delIso || new Date().toISOString());
+    let touched = false;
+    Object.keys(sharedMap).forEach(cid => {
+      const ws = ensureCrewWorkspaceShape(cid, sharedMap[cid]);
+      if (ws.draftRecords && ws.draftRecords[recordId]) {
+        delete ws.draftRecords[recordId];
+        ws.closedDraftIds[recordId] = ts;
+        ws.updatedAt = ts;
+        sharedMap[cid] = ws;
+        touched = true;
+      }
+      if (ws.currentFicha && ws.currentFicha.recordId === recordId) {
+        if (ws.currentFicha.sessionId) {
+          ws.closedSessions[ws.currentFicha.sessionId] = { closedAt: ts, reason: 'deleted_by_admin' };
+        }
+        ws.currentFicha = null;
+        ws.updatedAt = ts;
+        sharedMap[cid] = ws;
+        touched = true;
+      }
+    });
+    if (touched) {
+      setSharedFichasMap(sharedMap);
+    }
+    return touched;
+  }
+
   function mergeRemoteDatabaseIntoInternal(remote) {
     if (!remote || typeof remote !== 'object') return false;
     let changedLocal = false;
+
+    // 0. Mescla tombstones de Fichas e Check Lists excluídos pelo ADM
+    if (remote.deletedRecordsMap && typeof remote.deletedRecordsMap === 'object') {
+      const localDelRecs = getDeletedRecordsMap();
+      let delRecsChanged = false;
+      Object.keys(remote.deletedRecordsMap).forEach(rid => {
+        const cleanRid = String(rid || '').trim();
+        if (!cleanRid) return;
+        const rEntry = normalizeDeletedRecordEntry(remote.deletedRecordsMap[rid], remote.updatedAt);
+        if (!rEntry) return;
+        const lEntry = localDelRecs[cleanRid];
+        if (!lEntry) {
+          localDelRecs[cleanRid] = rEntry;
+          cleanLocalSharedFichasForDeletedRecord(cleanRid, rEntry.deletedAt);
+          delRecsChanged = true;
+        } else {
+          const newerTs = String(rEntry.deletedAt) > String(lEntry.deletedAt) ? rEntry.deletedAt : lEntry.deletedAt;
+          const nextPurged = Boolean(lEntry.drivePurged || rEntry.drivePurged);
+          if (newerTs !== lEntry.deletedAt || nextPurged !== Boolean(lEntry.drivePurged)) {
+            localDelRecs[cleanRid] = {
+              deletedAt: newerTs,
+              driveFileId: rEntry.driveFileId || lEntry.driveFileId || '',
+              driveUrl: rEntry.driveUrl || lEntry.driveUrl || '',
+              deletedBy: rEntry.deletedBy || lEntry.deletedBy || '',
+              drivePurged: nextPurged
+            };
+            delRecsChanged = true;
+          }
+          cleanLocalSharedFichasForDeletedRecord(cleanRid, newerTs);
+        }
+      });
+      if (delRecsChanged) {
+        setDeletedRecordsMap(localDelRecs);
+        changedLocal = true;
+      }
+      purgeDeletedRecordsFromLocalDb().catch(() => {});
+    }
 
     // 1. Mescla tombstones de usuários excluídos/recusados
     const localDel = getDeletedUsersMap();
@@ -2075,6 +2297,7 @@
       if (freshMe && freshMe.active) {
         setSession(Object.assign({}, sess, {
           name: freshMe.name,
+          password: freshMe.password || sess.password,
           role: freshMe.role,
           subRole: getUserSubRole(freshMe),
           isAdmin: isUserAdmin(freshMe),
@@ -2118,6 +2341,7 @@
 
     const runSync = async () => {
       const shouldPush = Boolean(opts.pushChanges || getGitHubMeta().dirty);
+      const seqBeforeReq = localMutationSeq;
 
       // 1. MOTOR PRINCIPAL (ZERO TOKEN): Sincronização em tempo real pelo Google Drive / Google Apps Script já configurado de fábrica!
       if (driveUrl) {
@@ -2139,10 +2363,12 @@
         }
         if (res.db && typeof res.db === 'object') {
           mergeRemoteDatabaseIntoInternal(res.db);
+          await purgeDeletedRecordsFromLocalDb();
           await syncAllCrewDraftsToLocalRecords();
         }
         const now = new Date().toISOString();
-        setGitHubMeta({ dirty: false, lastSyncAt: now, lastError: '' });
+        const stillDirty = (localMutationSeq > seqBeforeReq) || (!shouldPush && Boolean(getGitHubMeta().dirty));
+        setGitHubMeta({ dirty: stillDirty, lastSyncAt: now, lastError: '' });
         return {
           ok: true,
           backend: 'google_drive',
@@ -2725,7 +2951,7 @@
     });
   }
 
-  async function getAllRecordsLocal() {
+  async function getAllRecordsLocalRaw() {
     if (isNativeSqliteActive()) {
       try {
         const rawArr = window.AndroidBridge.dbGetAllRecordsJson();
@@ -2753,6 +2979,115 @@
       };
       req.onerror = () => reject(req.error);
     });
+  }
+
+  async function purgeDeletedRecordsFromLocalDb() {
+    const delMap = getDeletedRecordsMap();
+    const delIds = Object.keys(delMap);
+    if (!delIds.length) return 0;
+    const rawList = await getAllRecordsLocalRaw();
+    let removed = 0;
+    for (const rec of rawList) {
+      if (rec && rec.id && delMap[rec.id]) {
+        await deleteRecordLocal(rec.id, { fromRemoteMerge: true });
+        removed++;
+      }
+    }
+    return removed;
+  }
+
+  async function getAllRecordsLocal() {
+    const rawList = await getAllRecordsLocalRaw();
+    const delMap = getDeletedRecordsMap();
+    if (!Object.keys(delMap).length) return rawList;
+    const visible = [];
+    for (const rec of rawList) {
+      if (rec && rec.id && delMap[rec.id]) {
+        deleteRecordLocal(rec.id, { fromRemoteMerge: true }).catch(() => {});
+      } else {
+        visible.push(rec);
+      }
+    }
+    return visible;
+  }
+
+  async function adminDeleteRecordCompletely(recordId, adminUser) {
+    const caller = adminUser || getSession();
+    if (!caller || !isUserAdmin(caller)) {
+      throw new Error('Apenas usuários ADM podem apagar fichas e check lists definitivamente.');
+    }
+    const cleanId = String(recordId || '').trim();
+    if (!cleanId) {
+      throw new Error('ID do registro inválido.');
+    }
+
+    const existing = await getRecordById(cleanId);
+    const driveFileId = String((existing && existing.driveFileId) || '').trim();
+    const driveUrl = String((existing && existing.driveUrl) || '').trim();
+    const wasOnDrive = Boolean(driveFileId || driveUrl || (existing && existing.syncStatus === 'synced'));
+    const nowIso = new Date().toISOString();
+
+    const delMap = getDeletedRecordsMap();
+    delMap[cleanId] = {
+      deletedAt: nowIso,
+      driveFileId,
+      driveUrl,
+      deletedBy: caller.username,
+      drivePurged: !wasOnDrive
+    };
+    setDeletedRecordsMap(delMap);
+
+    cleanLocalSharedFichasForDeletedRecord(cleanId, nowIso);
+    await deleteRecordLocal(cleanId, { fromRemoteMerge: true });
+    markGitHubDirty();
+
+    let driveDeleted = !wasOnDrive;
+    let cloudSynced = false;
+    const curSettings = getSettings();
+
+    if (navigator.onLine && curSettings.scriptUrl) {
+      try {
+        const delRes = await apiPost({
+          action: 'deleteRecord',
+          authUser: caller.username,
+          authPass: caller.password,
+          authName: caller.name,
+          authRole: getUserProfileChoice(caller),
+          recordId: cleanId,
+          driveFileId,
+          driveUrl
+        }, curSettings.scriptUrl);
+        if (delRes && delRes.ok) {
+          driveDeleted = true;
+          cloudSynced = true;
+          const freshMap = getDeletedRecordsMap();
+          if (freshMap[cleanId]) {
+            freshMap[cleanId].drivePurged = true;
+            setDeletedRecordsMap(freshMap);
+          }
+        }
+      } catch (eDelApi) {}
+    }
+
+    if (navigator.onLine && hasGitHubConfigured()) {
+      try {
+        const syncRes = await syncInternalDbWithGitHub({ pushChanges: true });
+        if (syncRes && syncRes.pushed) {
+          cloudSynced = true;
+          const afterSyncMap = getDeletedRecordsMap();
+          if (afterSyncMap[cleanId] && afterSyncMap[cleanId].drivePurged) {
+            driveDeleted = true;
+          }
+        }
+      } catch (eSync) {}
+    }
+
+    return {
+      ok: true,
+      id: cleanId,
+      driveDeleted,
+      cloudSynced
+    };
   }
 
   async function getVisibleRecords(user) {
@@ -2897,6 +3232,7 @@
   }
 
   async function syncAllWithCloud() {
+    await purgeDeletedRecordsFromLocalDb();
     let ghResult = null;
     if (navigator.onLine && hasGitHubConfigured()) {
       try {
@@ -2910,8 +3246,38 @@
       return { ok: Boolean(ghResult && ghResult.ok), skippedDrive: true, github: ghResult, uploadedCount: 0 };
     }
 
+    // Se o ADM excluiu fichas/checklists enquanto estava offline, conclui a exclusão dos PDFs e linhas no Google Drive agora
+    const delRecMap = getDeletedRecordsMap();
+    if (isUserAdmin(sess)) {
+      let delMapUpdated = false;
+      for (const delId of Object.keys(delRecMap)) {
+        const entry = delRecMap[delId];
+        if (entry && !entry.drivePurged) {
+          try {
+            const delRes = await apiPost({
+              action: 'deleteRecord',
+              authUser: sess.username,
+              authPass: sess.password,
+              authName: sess.name || sess.username,
+              authRole: getUserProfileChoice(sess),
+              recordId: delId,
+              driveFileId: entry.driveFileId || '',
+              driveUrl: entry.driveUrl || ''
+            });
+            if (delRes && delRes.ok) {
+              delRecMap[delId].drivePurged = true;
+              delMapUpdated = true;
+            }
+          } catch (ePendDel) {}
+        }
+      }
+      if (delMapUpdated) {
+        setDeletedRecordsMap(delRecMap);
+      }
+    }
+
     const allLocal = await getAllRecordsLocal();
-    const pendingList = allLocal.filter(r => r.syncStatus === 'pending' && (isUserAdmin(sess) || String(r.createdBy || '').toLowerCase() === sess.username.toLowerCase()));
+    const pendingList = allLocal.filter(r => !delRecMap[r.id] && r.syncStatus === 'pending' && (isUserAdmin(sess) || String(r.createdBy || '').toLowerCase() === sess.username.toLowerCase()));
     let uploadedCount = 0;
 
     for (const item of pendingList) {
@@ -2942,7 +3308,9 @@
           spreadsheetUrl: histRes.spreadsheetUrl || settings.spreadsheetUrl
         });
       }
+      const latestDelMap = getDeletedRecordsMap();
       for (const remoteRec of histRes.records) {
+        if (!remoteRec || !remoteRec.id || latestDelMap[remoteRec.id]) continue;
         const existing = await getRecordById(remoteRec.id);
         if (!existing || (existing.syncStatus !== 'pending' && existing.syncStatus !== 'draft')) {
           await saveRecordLocal(remoteRec);
@@ -3125,6 +3493,8 @@
     registerUserRequest,
     approveUser,
     rejectUser,
+    changeOwnPassword,
+    adminResetUserPassword,
     validateCrewSelection,
     getActiveCrewForUser,
     setActiveCrewForUsers,
@@ -3156,6 +3526,8 @@
     saveRecordLocal,
     getRecordById,
     deleteRecordLocal,
+    getDeletedRecordsMap,
+    adminDeleteRecordCompletely,
     getAllRecordsLocal,
     getVisibleRecords,
     saveDraft,

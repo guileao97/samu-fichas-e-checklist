@@ -115,6 +115,7 @@
         <button type="button" class="sync-pill" id="btn-sync-status" title="Sincronizar com Google Drive">
           <span id="sync-status-text">Offline</span>
         </button>
+        <button type="button" class="btn-logout btn-pass-top" id="btn-change-pass" title="Trocar minha senha">🔑 Senha</button>
         <button type="button" class="btn-logout" id="btn-logout">Sair</button>
       </div>
     </header>
@@ -137,6 +138,7 @@
           <button type="button" class="btn btn-success btn-sm" id="btn-preview-drive">☁️ Enviar p/ Drive</button>
           <button type="button" class="btn btn-orange btn-sm" id="btn-preview-share">📤 Salvar / WhatsApp PDF</button>
           <button type="button" class="btn btn-primary btn-sm" id="btn-preview-print">🖨️ Imprimir</button>
+          <button type="button" class="btn btn-danger-outline btn-sm hidden" id="btn-preview-delete-admin">🗑️ Excluir do App e Drive</button>
           <button type="button" class="btn btn-secondary btn-sm" id="btn-preview-close">Fechar</button>
         </div>
       </div>
@@ -166,6 +168,11 @@
   <!-- MODAL DE SELEÇÃO DA EQUIPE DO PLANTÃO (ATÉ 3 INTEGRANTES + SINCRONIZAÇÃO DE FICHAS) -->
   <div id="crew-modal" class="sig-modal hidden" style="z-index: 165;">
     <div class="crew-modal-card" id="crew-modal-body"></div>
+  </div>
+
+  <!-- MODAL DE TROCA DE SENHA (PRÓPRIO FUNCIONÁRIO OU REDEFINIÇÃO PELO ADM) -->
+  <div id="password-modal" class="sig-modal hidden" style="z-index: 170;">
+    <div class="crew-modal-card" id="password-modal-body"></div>
   </div>
 
   <script src="js/assets.js"></script>

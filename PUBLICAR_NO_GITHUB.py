@@ -169,12 +169,14 @@ def verify_and_embed_drive_script_url(interactive=True):
         if script_url:
             print(f"☁️ Verificando conexão com Google Drive ({script_url[:62]}...)...")
             ok, info = ping_drive_script(script_url)
-            if ok and info.get("syncDatabaseReady") is True:
+            if ok and info.get("syncDatabaseReady") is True and info.get("deleteRecordReady") is True:
                 write_embedded_drive_url(script_url)
-                print("✅ Google Drive v2 confirmado (Sincronização em Tempo Real + Link Direto dos PDFs ativos)!")
+                print("✅ Google Drive v3 confirmado (Sync Tempo Real + Link Direto PDF + Exclusão Completa ADM)!")
                 return script_url
+            elif ok and info.get("syncDatabaseReady") is True:
+                reason = "O Google Apps Script está na Versão 2 e precisa ser atualizado p/ Versão 3 (habilita o ADM a apagar PDFs e registros direto do Google Drive)."
             elif ok:
-                reason = "O script no Google Drive respondeu, mas ainda está na Versão 1 (anterior à sincronização em tempo real e liberação de links de PDF)."
+                reason = "O script no Google Drive respondeu, mas ainda está na Versão 1 (anterior à sincronização em tempo real e exclusão no Drive)."
             else:
                 reason = f"Não foi possível validar a URL atual ({info.get('error', 'resposta inválida')})."
         else:

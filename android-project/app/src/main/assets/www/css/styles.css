@@ -196,16 +196,32 @@ html, body {
   cursor: pointer;
 }
 
-@media (max-width: 520px) {
-  .topbar { padding: 9px 10px; gap: 6px; }
-  .topbar-actions { gap: 5px; }
-  .sync-pill { padding: 5px 8px; font-size: 0.72rem; }
-  .btn-logout { padding: 5px 8px; font-size: 0.75rem; }
+.btn-pass-top {
+  background: rgba(255, 255, 255, 0.16);
 }
-body.sim-phone-mode .topbar { padding: 9px 10px; gap: 6px; }
-body.sim-phone-mode .topbar-actions { gap: 5px; }
+
+.pw-pill {
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fde68a;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-weight: 800;
+  font-size: 0.8rem;
+}
+
+@media (max-width: 520px) {
+  .topbar { padding: 8px 10px; gap: 6px; flex-wrap: wrap; }
+  .topbar-brand { flex: 1 1 135px; }
+  .topbar-actions { gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
+  .sync-pill { padding: 5px 8px; font-size: 0.72rem; }
+  .btn-logout { padding: 5px 8px; font-size: 0.74rem; }
+}
+body.sim-phone-mode .topbar { padding: 8px 10px; gap: 6px; flex-wrap: wrap; }
+body.sim-phone-mode .topbar-brand { flex: 1 1 135px; }
+body.sim-phone-mode .topbar-actions { gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
 body.sim-phone-mode .sync-pill { padding: 5px 8px; font-size: 0.72rem; }
-body.sim-phone-mode .btn-logout { padding: 5px 8px; font-size: 0.75rem; }
+body.sim-phone-mode .btn-logout { padding: 5px 8px; font-size: 0.74rem; }
 
 /* ===================== NAVEGAÇÃO INFERIOR ===================== */
 .bottom-nav {
@@ -425,6 +441,8 @@ body.sim-phone-mode .field-full-phone {
 .btn-success { background: var(--success); color: #ffffff; }
 .btn-secondary { background: #e2e8f0; color: #1e293b; }
 .btn-outline { background: #ffffff; color: var(--text); border: 1.5px solid var(--border); }
+.btn-danger-outline { background: #fef2f2; color: #b91c1c; border: 1.5px solid #fca5a5; }
+.btn-danger-outline:hover { background: #fee2e2; border-color: #f87171; }
 
 /* ===================== NAVEGAÇÃO POR ETAPAS DA FICHA (ROLAGEM HORIZONTAL) ===================== */
 .step-pills-bar {
