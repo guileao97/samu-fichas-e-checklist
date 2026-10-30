@@ -39,6 +39,11 @@
   let alergiaFilterQuery = '';
   let openSelectBoxKey = '';
   let cachedDraftCount = 0;
+  let adminCatalogTab = 'patients';
+  let adminCatalogSearch = '';
+  let pendingCpfSuggestion = null;
+  let cpfAutoFilledFromSaved = '';
+  let cpfSuggestionDismissedFor = '';
 
   // Estado do modal de visualização de PDF e Foto p/ Regulação Médica
   let previewCurrentRecord = null;
@@ -265,6 +270,7 @@
       vitimaCpf: '',
       vitimaRg: '',
       vitimaCns: '',
+      _cpfAutoFilled: '',
 
       horarios: {
         horaChamado: '',
@@ -1049,6 +1055,21 @@
         samuAlert('Configure primeiro a URL do Google Apps Script (na aba ⚙️ Base/Drive) para enviar direto ao Google Drive.');
         return;
       }
+      if (previewCurrentRecord.type === 'ficha' && previewCurrentRecord.data && !previewCurrentRecord._patientCheckedOnSend) {
+        const patCheck = await handlePatientCadastroOnFichaSend(previewCurrentRecord.data);
+        if (!patCheck.proceed) {
+          if (patCheck.action === 'cancel') {
+            const prevModal = document.getElementById('pdf-preview-modal');
+            if (prevModal) prevModal.classList.add('hidden');
+            if (activeTab === 'ficha') {
+              fichaStep = 2;
+              renderFichaView();
+            }
+          }
+          return;
+        }
+        previewCurrentRecord._patientCheckedOnSend = true;
+      }
       const btn = document.getElementById('btn-preview-drive');
       btn.disabled = true;
       btn.textContent = 'Enviando...';
@@ -1337,7 +1358,13 @@
   }
 
   function resetFichaSyncTracking(stateObj, sessionId, existingFieldTs, isLoadedRecord) {
-    currentCrewSessionId = sessionId || (editingFichaId ? ('sf_rec_' + editingFichaId) : uid('sf'));
+    const nextSessionId = sessionId || (editingFichaId ? ('sf_rec_' + editingFichaId) : uid('sf'));
+    if (nextSessionId !== currentCrewSessionId) {
+      pendingCpfSuggestion = null;
+      cpfSuggestionDismissedFor = '';
+      cpfAutoFilledFromSaved = (stateObj && stateObj._cpfAutoFilled) ? String(stateObj._cpfAutoFilled) : '';
+    }
+    currentCrewSessionId = nextSessionId;
     currentCrewIsLoadedRecord = Boolean(isLoadedRecord);
     currentFichaFieldTs = Object.assign({}, (existingFieldTs && typeof existingFieldTs === 'object') ? existingFieldTs : {});
     lastSyncedFichaSnapshot = JSON.parse(JSON.stringify(stateObj || {}));
@@ -2059,6 +2086,1155 @@
         newInp.select();
       }
     }, 60);
+  }
+
+  /* ===================== EDIÇÃO E EXCLUSÃO DE MÉDICOS REGULADORES, RECEBEDORES E PACIENTES ===================== */
+  function ensureCatalogModal() {
+    let modal = document.getElementById('catalog-edit-modal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'catalog-edit-modal';
+      modal.className = 'sig-modal hidden';
+      modal.style.zIndex = '175';
+      modal.innerHTML = '<div class="crew-modal-card" id="catalog-edit-modal-body" style="max-width:560px; max-height:92vh; overflow-y:auto;"></div>';
+      document.body.appendChild(modal);
+    }
+    return {
+      modal,
+      body: document.getElementById('catalog-edit-modal-body')
+    };
+  }
+
+  function openEditMedicoReguladorModal(medId, onDone) {
+    const list = window.SamuStorage.getMedicosReguladores ? window.SamuStorage.getMedicosReguladores() : [];
+    const existing = medId ? list.find(m => m.id === medId) : null;
+    const { modal, body } = ensureCatalogModal();
+    if (!modal || !body) return;
+
+    body.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:10px;">
+        <div>
+          <h3 style="margin:0; font-size:1.05rem; color:var(--navy);">👨‍⚕️ ${existing ? 'Editar Médico Regulador' : 'Novo Médico Regulador'}</h3>
+          <div style="font-size:0.79rem; color:var(--muted); margin-top:2px;">
+            Fica salvo na lista rápida de todas as fichas e sincroniza no Google Drive
+          </div>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-cat-med-close" style="padding:4px 10px;">✖</button>
+      </div>
+      <form id="form-cat-medico" autocomplete="off">
+        <div class="field">
+          <label>No&#8204;me / CRM do Médico Regulador</label>
+          <input type="text" id="cat-med-ident" autocomplete="off" value="${escapeHtml(existing ? existing.nome : '')}" placeholder="Ex: Dr. Carlos Eduardo - CRM 124500" required />
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:12px;">
+          <button type="submit" class="btn btn-success" style="flex:1;">💾 Salvar</button>
+          ${existing ? `<button type="button" class="btn btn-danger-outline" id="btn-cat-med-del">🗑️ Excluir</button>` : ''}
+          <button type="button" class="btn btn-secondary" id="btn-cat-med-cancel">Cancelar</button>
+        </div>
+      </form>
+    `;
+
+    const closeModal = () => modal.classList.add('hidden');
+    document.getElementById('btn-cat-med-close').onclick = closeModal;
+    document.getElementById('btn-cat-med-cancel').onclick = closeModal;
+
+    const inp = document.getElementById('cat-med-ident');
+    document.getElementById('form-cat-medico').addEventListener('submit', (e) => {
+      e.preventDefault();
+      try {
+        const oldNameLow = existing ? String(existing.nome || '').trim().toLowerCase() : '';
+        const saved = window.SamuStorage.editMedicoRegulador(existing ? existing.id : '', inp.value);
+        if (fichaState && oldNameLow) {
+          const curVal = String(fichaState.medicoRegulador || '').trim();
+          const curLow = curVal.toLowerCase();
+          if (curLow === oldNameLow) {
+            fichaState.medicoRegulador = saved.nome;
+            persistFichaDraft({ immediate: true });
+          } else if (curLow.startsWith(oldNameLow + ' ') || curLow.startsWith(oldNameLow + '/') || curLow.startsWith(oldNameLow + '-')) {
+            fichaState.medicoRegulador = saved.nome + curVal.slice(existing.nome.length);
+            persistFichaDraft({ immediate: true });
+          }
+        }
+        closeModal();
+        if (typeof onDone === 'function') onDone(saved);
+        showToast(`✅ Médico Regulador "${saved.nome}" salvo e sincronizado!`);
+      } catch (err) {
+        samuAlert(err.message || 'Não foi possível salvar o Médico Regulador.');
+      }
+    });
+
+    const delBtn = document.getElementById('btn-cat-med-del');
+    if (delBtn && existing) {
+      delBtn.addEventListener('click', async () => {
+        if (!(await samuConfirm(`Excluir permanentemente "${existing.nome}" da lista de Médicos Reguladores em todos os aparelhos?`))) return;
+        window.SamuStorage.deleteMedicoRegulador(existing.id);
+        closeModal();
+        if (typeof onDone === 'function') onDone(null);
+        showToast(`🗑️ "${existing.nome}" excluído da lista e sincronizado!`);
+      });
+    }
+
+    modal.classList.remove('hidden');
+    setTimeout(() => { if (inp) { inp.focus(); inp.select(); } }, 60);
+  }
+
+  function openEditHospitalReceiverModal(recId, onDone) {
+    const list = window.SamuStorage.getHospitalReceivers ? window.SamuStorage.getHospitalReceivers() : [];
+    const existing = recId ? list.find(r => r.id === recId) : null;
+    const defHosp = (window.SamuStorage.getSettings().defaultHospital || 'HBSA').trim() || 'HBSA';
+    const { modal, body } = ensureCatalogModal();
+    if (!modal || !body) return;
+
+    body.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:10px;">
+        <div>
+          <h3 style="margin:0; font-size:1.05rem; color:var(--navy);">🏥 ${existing ? 'Editar Recebedor do Hospital' : 'Novo Recebedor do Hospital'}</h3>
+          <div style="font-size:0.79rem; color:var(--muted); margin-top:2px;">
+            Profissional que recebe o paciente no hospital (Nome + COREN/CRM)
+          </div>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-cat-rec-close" style="padding:4px 10px;">✖</button>
+      </div>
+      <form id="form-cat-receiver" autocomplete="off">
+        <div class="field">
+          <label>No&#8204;me do Profissional (Hospital)</label>
+          <input type="text" id="cat-rec-prof" autocomplete="off" value="${escapeHtml(existing ? existing.nome : '')}" placeholder="Ex: Enf. Patrícia Souza" required />
+        </div>
+        <div class="grid-2">
+          <div class="field">
+            <label>COREN / CRM</label>
+            <input type="text" id="cat-rec-reg" autocomplete="off" value="${escapeHtml(existing ? (existing.corenCrm || '') : '')}" placeholder="Ex: COREN-SP 412.900" />
+          </div>
+          <div class="field">
+            <label>Hospital / Unidade</label>
+            <input type="text" id="cat-rec-hosp" autocomplete="off" value="${escapeHtml(existing ? (existing.hospital || defHosp) : defHosp)}" placeholder="${escapeHtml(defHosp)}" />
+          </div>
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:12px;">
+          <button type="submit" class="btn btn-success" style="flex:1;">💾 Salvar</button>
+          ${existing ? `<button type="button" class="btn btn-danger-outline" id="btn-cat-rec-del">🗑️ Excluir</button>` : ''}
+          <button type="button" class="btn btn-secondary" id="btn-cat-rec-cancel">Cancelar</button>
+        </div>
+      </form>
+    `;
+
+    const closeModal = () => modal.classList.add('hidden');
+    document.getElementById('btn-cat-rec-close').onclick = closeModal;
+    document.getElementById('btn-cat-rec-cancel').onclick = closeModal;
+
+    const inpNome = document.getElementById('cat-rec-prof');
+    const inpReg = document.getElementById('cat-rec-reg');
+    const inpHosp = document.getElementById('cat-rec-hosp');
+
+    document.getElementById('form-cat-receiver').addEventListener('submit', (e) => {
+      e.preventDefault();
+      try {
+        const oldNameLow = existing ? String(existing.nome || '').trim().toLowerCase() : '';
+        const saved = window.SamuStorage.editHospitalReceiver(existing ? existing.id : '', {
+          nome: inpNome.value,
+          corenCrm: inpReg.value,
+          hospital: inpHosp.value || defHosp
+        });
+        if (fichaState && oldNameLow && String(fichaState.recebidoPorNome || '').trim().toLowerCase() === oldNameLow) {
+          fichaState.recebidoPorNome = saved.nome;
+          fichaState.recebidoCorenCrm = saved.corenCrm || '';
+          persistFichaDraft({ immediate: true });
+        }
+        closeModal();
+        if (typeof onDone === 'function') onDone(saved);
+        showToast(`✅ Recebedor "${saved.nome}" salvo e sincronizado!`);
+      } catch (err) {
+        samuAlert(err.message || 'Não foi possível salvar o profissional do hospital.');
+      }
+    });
+
+    const delBtn = document.getElementById('btn-cat-rec-del');
+    if (delBtn && existing) {
+      delBtn.addEventListener('click', async () => {
+        if (!(await samuConfirm(`Excluir permanentemente "${existing.nome}" da lista rápida do hospital em todos os aparelhos?`))) return;
+        window.SamuStorage.deleteHospitalReceiver(existing.id);
+        closeModal();
+        if (typeof onDone === 'function') onDone(null);
+        showToast(`🗑️ "${existing.nome}" excluído da lista do hospital e sincronizado!`);
+      });
+    }
+
+    modal.classList.remove('hidden');
+    setTimeout(() => { if (inpNome) { inpNome.focus(); inpNome.select(); } }, 60);
+  }
+
+  function applySavedPatientToCurrentFicha(savedPatient) {
+    if (!fichaState || !savedPatient) return;
+    const savedDigits = String(savedPatient.vitimaCpf || '').replace(/\D+/g, '');
+    const curDigits = String(fichaState.vitimaCpf || '').replace(/\D+/g, '');
+    if (!savedDigits || savedDigits !== curDigits) return;
+    fichaState.vitimaNome = savedPatient.vitimaNome || '';
+    fichaState.vitimaCpf = savedPatient.vitimaCpf || fichaState.vitimaCpf;
+    fichaState.vitimaRg = savedPatient.vitimaRg || '';
+    fichaState.vitimaCns = savedPatient.vitimaCns || '';
+    fichaState.vitimaDn = savedPatient.vitimaDn || '';
+    fichaState.vitimaIdade = savedPatient.vitimaIdade || '';
+    fichaState.vitimaCep = savedPatient.vitimaCep || '';
+    fichaState.vitimaCidade = savedPatient.vitimaCidade || 'Orlândia';
+    fichaState.vitimaBairro = savedPatient.vitimaBairro || '';
+    fichaState.vitimaEndereco = savedPatient.vitimaEndereco || '';
+    fichaState.vitimaNumero = savedPatient.vitimaNumero || '';
+    fichaState.vitimaNaturalidade = savedPatient.vitimaNaturalidade || '';
+    fichaState.vitimaPai = savedPatient.vitimaPai || '';
+    fichaState.vitimaMae = savedPatient.vitimaMae || '';
+    fichaState._cpfAutoFilled = savedDigits;
+    cpfAutoFilledFromSaved = savedDigits;
+    persistFichaDraft({ immediate: true });
+  }
+
+  function openEditPatientCadastroModal(rawCpf, onDone, fallbackSource) {
+    const origCpf11 = String(rawCpf || '').replace(/\D+/g, '');
+    const patMap = window.SamuStorage.getInternalPatientsMap ? window.SamuStorage.getInternalPatientsMap() : {};
+    const existing = (origCpf11.length === 11 && patMap[origCpf11]) ? patMap[origCpf11] : null;
+    const seed = existing || fallbackSource || {};
+    const { modal, body } = ensureCatalogModal();
+    if (!modal || !body) return;
+
+    const initCpf = existing
+      ? (existing.vitimaCpf || window.SamuStorage.formatCpf(origCpf11))
+      : (origCpf11.length === 11 ? window.SamuStorage.formatCpf(origCpf11) : (seed.vitimaCpf || ''));
+
+    body.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:10px;">
+        <div>
+          <h3 style="margin:0; font-size:1.05rem; color:var(--navy);">🪪 ${existing ? 'Editar Pré-Cadastro do Paciente' : 'Novo Pré-Cadastro de Paciente (CPF)'}</h3>
+          <div style="font-size:0.79rem; color:var(--muted); margin-top:2px;">
+            Edite endere&#8204;ço residencial, documentos ou exclua o pré-cadastro salvo na base SAMU
+          </div>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-cat-pat-close" style="padding:4px 10px;">✖</button>
+      </div>
+      <form id="form-cat-patient" autocomplete="off">
+        <div class="grid-2">
+          <div class="field">
+            <label>C&#8204;PF do Paciente</label>
+            <input type="text" inputmode="numeric" id="cat-pat-doc1" autocomplete="off" value="${escapeHtml(initCpf)}" placeholder="000.000&#8204;.000-00" required />
+          </div>
+          <div class="field">
+            <label>Data de Nascimento (DN)</label>
+            <input type="date" id="cat-pat-nasc" autocomplete="off" value="${escapeHtml(seed.vitimaDn || '')}" />
+          </div>
+        </div>
+        <div class="field">
+          <label>No&#8204;me Completo do Paciente</label>
+          <input type="text" id="cat-pat-ident" autocomplete="off" value="${escapeHtml(seed.vitimaNome || '')}" placeholder="No&#8204;me completo" required />
+        </div>
+        <div class="grid-3">
+          <div class="field">
+            <label>Idade</label>
+            <input type="text" id="cat-pat-anos" autocomplete="off" value="${escapeHtml(seed.vitimaIdade || '')}" placeholder="Ex: 54 anos" />
+          </div>
+          <div class="field">
+            <label>R&#8204;G</label>
+            <input type="text" id="cat-pat-doc2" autocomplete="off" value="${escapeHtml(seed.vitimaRg || '')}" placeholder="R&#8204;G" />
+          </div>
+          <div class="field">
+            <label>Cartão SUS (CNS)</label>
+            <input type="text" inputmode="numeric" id="cat-pat-doc3" autocomplete="off" value="${escapeHtml(seed.vitimaCns || '')}" placeholder="CNS" />
+          </div>
+        </div>
+
+        <div class="section-subtitle" style="margin-top:8px;">Endere&#8204;ço Residencial Pré-Cadastrado</div>
+        <div class="grid-2">
+          <div class="field">
+            <label>C&#8204;EP Residencial</label>
+            <div class="input-action-row">
+              <input type="text" inputmode="numeric" id="cat-pat-cod" autocomplete="off" value="${escapeHtml(seed.vitimaCep !== undefined ? seed.vitimaCep : '14620-000')}" placeholder="00000&#8204;-000" />
+              <button type="button" class="btn-lookup" id="btn-cat-pat-cep">🔍 C&#8204;EP</button>
+            </div>
+          </div>
+          <div class="field">
+            <label>Cida&#8204;de</label>
+            <input type="text" id="cat-pat-mun" autocomplete="off" value="${escapeHtml(seed.vitimaCidade !== undefined ? seed.vitimaCidade : 'Orlândia')}" placeholder="Orlândia" />
+          </div>
+        </div>
+        <div class="grid-cep-addr">
+          <div class="field field-full-phone">
+            <label>Bair&#8204;ro</label>
+            <input type="text" id="cat-pat-area" autocomplete="off" value="${escapeHtml(seed.vitimaBairro || '')}" placeholder="Bair&#8204;ro" />
+          </div>
+          <div class="field">
+            <label>Endere&#8204;ço (R&#8204;ua / Av.)</label>
+            <input type="text" id="cat-pat-loc1" autocomplete="off" value="${escapeHtml(seed.vitimaEndereco || '')}" placeholder="R&#8204;ua / Aveni&#8204;da" />
+          </div>
+          <div class="field">
+            <label>Núme&#8204;ro</label>
+            <input type="text" id="cat-pat-loc2" autocomplete="off" value="${escapeHtml(seed.vitimaNumero || '')}" placeholder="N&#8204;º" />
+          </div>
+        </div>
+
+        <div class="grid-3">
+          <div class="field">
+            <label>Naturalidade</label>
+            <input type="text" id="cat-pat-orig" autocomplete="off" value="${escapeHtml(seed.vitimaNaturalidade || '')}" placeholder="Naturalidade" />
+          </div>
+          <div class="field">
+            <label>No&#8204;me do Pai</label>
+            <input type="text" id="cat-pat-fil1" autocomplete="off" value="${escapeHtml(seed.vitimaPai || '')}" placeholder="Opcional" />
+          </div>
+          <div class="field">
+            <label>No&#8204;me da Mãe</label>
+            <input type="text" id="cat-pat-fil2" autocomplete="off" value="${escapeHtml(seed.vitimaMae || '')}" placeholder="Opcional" />
+          </div>
+        </div>
+
+        ${existing ? `
+          <label style="display:flex; align-items:center; gap:8px; margin-top:6px; font-size:0.8rem; font-weight:700; color:#475569; cursor:pointer;">
+            <input type="checkbox" id="cat-pat-clear-clin" style="width:16px; height:16px;" />
+            <span>Limpar também Antecedentes, Medicamentos e Alergias salvos neste C&#8204;PF</span>
+          </label>
+        ` : ''}
+
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:14px;">
+          <button type="submit" class="btn btn-success" style="flex:1;">💾 Salvar Pré-Cadastro</button>
+          ${existing ? `<button type="button" class="btn btn-danger-outline" id="btn-cat-pat-del">🗑️ Excluir Pré-Cadastro</button>` : ''}
+          <button type="button" class="btn btn-secondary" id="btn-cat-pat-cancel">Cancelar</button>
+        </div>
+      </form>
+    `;
+
+    const closeModal = () => modal.classList.add('hidden');
+    document.getElementById('btn-cat-pat-close').onclick = closeModal;
+    document.getElementById('btn-cat-pat-cancel').onclick = closeModal;
+
+    const cpfInp = document.getElementById('cat-pat-doc1');
+    const dnInp = document.getElementById('cat-pat-nasc');
+    const ageInp = document.getElementById('cat-pat-anos');
+    const cepInp = document.getElementById('cat-pat-cod');
+    const cepBtn = document.getElementById('btn-cat-pat-cep');
+
+    cpfInp.addEventListener('input', () => {
+      cpfInp.value = window.SamuStorage.formatCpf(cpfInp.value);
+    });
+    dnInp.addEventListener('input', () => {
+      const calc = calcAgeFromDn(dnInp.value);
+      if (calc) ageInp.value = calc;
+    });
+    cepInp.addEventListener('input', () => {
+      cepInp.value = formatCep(cepInp.value);
+    });
+    cepBtn.addEventListener('click', async () => {
+      const d8 = String(cepInp.value || '').replace(/\D+/g, '');
+      if (d8.length !== 8) {
+        samuAlert('Digite os 8 números do CEP.');
+        return;
+      }
+      cepBtn.disabled = true;
+      cepBtn.textContent = '⏳...';
+      try {
+        const res = await window.SamuStorage.lookupCepOnline(d8);
+        cepInp.value = res.cep || cepInp.value;
+        if (res.cidade) document.getElementById('cat-pat-mun').value = res.cidade;
+        if (res.bairro) document.getElementById('cat-pat-area').value = res.bairro;
+        if (res.endereco) document.getElementById('cat-pat-loc1').value = res.endereco;
+        document.getElementById('cat-pat-loc2').focus();
+      } catch (err) {
+        samuAlert(err.message || 'Não foi possível consultar o CEP online.');
+      } finally {
+        cepBtn.disabled = false;
+        cepBtn.textContent = '🔍 CEP';
+      }
+    });
+
+    document.getElementById('form-cat-patient').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const newDigits = String(cpfInp.value || '').replace(/\D+/g, '');
+      if (newDigits.length !== 11) {
+        samuAlert('Digite os 11 números do CPF do paciente.');
+        cpfInp.focus();
+        return;
+      }
+      if (!window.SamuStorage.isValidCpf(newDigits)) {
+        samuAlert('O CPF informado possui dígito verificador inválido. Confira os números.');
+        cpfInp.focus();
+        return;
+      }
+      try {
+        if (existing && origCpf11 && origCpf11 !== newDigits) {
+          window.SamuStorage.deletePatientFromInternalDb(origCpf11);
+        }
+        const clearClinEl = document.getElementById('cat-pat-clear-clin');
+        const saved = window.SamuStorage.saveEditedPatientInInternalDb(newDigits, {
+          vitimaCpf: newDigits,
+          vitimaNome: document.getElementById('cat-pat-ident').value,
+          vitimaDn: dnInp.value,
+          vitimaIdade: ageInp.value,
+          vitimaRg: document.getElementById('cat-pat-doc2').value,
+          vitimaCns: document.getElementById('cat-pat-doc3').value,
+          vitimaCep: cepInp.value,
+          vitimaCidade: document.getElementById('cat-pat-mun').value,
+          vitimaBairro: document.getElementById('cat-pat-area').value,
+          vitimaEndereco: document.getElementById('cat-pat-loc1').value,
+          vitimaNumero: document.getElementById('cat-pat-loc2').value,
+          vitimaNaturalidade: document.getElementById('cat-pat-orig').value,
+          vitimaPai: document.getElementById('cat-pat-fil1').value,
+          vitimaMae: document.getElementById('cat-pat-fil2').value,
+          clearClinicalHistory: Boolean(clearClinEl && clearClinEl.checked)
+        });
+        if (fichaState) {
+          const curFichaCpf = String(fichaState.vitimaCpf || '').replace(/\D+/g, '');
+          if (curFichaCpf === origCpf11 || curFichaCpf === newDigits) {
+            fichaState.vitimaCpf = saved.vitimaCpf;
+            applySavedPatientToCurrentFicha(saved);
+          }
+        }
+        closeModal();
+        if (typeof onDone === 'function') onDone(saved);
+        showToast(`✅ Pré-cadastro de "${saved.vitimaNome}" salvo e sincronizado!`);
+      } catch (err) {
+        samuAlert(err.message || 'Erro ao salvar pré-cadastro do paciente.');
+      }
+    });
+
+    const delBtn = document.getElementById('btn-cat-pat-del');
+    if (delBtn && existing) {
+      delBtn.addEventListener('click', async () => {
+        if (!(await samuConfirm(`Excluir permanentemente o pré-cadastro de "${existing.vitimaNome}" (CPF ${existing.vitimaCpf || origCpf11}) da base interna e do Google Drive?`))) return;
+        window.SamuStorage.deletePatientFromInternalDb(origCpf11);
+        closeModal();
+        if (typeof onDone === 'function') onDone(null);
+        showToast(`🗑️ Pré-cadastro de "${existing.vitimaNome}" excluído e sincronizado!`);
+      });
+    }
+
+    modal.classList.remove('hidden');
+    setTimeout(() => {
+      const focusEl = document.getElementById(existing ? 'cat-pat-loc1' : 'cat-pat-doc1');
+      if (focusEl) focusEl.focus();
+    }, 60);
+  }
+
+  /* ===================== SUGESTÃO DE PREENCHIMENTO PELO CPF E CONFIRMAÇÃO DE ATUALIZAÇÃO AO ENVIAR ===================== */
+  const PATIENT_PERSONAL_FIELD_DEFS = [
+    { key: 'vitimaNome', label: 'Nome Completo', domId: 'f-vit-ident' },
+    { key: 'vitimaDn', label: 'Data de Nascimento (DN)', domId: 'f-vit-nasc', isDate: true },
+    { key: 'vitimaIdade', label: 'Idade', domId: 'f-vit-anos' },
+    { key: 'vitimaRg', label: 'RG', domId: 'f-vit-doc2' },
+    { key: 'vitimaCns', label: 'Cartão SUS (CNS)', domId: 'f-vit-doc3' },
+    { key: 'vitimaCep', label: 'CEP Residencial', domId: 'f-vit-cod', isCep: true },
+    { key: 'vitimaEndereco', label: 'Endereço Residencial', domId: 'f-vit-loc1' },
+    { key: 'vitimaNumero', label: 'Número', domId: 'f-vit-loc2' },
+    { key: 'vitimaBairro', label: 'Bairro', domId: 'f-vit-area' },
+    { key: 'vitimaCidade', label: 'Cidade', domId: 'f-vit-mun' },
+    { key: 'vitimaNaturalidade', label: 'Naturalidade', domId: 'f-vit-orig' },
+    { key: 'vitimaPai', label: 'Nome do Pai', domId: 'f-vit-fil1' },
+    { key: 'vitimaMae', label: 'Nome da Mãe', domId: 'f-vit-fil2' }
+  ];
+
+  function collapseSpaces(val) {
+    return String(val == null ? '' : val).trim().replace(/\s+/g, ' ');
+  }
+
+  function formatDateBRDisplay(isoStr) {
+    const clean = collapseSpaces(isoStr);
+    const m = clean.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (m) return `${m[3]}/${m[2]}/${m[1]}`;
+    return clean;
+  }
+
+  function normalizePersonalFieldForCompare(key, rawVal) {
+    const v = collapseSpaces(rawVal);
+    if (!v) return '';
+    if (key === 'vitimaCep') return formatCep(v);
+    return v;
+  }
+
+  function isUntouchedBlankFormDefaultField(key, fichaData, savedPat, wasAutoFilled) {
+    if (!fichaData) return false;
+    const hasVictimAddrTyped = Boolean(
+      collapseSpaces(fichaData.vitimaEndereco) ||
+      collapseSpaces(fichaData.vitimaBairro) ||
+      collapseSpaces(fichaData.vitimaNumero)
+    );
+    if (hasVictimAddrTyped) return false;
+    if (key === 'vitimaCep') {
+      const fCep = formatCep(fichaData.vitimaCep);
+      const sCep = formatCep(savedPat ? savedPat.vitimaCep : '');
+      if (fCep === '14620-000' && (!wasAutoFilled || !sCep)) return true;
+    }
+    if (key === 'vitimaCidade') {
+      const fCid = normStr(collapseSpaces(fichaData.vitimaCidade));
+      const sCid = normStr(collapseSpaces(savedPat ? savedPat.vitimaCidade : ''));
+      if (fCid === 'orlandia' && (!wasAutoFilled || !sCid)) return true;
+    }
+    return false;
+  }
+
+  function fichaAlreadyHasSavedPersonalData(savedPat, targetFicha) {
+    if (!savedPat || !targetFicha) return false;
+    if (!collapseSpaces(targetFicha.vitimaNome)) return false;
+    const savedDn = normalizePersonalFieldForCompare('vitimaDn', savedPat.vitimaDn);
+    const fichaDn = normalizePersonalFieldForCompare('vitimaDn', targetFicha.vitimaDn);
+    for (const def of PATIENT_PERSONAL_FIELD_DEFS) {
+      const k = def.key;
+      const sVal = normalizePersonalFieldForCompare(k, savedPat[k]);
+      if (!sVal) continue;
+      const fVal = normalizePersonalFieldForCompare(k, targetFicha[k]);
+      if (k === 'vitimaIdade' && savedDn && fichaDn === savedDn) {
+        const autoAge = normalizePersonalFieldForCompare('vitimaIdade', calcAgeFromDn(fichaDn));
+        if (fVal === sVal || fVal === autoAge) continue;
+      }
+      if (fVal !== sVal) return false;
+    }
+    return true;
+  }
+
+  function applyPatientSuggestionToFicha(p, rawCpfDigits) {
+    if (!fichaState || !p) return;
+    const digits = String(rawCpfDigits || fichaState.vitimaCpf || '').replace(/\D+/g, '');
+    const setIfPresent = (stateKey, elId, rawVal) => {
+      const val = stateKey === 'vitimaCep' ? formatCep(rawVal) : collapseSpaces(rawVal);
+      if (val !== '') {
+        fichaState[stateKey] = val;
+        const el = elId ? document.getElementById(elId) : null;
+        if (el) el.value = val;
+      }
+    };
+
+    setIfPresent('vitimaNome', 'f-vit-ident', p.vitimaNome);
+    setIfPresent('vitimaDn', 'f-vit-nasc', p.vitimaDn);
+    const calcAge = p.vitimaDn ? calcAgeFromDn(p.vitimaDn) : '';
+    setIfPresent('vitimaIdade', 'f-vit-anos', calcAge || p.vitimaIdade);
+    setIfPresent('vitimaRg', 'f-vit-doc2', p.vitimaRg);
+    setIfPresent('vitimaCns', 'f-vit-doc3', p.vitimaCns);
+    setIfPresent('vitimaCep', 'f-vit-cod', p.vitimaCep);
+    setIfPresent('vitimaCidade', 'f-vit-mun', p.vitimaCidade);
+    setIfPresent('vitimaBairro', 'f-vit-area', p.vitimaBairro);
+    setIfPresent('vitimaEndereco', 'f-vit-loc1', p.vitimaEndereco);
+    setIfPresent('vitimaNumero', 'f-vit-loc2', p.vitimaNumero);
+    setIfPresent('vitimaNaturalidade', 'f-vit-orig', p.vitimaNaturalidade);
+    setIfPresent('vitimaPai', 'f-vit-fil1', p.vitimaPai);
+    setIfPresent('vitimaMae', 'f-vit-fil2', p.vitimaMae);
+
+    // Preenche histórico clínico salvo caso ainda esteja vazio nesta ficha
+    if ((!fichaState.antecedentes || fichaState.antecedentes.length === 0) && Array.isArray(p.antecedentes) && p.antecedentes.length > 0) {
+      fichaState.antecedentes = p.antecedentes.slice();
+    }
+    if ((!fichaState.medicamentosSelecionados || fichaState.medicamentosSelecionados.length === 0) && Array.isArray(p.medicamentosSelecionados) && p.medicamentosSelecionados.length > 0) {
+      fichaState.medicamentosSelecionados = p.medicamentosSelecionados.slice();
+    }
+    if (!fichaState.medicamentosOutro && p.medicamentosOutro) {
+      fichaState.medicamentosOutro = p.medicamentosOutro;
+    }
+    if ((!fichaState.alergiasSelecionadas || fichaState.alergiasSelecionadas.length === 0) && Array.isArray(p.alergiasSelecionadas) && p.alergiasSelecionadas.length > 0) {
+      fichaState.alergiasSelecionadas = p.alergiasSelecionadas.slice();
+    }
+    if (!fichaState.alergiasOutro && p.alergiasOutro) {
+      fichaState.alergiasOutro = p.alergiasOutro;
+    }
+
+    if (digits.length === 11) {
+      cpfAutoFilledFromSaved = digits;
+      fichaState._cpfAutoFilled = digits;
+      cpfSuggestionDismissedFor = '';
+    }
+    persistFichaDraft({ immediate: true });
+  }
+
+  function buildPatientSuggestionPreviewHtml(p) {
+    if (!p) return '';
+    const lines = [];
+    if (collapseSpaces(p.vitimaNome)) {
+      lines.push(`<div><strong>👤 ${escapeHtml(collapseSpaces(p.vitimaNome))}</strong></div>`);
+    }
+    const dnTxt = p.vitimaDn ? formatDateBRDisplay(p.vitimaDn) : '';
+    const ageTxt = (p.vitimaDn ? calcAgeFromDn(p.vitimaDn) : '') || collapseSpaces(p.vitimaIdade);
+    const docsArr = [
+      dnTxt ? `DN: ${dnTxt}` : '',
+      ageTxt ? `Idade: ${ageTxt}` : '',
+      collapseSpaces(p.vitimaRg) ? `RG: ${collapseSpaces(p.vitimaRg)}` : '',
+      collapseSpaces(p.vitimaCns) ? `CNS: ${collapseSpaces(p.vitimaCns)}` : ''
+    ].filter(Boolean);
+    if (docsArr.length) {
+      lines.push(`<div>🪪 ${escapeHtml(docsArr.join(' • '))}</div>`);
+    }
+
+    const streetPart = [
+      collapseSpaces(p.vitimaEndereco),
+      collapseSpaces(p.vitimaNumero) ? `nº ${collapseSpaces(p.vitimaNumero)}` : '',
+      collapseSpaces(p.vitimaBairro)
+    ].filter(Boolean).join(', ');
+    const cityCepPart = [
+      collapseSpaces(p.vitimaCidade),
+      formatCep(p.vitimaCep) ? `CEP ${formatCep(p.vitimaCep)}` : ''
+    ].filter(Boolean).join(' - ');
+    if (streetPart || cityCepPart) {
+      lines.push(`<div>📍 ${escapeHtml([streetPart, cityCepPart].filter(Boolean).join(' • '))}</div>`);
+    }
+
+    const famArr = [
+      collapseSpaces(p.vitimaMae) ? `Mãe: ${collapseSpaces(p.vitimaMae)}` : '',
+      collapseSpaces(p.vitimaPai) ? `Pai: ${collapseSpaces(p.vitimaPai)}` : '',
+      collapseSpaces(p.vitimaNaturalidade) ? `Naturalidade: ${collapseSpaces(p.vitimaNaturalidade)}` : ''
+    ].filter(Boolean);
+    if (famArr.length) {
+      lines.push(`<div>👪 ${escapeHtml(famArr.join(' • '))}</div>`);
+    }
+
+    const hasClin = Boolean(
+      (Array.isArray(p.antecedentes) && p.antecedentes.length) ||
+      (Array.isArray(p.medicamentosSelecionados) && p.medicamentosSelecionados.length) ||
+      collapseSpaces(p.medicamentosOutro) ||
+      (Array.isArray(p.alergiasSelecionadas) && p.alergiasSelecionadas.length) ||
+      collapseSpaces(p.alergiasOutro)
+    );
+    if (hasClin) {
+      lines.push(`<div style="color:#047857; font-weight:700;">🩺 Inclui histórico salvo (antecedentes / medicamentos / alergias)</div>`);
+    }
+    return lines.join('');
+  }
+
+  function renderCpfManageBarHtml(rawCpf) {
+    const digits = String(rawCpf || '').replace(/\D+/g, '');
+    if (digits.length !== 11 || !window.SamuStorage.isValidCpf(digits)) return '';
+    const patMap = window.SamuStorage.getInternalPatientsMap ? window.SamuStorage.getInternalPatientsMap() : {};
+    const saved = patMap[digits] || ((pendingCpfSuggestion && pendingCpfSuggestion.cpf11 === digits) ? pendingCpfSuggestion.patient : null);
+
+    if (saved && collapseSpaces(saved.vitimaNome)) {
+      const wasAutoFilled = Boolean((fichaState && fichaState._cpfAutoFilled === digits) || (cpfAutoFilledFromSaved === digits));
+      const dismissed = (cpfSuggestionDismissedFor === digits);
+      const alreadyMatches = fichaAlreadyHasSavedPersonalData(saved, fichaState || {});
+      const showSuggestionCard = !wasAutoFilled && !dismissed && !alreadyMatches;
+
+      if (showSuggestionCard) {
+        const srcBadge = (pendingCpfSuggestion && pendingCpfSuggestion.cpf11 === digits && pendingCpfSuggestion.sourceLabel)
+          ? pendingCpfSuggestion.sourceLabel
+          : 'Cadastro Salvo';
+        return `
+          <div class="cpf-suggest-card">
+            <div class="cpf-suggest-header">
+              <span>✨ Dados salvos encontrados para este C&#8204;PF!</span>
+              <span class="type-badge" style="background:#d1fae5; color:#065f46;">${escapeHtml(srcBadge)}</span>
+            </div>
+            <div class="cpf-suggest-preview">
+              ${buildPatientSuggestionPreviewHtml(saved)}
+            </div>
+            <div class="cpf-suggest-actions">
+              <button type="button" class="btn btn-success btn-sm" id="btn-cpf-accept-suggest" style="flex:1 1 200px; font-weight:800;">
+                ✨ Preencher Automaticamente
+              </button>
+              <button type="button" class="btn btn-outline btn-sm" id="btn-cpf-edit-saved" style="background:#fff;">
+                ✏️ Editar Cadastro
+              </button>
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-cpf-dismiss-suggest">
+                Não usar
+              </button>
+            </div>
+          </div>
+        `;
+      }
+
+      const addrSummary = [saved.vitimaEndereco, saved.vitimaNumero ? ('nº ' + saved.vitimaNumero) : '', saved.vitimaBairro]
+        .filter(Boolean)
+        .join(', ');
+      return `
+        <div class="cpf-manage-bar">
+          <div style="flex:1 1 100%; font-size:0.76rem; color:#0c4a6e; font-weight:700;">
+            🪪 Cadastro salvo: <strong>${escapeHtml(saved.vitimaNome)}</strong>${addrSummary ? ` • ${escapeHtml(addrSummary)}` : ''}
+          </div>
+          <button type="button" class="btn btn-success btn-sm" id="btn-cpf-accept-suggest" style="padding:4px 9px; font-size:0.74rem;">✨ Preencher Dados Salvos</button>
+          <button type="button" class="btn btn-outline btn-sm" id="btn-cpf-edit-saved" style="padding:4px 9px; font-size:0.74rem; background:#fff;">✏️ Editar Endere&#8204;ço / Cadastro</button>
+          <button type="button" class="btn btn-danger-outline btn-sm" id="btn-cpf-delete-saved" style="padding:4px 9px; font-size:0.74rem; background:#fff;">🗑️ Excluir</button>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="cpf-manage-bar" style="background:#f8fafc; border-color:#cbd5e1;">
+        <span style="flex:1; font-size:0.75rem; color:#475569; font-weight:700;">🪪 Novo C&#8204;PF — os dados pessoais serão guardados automaticamente ao enviar a ficha</span>
+        <button type="button" class="btn btn-outline btn-sm" id="btn-cpf-overwrite-from-ficha" style="padding:4px 9px; font-size:0.74rem; background:#fff;">💾 Salvar Agora</button>
+      </div>
+    `;
+  }
+
+  function computePatientPersonalDiffs(savedPat, fichaData, wasAutoFilled) {
+    if (!savedPat || !fichaData) return [];
+    const diffs = [];
+    const savedDn = normalizePersonalFieldForCompare('vitimaDn', savedPat.vitimaDn);
+    const fichaDn = normalizePersonalFieldForCompare('vitimaDn', fichaData.vitimaDn);
+
+    PATIENT_PERSONAL_FIELD_DEFS.forEach(def => {
+      const k = def.key;
+      const oldVal = normalizePersonalFieldForCompare(k, savedPat[k]);
+      const newVal = normalizePersonalFieldForCompare(k, fichaData[k]);
+      if (oldVal === newVal) return;
+
+      // Se a equipe não puxou o preenchimento automático e deixou um campo vazio nesta ficha, não trata como exclusão do dado salvo
+      if (!wasAutoFilled && !newVal) return;
+
+      // Ignora CEP '14620-000' e Cidade 'Orlândia' pré-preenchidos por padrão na ficha vazia quando nenhum endereço foi digitado
+      if (isUntouchedBlankFormDefaultField(k, fichaData, savedPat, wasAutoFilled)) return;
+
+      // Se a Data de Nascimento não mudou e a idade é apenas o cálculo automático da DN, não acusa diferença
+      if (k === 'vitimaIdade' && savedDn && fichaDn && savedDn === fichaDn) {
+        const autoAge = normalizePersonalFieldForCompare('vitimaIdade', calcAgeFromDn(fichaDn));
+        if (newVal === autoAge) return;
+      }
+
+      diffs.push({
+        key: k,
+        label: def.label,
+        oldVal,
+        newVal,
+        oldDisplay: oldVal ? (def.isDate ? formatDateBRDisplay(oldVal) : oldVal) : '(em branco)',
+        newDisplay: newVal ? (def.isDate ? formatDateBRDisplay(newVal) : newVal) : '(em branco)'
+      });
+    });
+
+    return diffs;
+  }
+
+  function buildMergedPatientPayloadFromFicha(savedPat, fichaData, cpf11, wasAutoFilled) {
+    const payload = { vitimaCpf: cpf11 };
+    PATIENT_PERSONAL_FIELD_DEFS.forEach(def => {
+      const k = def.key;
+      const oldVal = savedPat ? normalizePersonalFieldForCompare(k, savedPat[k]) : '';
+      const newVal = normalizePersonalFieldForCompare(k, fichaData[k]);
+
+      if (!savedPat) {
+        payload[k] = newVal;
+        return;
+      }
+      if (isUntouchedBlankFormDefaultField(k, fichaData, savedPat, wasAutoFilled)) {
+        payload[k] = oldVal || newVal;
+        return;
+      }
+      if (wasAutoFilled) {
+        payload[k] = (k === 'vitimaNome' && !newVal) ? oldVal : newVal;
+      } else {
+        payload[k] = newVal || oldVal;
+      }
+    });
+
+    if (payload.vitimaDn && !payload.vitimaIdade) {
+      payload.vitimaIdade = calcAgeFromDn(payload.vitimaDn) || '';
+    }
+    if (!payload.vitimaCidade) {
+      payload.vitimaCidade = (savedPat && savedPat.vitimaCidade) || 'Orlândia';
+    }
+
+    payload.antecedentes = (Array.isArray(fichaData.antecedentes) && fichaData.antecedentes.length)
+      ? fichaData.antecedentes.slice()
+      : ((savedPat && Array.isArray(savedPat.antecedentes)) ? savedPat.antecedentes.slice() : []);
+    payload.medicamentosSelecionados = (Array.isArray(fichaData.medicamentosSelecionados) && fichaData.medicamentosSelecionados.length)
+      ? fichaData.medicamentosSelecionados.slice()
+      : ((savedPat && Array.isArray(savedPat.medicamentosSelecionados)) ? savedPat.medicamentosSelecionados.slice() : []);
+    payload.medicamentosOutro = collapseSpaces(fichaData.medicamentosOutro) || (savedPat && savedPat.medicamentosOutro) || '';
+    payload.alergiasSelecionadas = (Array.isArray(fichaData.alergiasSelecionadas) && fichaData.alergiasSelecionadas.length)
+      ? fichaData.alergiasSelecionadas.slice()
+      : ((savedPat && Array.isArray(savedPat.alergiasSelecionadas)) ? savedPat.alergiasSelecionadas.slice() : []);
+    payload.alergiasOutro = collapseSpaces(fichaData.alergiasOutro) || (savedPat && savedPat.alergiasOutro) || '';
+
+    return payload;
+  }
+
+  function askUpdateSavedPatientModal(savedPat, fichaData, cpf11, diffs) {
+    return new Promise((resolve) => {
+      let dlg = document.getElementById('patient-update-confirm-modal');
+      if (!dlg) {
+        dlg = document.createElement('div');
+        dlg.id = 'patient-update-confirm-modal';
+        dlg.className = 'sig-modal hidden';
+        dlg.style.zIndex = '185';
+        document.body.appendChild(dlg);
+      }
+
+      const displayCpf = window.SamuStorage.formatCpf(cpf11);
+      const displayName = collapseSpaces(fichaData.vitimaNome) || collapseSpaces(savedPat.vitimaNome) || displayCpf;
+
+      dlg.innerHTML = `
+        <div class="card" style="width:100%; max-width:500px; margin:0; padding:18px; max-height:92vh; overflow-y:auto;">
+          <div style="display:flex; align-items:flex-start; gap:10px; margin-bottom:8px;">
+            <span style="font-size:1.55rem; line-height:1;">🪪</span>
+            <div style="text-align:left;">
+              <h3 style="margin:0; font-size:1.02rem; color:var(--navy);">Atualizar Dados Salvos do Paciente?</h3>
+              <p style="margin:4px 0 0; font-size:0.81rem; color:var(--muted); line-height:1.38;">
+                Os dados pessoais preenchidos nesta ficha para <strong>${escapeHtml(displayName)}</strong>
+                (CPF <code>${escapeHtml(displayCpf)}</code>) estão diferentes dos dados salvos no aplicativo:
+              </p>
+            </div>
+          </div>
+
+          <div class="patient-diff-list">
+            ${diffs.map(df => `
+              <div class="patient-diff-item">
+                <div class="patient-diff-label">${escapeHtml(df.label)}</div>
+                <div class="patient-diff-values">
+                  <span class="patient-diff-old" title="Valor salvo atualmente">${escapeHtml(df.oldDisplay)}</span>
+                  <span style="font-weight:900; color:#64748b;">➔</span>
+                  <span class="patient-diff-new" title="Valor preenchido nesta ficha">${escapeHtml(df.newDisplay)}</span>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+
+          <div style="display:flex; flex-direction:column; gap:8px;">
+            <button type="button" class="btn btn-success" id="btn-pat-upd-yes" style="width:100%; font-weight:800;">
+              ✅ Sim, Atualizar Dados do Paciente e Enviar Ficha
+            </button>
+            <button type="button" class="btn btn-primary" id="btn-pat-upd-keep" style="width:100%;">
+              ➡️ Não Atualizar Cadastro (Apenas Enviar Ficha)
+            </button>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-pat-upd-cancel" style="width:100%;">
+              ↩️ Voltar p/ Revisar Ficha
+            </button>
+          </div>
+        </div>
+      `;
+
+      dlg.classList.remove('hidden');
+      const finish = (choice) => {
+        dlg.classList.add('hidden');
+        resolve(choice);
+      };
+      document.getElementById('btn-pat-upd-yes').onclick = () => finish('update');
+      document.getElementById('btn-pat-upd-keep').onclick = () => finish('keep');
+      document.getElementById('btn-pat-upd-cancel').onclick = () => finish('cancel');
+    });
+  }
+
+  async function handlePatientCadastroOnFichaSend(targetFichaData) {
+    if (!targetFichaData) return { proceed: true, action: 'no_data' };
+    const cpf11 = String(targetFichaData.vitimaCpf || '').replace(/\D+/g, '');
+    const nome = collapseSpaces(targetFichaData.vitimaNome);
+    if (cpf11.length !== 11 || !nome) {
+      return { proceed: true, action: 'skipped_no_cpf_or_name' };
+    }
+
+    const patMap = window.SamuStorage.getInternalPatientsMap ? window.SamuStorage.getInternalPatientsMap() : {};
+    let savedPat = patMap[cpf11] || null;
+    if (!savedPat && pendingCpfSuggestion && pendingCpfSuggestion.cpf11 === cpf11 && pendingCpfSuggestion.patient) {
+      savedPat = pendingCpfSuggestion.patient;
+    }
+
+    if (!savedPat && !window.SamuStorage.isValidCpf(cpf11)) {
+      return { proceed: true, action: 'skipped_invalid_cpf' };
+    }
+
+    const wasAutoFilled = Boolean(
+      (targetFichaData._cpfAutoFilled === cpf11) ||
+      (cpfAutoFilledFromSaved === cpf11)
+    );
+
+    // 1º atendimento deste CPF: guarda automaticamente todos os dados pessoais do paciente para os próximos atendimentos!
+    if (!savedPat) {
+      try {
+        const newPayload = buildMergedPatientPayloadFromFicha(null, targetFichaData, cpf11, true);
+        window.SamuStorage.saveEditedPatientInInternalDb(cpf11, newPayload);
+      } catch (eSaveNew) {}
+      return { proceed: true, action: 'created_new' };
+    }
+
+    // Já existe cadastro salvo para este CPF: compara se houve alguma alteração nos dados pessoais
+    const diffs = computePatientPersonalDiffs(savedPat, targetFichaData, wasAutoFilled);
+    if (diffs.length === 0) {
+      return { proceed: true, action: 'unchanged' };
+    }
+
+    const choice = await askUpdateSavedPatientModal(savedPat, targetFichaData, cpf11, diffs);
+    if (choice === 'cancel') {
+      return { proceed: false, action: 'cancel' };
+    }
+    if (choice === 'update') {
+      try {
+        const mergedPayload = buildMergedPatientPayloadFromFicha(savedPat, targetFichaData, cpf11, wasAutoFilled);
+        window.SamuStorage.saveEditedPatientInInternalDb(cpf11, mergedPayload);
+        showToast(`✅ Cadastro pessoal de "${mergedPayload.vitimaNome}" atualizado!`);
+      } catch (eUpd) {}
+      return { proceed: true, action: 'updated' };
+    }
+    return { proceed: true, action: 'kept_existing' };
+  }
+
+  /* ===================== VISUALIZADOR INTERNO DE PASTAS E PLANILHA DE CONTROLE (SEM PEDIR CONTA GOOGLE) ===================== */
+  function ensureDriveExplorerModal() {
+    let modal = document.getElementById('drive-explorer-modal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'drive-explorer-modal';
+      modal.className = 'sig-modal hidden';
+      modal.style.zIndex = '172';
+      modal.innerHTML = '<div class="crew-modal-card" id="drive-explorer-modal-body" style="max-width:920px; width:96%; max-height:92vh; overflow-y:auto;"></div>';
+      document.body.appendChild(modal);
+    }
+    return {
+      modal,
+      body: document.getElementById('drive-explorer-modal-body')
+    };
+  }
+
+  async function fetchFreshAdminRecordsForExplorer() {
+    if (navigator.onLine && window.SamuStorage.syncAllWithCloud) {
+      try {
+        await window.SamuStorage.syncAllWithCloud();
+      } catch (e) {}
+    }
+    const all = await window.SamuStorage.getVisibleRecords(currentUser);
+    return (all || []).filter(r => r && r.syncStatus !== 'draft');
+  }
+
+  async function openInAppDriveFoldersModal() {
+    if (!currentUser || !window.SamuStorage.isUserAdmin(currentUser)) return;
+    const { modal, body } = ensureDriveExplorerModal();
+    if (!modal || !body) return;
+    const settings = window.SamuStorage.getSettings();
+
+    modal.classList.remove('hidden');
+    body.innerHTML = `<div style="padding:28px; text-align:center; color:var(--muted); font-weight:700;">☁️ Carregando pastas e PDFs sincronizados com o Google Drive...</div>`;
+
+    const records = await fetchFreshAdminRecordsForExplorer();
+    let activeFolderType = 'ficha';
+    let selectedMonth = 'all';
+
+    const folderDefs = [
+      { type: 'ficha', icon: '📋', name: 'Fichas de Atendimento' },
+      { type: 'checklist_condutor', icon: '🚑', name: 'Check List - Condutor Socorrista' },
+      { type: 'checklist_enfermagem', icon: '🩺', name: 'Check List - Enfermagem' }
+    ];
+
+    const getMonthKey = (r) => {
+      const raw = String(r.date || r.createdAt || '').trim();
+      const m = raw.match(/^(\d{4}-\d{2})/);
+      return m ? m[1] : 'Sem-Data';
+    };
+
+    const renderExplorer = () => {
+      const typeRecords = records.filter(r => r.type === activeFolderType);
+      const monthsSet = new Set();
+      typeRecords.forEach(r => monthsSet.add(getMonthKey(r)));
+      const months = Array.from(monthsSet).sort((a, b) => b.localeCompare(a));
+      if (selectedMonth !== 'all' && !monthsSet.has(selectedMonth)) {
+        selectedMonth = 'all';
+      }
+      const visible = selectedMonth === 'all'
+        ? typeRecords
+        : typeRecords.filter(r => getMonthKey(r) === selectedMonth);
+
+      body.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+          <div>
+            <h3 style="margin:0; font-size:1.05rem; color:var(--navy);">📁 Pastas do Google Drive (Acesso Direto ADM no App)</h3>
+            <div style="font-size:0.78rem; color:var(--muted); margin-top:2px;">
+              Navegue pelas pastas por Tipo e Mês e abra qualquer PDF direto sem precisar logar conta Google no celular
+            </div>
+          </div>
+          <div style="display:flex; gap:6px; flex-wrap:wrap;">
+            ${settings.rootFolderUrl ? `<a href="${escapeHtml(settings.rootFolderUrl)}" target="_blank" class="btn btn-outline btn-sm" style="text-decoration:none;" title="Requer estar logado no Gmail proprietário ou compartilhado no app Google Drive">↗️ App Google Drive</a>` : ''}
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-drv-exp-close">✖ Fechar</button>
+          </div>
+        </div>
+
+        <div class="catalog-subtabs">
+          ${folderDefs.map(fd => {
+            const cnt = records.filter(r => r.type === fd.type).length;
+            return `<button type="button" class="catalog-subtab ${activeFolderType === fd.type ? 'active' : ''}" data-drv-folder="${fd.type}">${fd.icon} ${escapeHtml(fd.name)} (${cnt})</button>`;
+          }).join('')}
+        </div>
+
+        <div class="chips-wrap" style="margin-bottom:10px;">
+          <button type="button" class="chip-btn ${selectedMonth === 'all' ? 'selected' : ''}" data-drv-month="all">📅 Todos os Meses (${typeRecords.length})</button>
+          ${months.map(m => {
+            const mCnt = typeRecords.filter(r => getMonthKey(r) === m).length;
+            return `<button type="button" class="chip-btn ${selectedMonth === m ? 'selected' : ''}" data-drv-month="${escapeHtml(m)}">📂 ${escapeHtml(m)} (${mCnt})</button>`;
+          }).join('')}
+        </div>
+
+        <div style="max-height:54vh; overflow-y:auto; border:1px solid #e2e8f0; border-radius:10px; padding:6px 10px;">
+          ${visible.length === 0 ? `
+            <div style="padding:20px; text-align:center; color:var(--muted); font-size:0.86rem;">Nenhum PDF arquivado nesta pasta ainda.</div>
+          ` : visible.map(r => {
+            const dt = r.date || String(r.createdAt || '').slice(0, 10);
+            const title = r.patientName || r.vehicle || r.summary || (r.type === 'ficha' ? 'Ficha SAMU' : 'Check List');
+            return `
+              <div class="check-item-row" style="flex-wrap:wrap; gap:8px;">
+                <div class="check-item-info">
+                  <strong>📄 ${escapeHtml(title)}</strong>
+                  <small style="color:var(--muted);"> • ${escapeHtml(dt)} • Pasta: <code>${escapeHtml(getMonthKey(r))}</code></small>
+                  <br>
+                  <small style="color:var(--muted);">
+                    Por: ${escapeHtml(r.createdByName || r.createdBy || '-')}
+                    ${r.summary ? ` • ${escapeHtml(r.summary)}` : ''}
+                  </small>
+                </div>
+                <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                  ${r.data ? `<button type="button" class="btn btn-primary btn-sm" data-drv-preview="${escapeHtml(r.id)}">👁️ Ver PDF no App</button>` : ''}
+                  ${r.driveUrl ? `<a href="${escapeHtml(r.driveUrl)}" target="_blank" class="btn btn-success btn-sm" style="text-decoration:none;">☁️ Abrir PDF Drive</a>` : `<span class="type-badge" style="background:#fef3c7;color:#92400e;">Pendente envio</span>`}
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      `;
+
+      document.getElementById('btn-drv-exp-close').onclick = () => modal.classList.add('hidden');
+      body.querySelectorAll('[data-drv-folder]').forEach(btn => {
+        btn.onclick = () => {
+          activeFolderType = btn.dataset.drvFolder;
+          selectedMonth = 'all';
+          renderExplorer();
+        };
+      });
+      body.querySelectorAll('[data-drv-month]').forEach(btn => {
+        btn.onclick = () => {
+          selectedMonth = btn.dataset.drvMonth;
+          renderExplorer();
+        };
+      });
+      body.querySelectorAll('[data-drv-preview]').forEach(btn => {
+        btn.onclick = async () => {
+          const rec = records.find(x => x.id === btn.dataset.drvPreview);
+          if (!rec) return;
+          modal.classList.add('hidden');
+          await openPdfPreviewModal(rec);
+        };
+      });
+    };
+
+    renderExplorer();
+  }
+
+  async function openInAppControlSheetModal() {
+    if (!currentUser || !window.SamuStorage.isUserAdmin(currentUser)) return;
+    const { modal, body } = ensureDriveExplorerModal();
+    if (!modal || !body) return;
+    const settings = window.SamuStorage.getSettings();
+
+    modal.classList.remove('hidden');
+    body.innerHTML = `<div style="padding:28px; text-align:center; color:var(--muted); font-weight:700;">📊 Carregando Planilha de Controle sincronizada...</div>`;
+
+    const records = await fetchFreshAdminRecordsForExplorer();
+    let sheetQuery = '';
+
+    const typeLabel = (t) => {
+      if (t === 'ficha') return 'Ficha USB';
+      if (t === 'checklist_condutor') return 'CK Condutor';
+      if (t === 'checklist_enfermagem') return 'CK Enfermagem';
+      return t || '-';
+    };
+
+    const getFiltered = () => {
+      const q = normStr(sheetQuery.trim());
+      if (!q) return records;
+      return records.filter(r => {
+        const blob = `${r.date || ''} ${typeLabel(r.type)} ${r.patientName || ''} ${r.patientCpf || ''} ${r.vehicle || ''} ${r.shift || ''} ${r.risk || ''} ${r.createdByName || ''} ${r.summary || ''}`;
+        return normStr(blob).includes(q);
+      });
+    };
+
+    const buildRowsHtml = (list) => {
+      if (!list.length) {
+        return `<tr><td colspan="6" style="padding:18px; text-align:center; color:var(--muted);">Nenhum registro encontrado.</td></tr>`;
+      }
+      return list.map(r => `
+        <tr style="border-bottom:1px solid #e2e8f0; font-size:0.79rem;">
+          <td style="padding:7px 6px; white-space:nowrap;">${escapeHtml(r.date || String(r.createdAt || '').slice(0, 10))}</td>
+          <td style="padding:7px 6px; font-weight:700;">${escapeHtml(typeLabel(r.type))}</td>
+          <td style="padding:7px 6px;">${escapeHtml(r.patientName || r.vehicle || r.summary || '-')}${r.patientCpf ? `<br><small style="color:var(--muted);">CPF: ${escapeHtml(r.patientCpf)}</small>` : ''}</td>
+          <td style="padding:7px 6px;">${escapeHtml(r.risk || r.shift || '-')}</td>
+          <td style="padding:7px 6px;">${escapeHtml(r.createdByName || r.createdBy || '-')}</td>
+          <td style="padding:7px 6px; white-space:nowrap;">
+            ${r.driveUrl ? `<a href="${escapeHtml(r.driveUrl)}" target="_blank" class="btn btn-success btn-sm" style="padding:3px 8px; font-size:0.73rem; text-decoration:none;">☁️ PDF</a>` : ''}
+            ${r.data ? `<button type="button" class="btn btn-outline btn-sm" data-sht-prev="${escapeHtml(r.id)}" style="padding:3px 8px; font-size:0.73rem;">👁️ Ver</button>` : ''}
+          </td>
+        </tr>
+      `).join('');
+    };
+
+    body.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+        <div>
+          <h3 style="margin:0; font-size:1.05rem; color:var(--navy);">📊 Planilha de Controle Central (${records.length} registros)</h3>
+          <div style="font-size:0.78rem; color:var(--muted); margin-top:2px;">
+            Visualização direta dentro do aplicativo (sem pedir login Google) + exportação p/ Excel (.CSV)
+          </div>
+        </div>
+        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+          <button type="button" class="btn btn-success btn-sm" id="btn-sht-export-csv">📥 Baixar Excel (.CSV)</button>
+          ${settings.spreadsheetUrl ? `<a href="${escapeHtml(settings.spreadsheetUrl)}" target="_blank" class="btn btn-outline btn-sm" style="text-decoration:none;" title="Requer estar logado no Gmail proprietário ou compartilhado no app Planilhas">↗️ Google Planilhas</a>` : ''}
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-sht-close">✖ Fechar</button>
+        </div>
+      </div>
+
+      <div class="field" style="margin-bottom:8px;">
+        <input type="text" id="inp-sht-search" autocomplete="off" placeholder="🔎 Filtrar na planilha por data, paciente, CPF, viatura ou profissional..." />
+      </div>
+
+      <div style="max-height:58vh; overflow:auto; border:1px solid #cbd5e1; border-radius:10px;">
+        <table style="width:100%; border-collapse:collapse; text-align:left;">
+          <thead style="position:sticky; top:0; background:#0f172a; color:#fff; font-size:0.77rem;">
+            <tr>
+              <th style="padding:8px 6px;">Data</th>
+              <th style="padding:8px 6px;">Tipo</th>
+              <th style="padding:8px 6px;">Paciente / Viatura</th>
+              <th style="padding:8px 6px;">Risco / Turno</th>
+              <th style="padding:8px 6px;">Profissional</th>
+              <th style="padding:8px 6px;">PDF</th>
+            </tr>
+          </thead>
+          <tbody id="sht-tbody">
+            ${buildRowsHtml(records)}
+          </tbody>
+        </table>
+      </div>
+    `;
+
+    const bindPreviewBtns = () => {
+      body.querySelectorAll('[data-sht-prev]').forEach(btn => {
+        btn.onclick = async () => {
+          const rec = records.find(x => x.id === btn.dataset.shtPrev);
+          if (!rec) return;
+          modal.classList.add('hidden');
+          await openPdfPreviewModal(rec);
+        };
+      });
+    };
+    bindPreviewBtns();
+
+    document.getElementById('btn-sht-close').onclick = () => modal.classList.add('hidden');
+    document.getElementById('inp-sht-search').addEventListener('input', (e) => {
+      sheetQuery = e.target.value || '';
+      const tb = document.getElementById('sht-tbody');
+      if (tb) {
+        tb.innerHTML = buildRowsHtml(getFiltered());
+        bindPreviewBtns();
+      }
+    });
+
+    document.getElementById('btn-sht-export-csv').onclick = () => {
+      const list = getFiltered();
+      const csvEsc = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+      const header = ['Data', 'Tipo', 'Paciente', 'CPF', 'Risco', 'Viatura', 'Turno', 'Profissional', 'Resumo', 'Link_PDF_Drive'].join(';');
+      const lines = list.map(r => [
+        r.date || String(r.createdAt || '').slice(0, 10),
+        typeLabel(r.type),
+        r.patientName || '',
+        r.patientCpf || '',
+        r.risk || '',
+        r.vehicle || '',
+        r.shift || '',
+        r.createdByName || r.createdBy || '',
+        r.summary || '',
+        r.driveUrl || ''
+      ].map(csvEsc).join(';'));
+      const csvContent = '\uFEFF' + [header].concat(lines).join('\r\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Planilha_Controle_SAMU_Orlandia_${todayISO()}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 500);
+      showToast('📥 Planilha .CSV gerada (abre direto no Excel)!');
+    };
   }
 
   function updateTopbarUserHeader() {
@@ -3115,12 +4291,13 @@
 
           <div class="grid-cpf-docs">
             <div class="field field-full-phone">
-              <label>C&#8204;PF (puxa cadastro salvo / Wi-Fi)</label>
+              <label>C&#8204;PF (sugere dados salvos / Wi-Fi)</label>
               <div class="input-action-row">
                 <input type="text" inputmode="numeric" id="f-vit-doc1" autocomplete="off" placeholder="000.000&#8204;.000-00" data-f="vitimaCpf" value="${escapeHtml(d.vitimaCpf)}" />
                 <button type="button" class="btn-lookup" id="btn-lookup-cpf" title="Buscar dados do paciente pelo CPF">🔍 C&#8204;PF</button>
               </div>
               <div id="cpf-lookup-hint" class="field-hint">${cpfHintInit}</div>
+              <div id="cpf-manage-slot">${renderCpfManageBarHtml(d.vitimaCpf)}</div>
             </div>
             <div class="field">
               <label>R&#8204;G</label>
@@ -3439,7 +4616,8 @@
                         return `
                           <span class="receiver-chip ${isSel ? 'active' : ''}" data-pick-medico="${escapeHtml(m.id)}" title="Toque para preencher este Médico Regulador">
                             <span>👨‍⚕️ ${escapeHtml(m.nome)}</span>
-                            <button type="button" class="receiver-chip-del" data-del-medico="${escapeHtml(m.id)}" title="Remover da lista">×</button>
+                            <button type="button" class="receiver-chip-edit" data-edit-medico="${escapeHtml(m.id)}" title="Editar Médico Regulador">✏️</button>
+                            <button type="button" class="receiver-chip-del" data-del-medico="${escapeHtml(m.id)}" title="Excluir da lista">×</button>
                           </span>
                         `;
                       }).join('')}
@@ -3562,7 +4740,8 @@
                           return `
                             <span class="receiver-chip ${isSel ? 'active' : ''}" data-pick-receiver="${escapeHtml(r.id)}" title="Toque para preencher Nome + COREN/CRM e abrir assinatura">
                               <span>👤 ${escapeHtml(r.nome)}${r.corenCrm ? ` • ${escapeHtml(r.corenCrm)}` : ''}</span>
-                              <button type="button" class="receiver-chip-del" data-del-receiver="${escapeHtml(r.id)}" title="Remover da lista">×</button>
+                              <button type="button" class="receiver-chip-edit" data-edit-receiver="${escapeHtml(r.id)}" title="Editar Nome / COREN">✏️</button>
+                              <button type="button" class="receiver-chip-del" data-del-receiver="${escapeHtml(r.id)}" title="Excluir da lista">×</button>
                             </span>
                           `;
                         }).join('')}
@@ -3960,59 +5139,33 @@
         return;
       }
       if (btn) { btn.disabled = true; btn.textContent = '⏳...'; }
-      if (hint) hint.innerHTML = '<span style="color:var(--muted);">🔎 Buscando cadastro pelo CPF...</span>';
+      if (hint) hint.innerHTML = '<span style="color:var(--muted);">🔎 Verificando dados salvos para este CPF...</span>';
       try {
         const res = await window.SamuStorage.lookupPatientByCpf(digits);
         if (res && res.patient) {
           const p = res.patient;
-          const applyField = (stateKey, elId, val) => {
-            if (val && String(val).trim() !== '') {
-              fichaState[stateKey] = val;
-              const el = elId ? document.getElementById(elId) : null;
-              if (el) el.value = val;
-            }
-          };
-          applyField('vitimaNome', 'f-vit-ident', p.vitimaNome);
-          applyField('vitimaDn', 'f-vit-nasc', p.vitimaDn);
-          const calcAge = p.vitimaDn ? calcAgeFromDn(p.vitimaDn) : '';
-          applyField('vitimaIdade', 'f-vit-anos', calcAge || p.vitimaIdade);
-          applyField('vitimaRg', 'f-vit-doc2', p.vitimaRg);
-          applyField('vitimaCns', 'f-vit-doc3', p.vitimaCns);
-          applyField('vitimaCep', 'f-vit-cod', p.vitimaCep);
-          applyField('vitimaCidade', 'f-vit-mun', p.vitimaCidade);
-          applyField('vitimaBairro', 'f-vit-area', p.vitimaBairro);
-          applyField('vitimaEndereco', 'f-vit-loc1', p.vitimaEndereco);
-          applyField('vitimaNumero', 'f-vit-loc2', p.vitimaNumero);
-          applyField('vitimaNaturalidade', 'f-vit-orig', p.vitimaNaturalidade);
-          applyField('vitimaPai', 'f-vit-fil1', p.vitimaPai);
-          applyField('vitimaMae', 'f-vit-fil2', p.vitimaMae);
-
-          // Se antecedentes / medicamentos / alergias ainda estiverem em branco nesta ficha, aproveita o histórico do paciente
-          if ((!fichaState.antecedentes || fichaState.antecedentes.length === 0) && Array.isArray(p.antecedentes) && p.antecedentes.length > 0) {
-            fichaState.antecedentes = p.antecedentes.slice();
+          const srcLabel = res.source === 'samu_cloud'
+            ? 'Base SAMU Drive'
+            : (res.source === 'external_api' ? 'Consulta Online' : 'Cadastro Salvo');
+          pendingCpfSuggestion = { cpf11: digits, sourceLabel: srcLabel, patient: p };
+          if (manualClick) {
+            cpfSuggestionDismissedFor = '';
+            cpfAutoFilledFromSaved = '';
+            if (fichaState) fichaState._cpfAutoFilled = '';
           }
-          if ((!fichaState.medicamentosSelecionados || fichaState.medicamentosSelecionados.length === 0) && Array.isArray(p.medicamentosSelecionados) && p.medicamentosSelecionados.length > 0) {
-            fichaState.medicamentosSelecionados = p.medicamentosSelecionados.slice();
+          const alreadyMatches = !manualClick && fichaAlreadyHasSavedPersonalData(p, fichaState);
+          if (alreadyMatches) {
+            if (hint) hint.innerHTML = `<span class="hint-ok">✅ Dados deste CPF já estão preenchidos (${escapeHtml(srcLabel)}).</span>`;
+          } else {
+            if (hint) hint.innerHTML = `<span class="hint-ok">✨ Cadastro encontrado (${escapeHtml(srcLabel)}) — toque em <strong>Preencher Automaticamente</strong> abaixo!</span>`;
+            showToast(`🪪 Paciente encontrado: ${p.vitimaNome || 'Cadastro salvo'} — toque para preencher!`);
           }
-          if (!fichaState.medicamentosOutro && p.medicamentosOutro) {
-            fichaState.medicamentosOutro = p.medicamentosOutro;
-          }
-          if ((!fichaState.alergiasSelecionadas || fichaState.alergiasSelecionadas.length === 0) && Array.isArray(p.alergiasSelecionadas) && p.alergiasSelecionadas.length > 0) {
-            fichaState.alergiasSelecionadas = p.alergiasSelecionadas.slice();
-          }
-          if (!fichaState.alergiasOutro && p.alergiasOutro) {
-            fichaState.alergiasOutro = p.alergiasOutro;
-          }
-
-          persistFichaDraft({ immediate: true });
-          const srcLabel = res.source === 'samu_cloud' ? 'Base SAMU Drive' : (res.source === 'external_api' ? 'Consulta Online' : 'Histórico do Aparelho');
-          if (hint) hint.innerHTML = `<span class="hint-ok">✅ Cadastro puxado automaticamente (${srcLabel})!</span>`;
-          showToast(`✅ Paciente encontrado: ${p.vitimaNome || 'Dados preenchidos'}!`);
         } else {
+          pendingCpfSuggestion = null;
           if (hint) {
             hint.innerHTML = navigator.onLine
-              ? '<span class="hint-ok">✅ CPF válido (1º atendimento na base — preencha para ficar salvo nos próximos).</span>'
-              : '<span class="hint-ok">✅ CPF válido (offline — sem cadastro salvo neste aparelho).</span>';
+              ? '<span class="hint-ok">✅ CPF válido (1º atendimento — os dados pessoais serão salvos automaticamente ao enviar a ficha).</span>'
+              : '<span class="hint-ok">✅ CPF válido (offline — os dados preenchidos ficarão salvos para os próximos atendimentos).</span>';
           }
           if (manualClick) showToast('CPF válido, ainda sem atendimento anterior salvo na base.');
         }
@@ -4020,8 +5173,110 @@
         if (hint) hint.innerHTML = `<span class="hint-warn">⚠️ ${escapeHtml(err.message || 'Erro ao consultar CPF.')}</span>`;
       } finally {
         if (btn) { btn.disabled = false; btn.textContent = '🔍 CPF'; }
+        refreshCpfManageSlot();
       }
     };
+
+    const bindCpfManageSlotEvents = () => {
+      const slot = document.getElementById('cpf-manage-slot');
+      if (!slot) return;
+
+      const acceptBtn = document.getElementById('btn-cpf-accept-suggest');
+      if (acceptBtn) {
+        acceptBtn.addEventListener('click', () => {
+          const digits = String(fichaState.vitimaCpf || '').replace(/\D+/g, '');
+          const patMap = window.SamuStorage.getInternalPatientsMap ? window.SamuStorage.getInternalPatientsMap() : {};
+          const targetPat = patMap[digits] || ((pendingCpfSuggestion && pendingCpfSuggestion.cpf11 === digits) ? pendingCpfSuggestion.patient : null);
+          if (!targetPat) return;
+          applyPatientSuggestionToFicha(targetPat, digits);
+          const hint = document.getElementById('cpf-lookup-hint');
+          if (hint) {
+            hint.innerHTML = '<span class="hint-ok">✅ Dados pessoais preenchidos automaticamente! Se alterar algo, ao enviar a ficha o app perguntará se deseja atualizar o cadastro.</span>';
+          }
+          refreshCpfManageSlot();
+          showToast(`✨ Dados de "${targetPat.vitimaNome || 'paciente'}" preenchidos automaticamente!`);
+        });
+      }
+
+      const dismissBtn = document.getElementById('btn-cpf-dismiss-suggest');
+      if (dismissBtn) {
+        dismissBtn.addEventListener('click', () => {
+          const digits = String(fichaState.vitimaCpf || '').replace(/\D+/g, '');
+          cpfSuggestionDismissedFor = digits;
+          const hint = document.getElementById('cpf-lookup-hint');
+          if (hint) {
+            hint.innerHTML = '<span style="color:var(--muted);">Preenchimento manual selecionado. Ao enviar a ficha, o app perguntará se deseja atualizar os dados salvos.</span>';
+          }
+          refreshCpfManageSlot();
+        });
+      }
+
+      const editBtn = document.getElementById('btn-cpf-edit-saved');
+      if (editBtn) {
+        editBtn.addEventListener('click', () => {
+          openEditPatientCadastroModal(fichaState.vitimaCpf, () => {
+            renderFichaView();
+          }, fichaState);
+        });
+      }
+
+      const overwriteBtn = document.getElementById('btn-cpf-overwrite-from-ficha');
+      if (overwriteBtn) {
+        overwriteBtn.addEventListener('click', () => {
+          const digits = String(fichaState.vitimaCpf || '').replace(/\D+/g, '');
+          if (digits.length !== 11 || !window.SamuStorage.isValidCpf(digits)) {
+            samuAlert('Informe um CPF válido com 11 números.');
+            return;
+          }
+          if (!String(fichaState.vitimaNome || '').trim()) {
+            samuAlert('Preencha o Nome Completo da Vítima antes de salvar o cadastro deste CPF.');
+            const nmEl = document.getElementById('f-vit-ident');
+            if (nmEl) nmEl.focus();
+            return;
+          }
+          try {
+            const payload = buildMergedPatientPayloadFromFicha(null, fichaState, digits, true);
+            const saved = window.SamuStorage.saveEditedPatientInInternalDb(digits, payload);
+            cpfAutoFilledFromSaved = digits;
+            fichaState._cpfAutoFilled = digits;
+            persistFichaDraft();
+            refreshCpfManageSlot();
+            showToast(`✅ Dados pessoais de "${saved.vitimaNome}" salvos no CPF e sincronizados!`);
+          } catch (err) {
+            samuAlert(err.message || 'Erro ao salvar pré-cadastro do CPF.');
+          }
+        });
+      }
+
+      const delBtn = document.getElementById('btn-cpf-delete-saved');
+      if (delBtn) {
+        delBtn.addEventListener('click', async () => {
+          const digits = String(fichaState.vitimaCpf || '').replace(/\D+/g, '');
+          const patMap = window.SamuStorage.getInternalPatientsMap ? window.SamuStorage.getInternalPatientsMap() : {};
+          const saved = patMap[digits];
+          const nm = (saved && saved.vitimaNome) || fichaState.vitimaNome || digits;
+          if (!(await samuConfirm(`Excluir permanentemente o pré-cadastro salvo de "${nm}" (CPF ${window.SamuStorage.formatCpf(digits)}) da base e do Google Drive?`))) return;
+          window.SamuStorage.deletePatientFromInternalDb(digits);
+          if (pendingCpfSuggestion && pendingCpfSuggestion.cpf11 === digits) {
+            pendingCpfSuggestion = null;
+          }
+          cpfAutoFilledFromSaved = '';
+          if (fichaState && fichaState._cpfAutoFilled === digits) {
+            fichaState._cpfAutoFilled = '';
+          }
+          refreshCpfManageSlot();
+          showToast('🗑️ Pré-cadastro deste CPF excluído e sincronizado!');
+        });
+      }
+    };
+
+    const refreshCpfManageSlot = () => {
+      const slot = document.getElementById('cpf-manage-slot');
+      if (!slot) return;
+      slot.innerHTML = renderCpfManageBarHtml(fichaState.vitimaCpf);
+      bindCpfManageSlotEvents();
+    };
+    bindCpfManageSlotEvents();
 
     const btnOccCep = document.getElementById('btn-lookup-occ-cep');
     if (btnOccCep) btnOccCep.addEventListener('click', () => executeCepLookup('occ', true));
@@ -4087,9 +5342,19 @@
           if (key === 'vitimaCpf') {
             const curDigits = val.replace(/\D+/g, '');
             const hint = document.getElementById('cpf-lookup-hint');
+            if (curDigits !== prevDigits) {
+              pendingCpfSuggestion = null;
+              cpfSuggestionDismissedFor = '';
+              cpfAutoFilledFromSaved = '';
+              if (fichaState._cpfAutoFilled && fichaState._cpfAutoFilled !== curDigits) {
+                fichaState._cpfAutoFilled = '';
+              }
+            }
             if (curDigits.length < 11) {
               if (hint) hint.innerHTML = '';
+              refreshCpfManageSlot();
             } else if (curDigits.length === 11 && curDigits !== prevDigits) {
+              refreshCpfManageSlot();
               executeCpfLookup(false);
             }
           }
@@ -4462,13 +5727,21 @@
       });
     }
 
+    container.querySelectorAll('[data-edit-medico]').forEach(editBtn => {
+      editBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openEditMedicoReguladorModal(editBtn.dataset.editMedico, () => renderFichaView());
+      });
+    });
+
     container.querySelectorAll('[data-del-medico]').forEach(delBtn => {
       delBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
         const medId = delBtn.dataset.delMedico;
-        if (!(await samuConfirm('Remover este Médico Regulador da lista rápida?'))) return;
+        if (!(await samuConfirm('Excluir permanentemente este Médico Regulador da lista rápida em todos os celulares?'))) return;
         window.SamuStorage.deleteMedicoRegulador(medId);
         renderFichaView();
+        showToast('🗑️ Médico Regulador excluído e sincronizado!');
       });
     });
 
@@ -4506,13 +5779,21 @@
       });
     }
 
+    container.querySelectorAll('[data-edit-receiver]').forEach(editBtn => {
+      editBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openEditHospitalReceiverModal(editBtn.dataset.editReceiver, () => renderFichaView());
+      });
+    });
+
     container.querySelectorAll('[data-del-receiver]').forEach(delBtn => {
       delBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
         const recId = delBtn.dataset.delReceiver;
-        if (!(await samuConfirm('Remover este profissional da lista rápida do hospital?'))) return;
+        if (!(await samuConfirm('Excluir permanentemente este profissional da lista rápida do hospital em todos os celulares?'))) return;
         window.SamuStorage.deleteHospitalReceiver(recId);
         renderFichaView();
+        showToast('🗑️ Profissional removido da lista do hospital e sincronizado!');
       });
     });
 
@@ -4583,6 +5864,16 @@
 
     // Salvar e Enviar PDF ao Google Drive
     document.getElementById('btn-save-send-ficha').addEventListener('click', async () => {
+      const patCheck = await handlePatientCadastroOnFichaSend(fichaState);
+      if (!patCheck.proceed) {
+        if (patCheck.action === 'cancel' && fichaStep !== 2) {
+          fichaStep = 2;
+          renderFichaView();
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+        return;
+      }
+
       const btn = document.getElementById('btn-save-send-ficha');
       btn.disabled = true;
       btn.textContent = 'Gerando PDF e Salvando...';
@@ -4596,9 +5887,10 @@
         const existing = editingFichaId ? await window.SamuStorage.getRecordById(editingFichaId) : null;
         const record = buildFichaRecordObject(recId, existing);
         record.isDraft = false;
+        record._patientCheckedOnSend = true;
 
         const generated = await window.SamuPDF.generatePdfForRecord(record);
-        await window.SamuStorage.saveRecordLocal(record);
+        await window.SamuStorage.saveRecordLocal(record, { skipPatientUpsert: true });
         if (activeCrew) {
           window.SamuStorage.closeCrewCurrentSession(activeCrew.crewId, currentCrewSessionId, 'submitted', recId, prevKmFinal, false);
         }
@@ -6357,38 +7649,124 @@
   /* ==========================================================================
    * ABA 6 (EXCLUSIVA ADM): BASE INTERNA + GITHUB, EQUIPE & GOOGLE DRIVE
    * ========================================================================== */
-  async function renderAdminView() {
+  async function renderAdminView(skipInitialPull) {
     if (!currentUser || !window.SamuStorage.isUserAdmin(currentUser)) return;
     const container = document.getElementById('main-view');
     const settings = window.SamuStorage.getSettings();
 
     // Tenta buscar usuários atualizados do GitHub / Google Apps Script se conectado
-    if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
-      try {
-        await window.SamuStorage.syncInternalDbWithGitHub();
-      } catch (e) {}
-    } else if (settings.scriptUrl && navigator.onLine) {
-      try {
-        const res = await window.SamuStorage.apiPost({
-          action: 'listUsers',
-          authUser: currentUser.username,
-          authPass: currentUser.password,
-          authName: currentUser.name,
-          authRole: window.SamuStorage.getUserProfileChoice(currentUser)
-        });
-        if (res && res.ok && Array.isArray(res.users)) {
-          window.SamuStorage.setLocalUsers(res.users);
-        }
-      } catch (e) {}
+    if (!skipInitialPull) {
+      if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
+        try {
+          await window.SamuStorage.syncInternalDbWithGitHub();
+        } catch (e) {}
+      } else if (settings.scriptUrl && navigator.onLine) {
+        try {
+          const res = await window.SamuStorage.apiPost({
+            action: 'listUsers',
+            authUser: currentUser.username,
+            authPass: currentUser.password,
+            authName: currentUser.name,
+            authRole: window.SamuStorage.getUserProfileChoice(currentUser)
+          });
+          if (res && res.ok && Array.isArray(res.users)) {
+            window.SamuStorage.setLocalUsers(res.users);
+          }
+        } catch (e) {}
+      }
     }
 
     const allUsers = window.SamuStorage.getLocalUsers();
     const pendingUsers = window.SamuStorage.getPendingUsers();
     const users = allUsers.filter(u => u.status !== 'pending');
-    const receiversCount = window.SamuStorage.getHospitalReceivers().length;
-    const medicosRegCount = window.SamuStorage.getMedicosReguladores ? window.SamuStorage.getMedicosReguladores().length : 0;
-    const patientsCount = Object.keys(window.SamuStorage.getInternalPatientsMap() || {}).length;
+    const receiversList = window.SamuStorage.getHospitalReceivers();
+    const medicosList = window.SamuStorage.getMedicosReguladores ? window.SamuStorage.getMedicosReguladores() : [];
+    const patientsList = window.SamuStorage.getInternalPatientsList ? window.SamuStorage.getInternalPatientsList() : [];
+    const receiversCount = receiversList.length;
+    const medicosRegCount = medicosList.length;
+    const patientsCount = patientsList.length;
     const ghMeta = window.SamuStorage.getGitHubMeta();
+
+    const buildCatalogListHtml = () => {
+      const q = normStr(adminCatalogSearch.trim());
+      const qDigits = adminCatalogSearch.replace(/\D+/g, '');
+
+      if (adminCatalogTab === 'medicos') {
+        const filtered = medicosList.filter(m => !q || normStr(m.nome).includes(q));
+        if (!filtered.length) {
+          return `<div style="padding:14px; text-align:center; color:var(--muted); font-size:0.83rem;">${q ? 'Nenhum Médico Regulador encontrado na busca.' : 'Nenhum Médico Regulador salvo ainda.'}</div>`;
+        }
+        return filtered.map(m => `
+          <div class="check-item-row" style="flex-wrap:wrap; gap:8px;">
+            <div class="check-item-info">
+              <strong>👨‍⚕️ ${escapeHtml(m.nome)}</strong>
+            </div>
+            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+              <button type="button" class="btn btn-outline btn-sm" data-cat-edit-med="${escapeHtml(m.id)}">✏️ Editar</button>
+              <button type="button" class="btn btn-secondary btn-sm" data-cat-del-med="${escapeHtml(m.id)}">🗑️ Excluir</button>
+            </div>
+          </div>
+        `).join('');
+      }
+
+      if (adminCatalogTab === 'receivers') {
+        const filtered = receiversList.filter(r =>
+          !q || normStr(`${r.nome || ''} ${r.corenCrm || ''} ${r.hospital || ''}`).includes(q)
+        );
+        if (!filtered.length) {
+          return `<div style="padding:14px; text-align:center; color:var(--muted); font-size:0.83rem;">${q ? 'Nenhum Recebedor do Hospital encontrado na busca.' : 'Nenhum Recebedor do Hospital salvo ainda.'}</div>`;
+        }
+        return filtered.map(r => `
+          <div class="check-item-row" style="flex-wrap:wrap; gap:8px;">
+            <div class="check-item-info">
+              <strong>🏥 ${escapeHtml(r.nome)}</strong>
+              <br>
+              <small style="color:var(--muted);">
+                ${r.corenCrm ? `<strong>${escapeHtml(r.corenCrm)}</strong> • ` : ''}Hospital: ${escapeHtml(r.hospital || 'HBSA')}
+              </small>
+            </div>
+            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+              <button type="button" class="btn btn-outline btn-sm" data-cat-edit-rec="${escapeHtml(r.id)}">✏️ Editar</button>
+              <button type="button" class="btn btn-secondary btn-sm" data-cat-del-rec="${escapeHtml(r.id)}">🗑️ Excluir</button>
+            </div>
+          </div>
+        `).join('');
+      }
+
+      const filtered = patientsList.filter(p => {
+        if (!q) return true;
+        if (qDigits && String(p.cpf11 || '').includes(qDigits)) return true;
+        const blob = `${p.vitimaNome || ''} ${p.vitimaCpf || ''} ${p.vitimaEndereco || ''} ${p.vitimaNumero || ''} ${p.vitimaBairro || ''} ${p.vitimaCidade || ''} ${p.vitimaCep || ''}`;
+        return normStr(blob).includes(q);
+      });
+      if (!filtered.length) {
+        return `<div style="padding:14px; text-align:center; color:var(--muted); font-size:0.83rem;">${q ? 'Nenhum paciente encontrado para essa busca (nome, CPF ou rua).' : 'Nenhum paciente pré-cadastrado por CPF ainda.'}</div>`;
+      }
+      return filtered.map(p => {
+        const addrParts = [
+          p.vitimaEndereco ? `${p.vitimaEndereco}${p.vitimaNumero ? ', nº ' + p.vitimaNumero : ''}` : '',
+          p.vitimaBairro || '',
+          p.vitimaCidade || '',
+          p.vitimaCep ? `CEP ${p.vitimaCep}` : ''
+        ].filter(Boolean).join(' • ');
+        return `
+          <div class="check-item-row" style="flex-wrap:wrap; gap:8px;">
+            <div class="check-item-info">
+              <strong>🪪 ${escapeHtml(p.vitimaNome)}</strong>
+              <small style="color:var(--muted);"> • CPF: <code>${escapeHtml(p.vitimaCpf)}</code>${p.vitimaIdade ? ` • ${escapeHtml(p.vitimaIdade)}` : ''}</small>
+              <br>
+              <small style="color:var(--muted);">
+                📍 ${addrParts ? escapeHtml(addrParts) : '<em>Sem endereço residencial preenchido</em>'}
+              </small>
+            </div>
+            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+              <button type="button" class="btn btn-outline btn-sm" data-cat-edit-pat="${escapeHtml(p.cpf11)}">✏️ Editar Endere&#8204;ço / Dados</button>
+              <button type="button" class="btn btn-secondary btn-sm" data-cat-del-pat="${escapeHtml(p.cpf11)}">🗑️ Excluir</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    };
 
     container.innerHTML = `
       <div class="card">
@@ -6459,8 +7837,37 @@
         </div>
         <div style="display:flex; flex-wrap:wrap; gap:8px;">
           <button type="button" class="btn btn-primary btn-sm" id="btn-adm-test-drive">🔌 Testar e Salvar Conexão Drive</button>
-          ${settings.rootFolderUrl ? `<a href="${escapeHtml(settings.rootFolderUrl)}" target="_blank" class="btn btn-success btn-sm" style="text-decoration:none;">📁 Abrir Pasta Google Drive</a>` : ''}
-          ${settings.spreadsheetUrl ? `<a href="${escapeHtml(settings.spreadsheetUrl)}" target="_blank" class="btn btn-orange btn-sm" style="text-decoration:none;">📊 Abrir Planilha de Controle</a>` : ''}
+          <button type="button" class="btn btn-success btn-sm" id="btn-adm-open-folders">📁 Abrir Pasta Google Drive</button>
+          <button type="button" class="btn btn-orange btn-sm" id="btn-adm-open-sheet">📊 Abrir Planilha de Controle</button>
+        </div>
+      </div>
+
+      <div class="card" id="adm-catalog-card">
+        <div class="card-title">
+          <span>🗂️ Gerenciar Cadastros Automáticos (Pacientes, Médicos Reguladores e Hospital)</span>
+        </div>
+        <p style="margin:0 0 10px; font-size:0.83rem; color:var(--muted);">
+          Edite endereços pré-cadastrados de pacientes, corrija nomes/CRM/COREN ou exclua registros salvos automaticamente — sincroniza com todos os celulares pelo Google Drive.
+        </p>
+        <div class="catalog-subtabs">
+          <button type="button" class="catalog-subtab ${adminCatalogTab === 'patients' ? 'active' : ''}" data-cat-tab="patients">🪪 Pacientes / Endereços (${patientsCount})</button>
+          <button type="button" class="catalog-subtab ${adminCatalogTab === 'medicos' ? 'active' : ''}" data-cat-tab="medicos">👨‍⚕️ Médicos Reguladores (${medicosRegCount})</button>
+          <button type="button" class="catalog-subtab ${adminCatalogTab === 'receivers' ? 'active' : ''}" data-cat-tab="receivers">🏥 Recebedores Hospital (${receiversCount})</button>
+        </div>
+        <div class="input-action-row" style="margin-bottom:10px;">
+          <input
+            type="text"
+            id="adm-catalog-search"
+            autocomplete="off"
+            value="${escapeHtml(adminCatalogSearch)}"
+            placeholder="${adminCatalogTab === 'patients' ? '🔎 Buscar paciente por nome, CPF ou rua...' : (adminCatalogTab === 'medicos' ? '🔎 Buscar Médico Regulador...' : '🔎 Buscar Recebedor ou COREN...')}"
+          />
+          <button type="button" class="btn btn-success btn-sm" id="btn-adm-catalog-add" style="white-space:nowrap;">
+            ${adminCatalogTab === 'patients' ? '➕ Novo Paciente' : (adminCatalogTab === 'medicos' ? '➕ Novo Médico' : '➕ Novo Recebedor')}
+          </button>
+        </div>
+        <div id="adm-catalog-list-slot" style="max-height:360px; overflow-y:auto; border:1px solid #e2e8f0; border-radius:10px; padding:4px 10px;">
+          ${buildCatalogListHtml()}
         </div>
       </div>
 
@@ -6712,6 +8119,15 @@
       }
     });
 
+    const btnOpenFolders = document.getElementById('btn-adm-open-folders');
+    if (btnOpenFolders) {
+      btnOpenFolders.addEventListener('click', () => openInAppDriveFoldersModal());
+    }
+    const btnOpenSheet = document.getElementById('btn-adm-open-sheet');
+    if (btnOpenSheet) {
+      btnOpenSheet.addEventListener('click', () => openInAppControlSheetModal());
+    }
+
     const copyBtn = document.getElementById('btn-adm-copy-url');
     if (copyBtn) {
       copyBtn.addEventListener('click', async () => {
@@ -6823,9 +8239,99 @@
     container.querySelectorAll('[data-del-u]').forEach(btn => {
       btn.addEventListener('click', async () => {
         const ok = await deleteUserAccountWithSync(btn.dataset.delU);
-        if (ok) renderAdminView();
+        if (ok) renderAdminView(true);
       });
     });
+
+    // Eventos do Gerenciador de Cadastros Automáticos (Pacientes por CPF, Médicos Reguladores e Recebedores do Hospital)
+    const bindAdminCatalogRowActions = () => {
+      const slot = document.getElementById('adm-catalog-list-slot');
+      if (!slot) return;
+
+      slot.querySelectorAll('[data-cat-edit-med]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          openEditMedicoReguladorModal(btn.dataset.catEditMed, () => renderAdminView(true));
+        });
+      });
+      slot.querySelectorAll('[data-cat-del-med]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const item = medicosList.find(m => m.id === btn.dataset.catDelMed);
+          const nm = item ? item.nome : btn.dataset.catDelMed;
+          if (!(await samuConfirm(`Excluir permanentemente o Médico Regulador "${nm}" da base e do Google Drive?`))) return;
+          window.SamuStorage.deleteMedicoRegulador(btn.dataset.catDelMed);
+          renderAdminView(true);
+          showToast(`🗑️ "${nm}" excluído e sincronizado!`);
+        });
+      });
+
+      slot.querySelectorAll('[data-cat-edit-rec]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          openEditHospitalReceiverModal(btn.dataset.catEditRec, () => renderAdminView(true));
+        });
+      });
+      slot.querySelectorAll('[data-cat-del-rec]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const item = receiversList.find(r => r.id === btn.dataset.catDelRec);
+          const nm = item ? item.nome : btn.dataset.catDelRec;
+          if (!(await samuConfirm(`Excluir permanentemente o recebedor "${nm}" da base e do Google Drive?`))) return;
+          window.SamuStorage.deleteHospitalReceiver(btn.dataset.catDelRec);
+          renderAdminView(true);
+          showToast(`🗑️ "${nm}" excluído e sincronizado!`);
+        });
+      });
+
+      slot.querySelectorAll('[data-cat-edit-pat]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          openEditPatientCadastroModal(btn.dataset.catEditPat, () => renderAdminView(true));
+        });
+      });
+      slot.querySelectorAll('[data-cat-del-pat]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const cpf11 = btn.dataset.catDelPat;
+          const item = patientsList.find(p => p.cpf11 === cpf11);
+          const nm = item ? `${item.vitimaNome} (CPF ${item.vitimaCpf})` : cpf11;
+          if (!(await samuConfirm(`Excluir permanentemente o pré-cadastro de ${nm} da base interna e do Google Drive?`))) return;
+          window.SamuStorage.deletePatientFromInternalDb(cpf11);
+          renderAdminView(true);
+          showToast('🗑️ Pré-cadastro excluído e sincronizado!');
+        });
+      });
+    };
+
+    bindAdminCatalogRowActions();
+
+    container.querySelectorAll('[data-cat-tab]').forEach(tabBtn => {
+      tabBtn.addEventListener('click', () => {
+        adminCatalogTab = tabBtn.dataset.catTab;
+        adminCatalogSearch = '';
+        renderAdminView(true);
+      });
+    });
+
+    const catSearchInp = document.getElementById('adm-catalog-search');
+    if (catSearchInp) {
+      catSearchInp.addEventListener('input', () => {
+        adminCatalogSearch = catSearchInp.value || '';
+        const slot = document.getElementById('adm-catalog-list-slot');
+        if (slot) {
+          slot.innerHTML = buildCatalogListHtml();
+          bindAdminCatalogRowActions();
+        }
+      });
+    }
+
+    const catAddBtn = document.getElementById('btn-adm-catalog-add');
+    if (catAddBtn) {
+      catAddBtn.addEventListener('click', () => {
+        if (adminCatalogTab === 'medicos') {
+          openEditMedicoReguladorModal('', () => renderAdminView(true));
+        } else if (adminCatalogTab === 'receivers') {
+          openEditHospitalReceiverModal('', () => renderAdminView(true));
+        } else {
+          openEditPatientCadastroModal('', () => renderAdminView(true));
+        }
+      });
+    }
   }
 
   /* ==========================================================================

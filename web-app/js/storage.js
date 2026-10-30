@@ -844,20 +844,44 @@
   }
 
   /* ===================== RECEBEDORES DO HOSPITAL (NOME + COREN/CRM SALVOS) ===================== */
+  const TOMBSTONE_MARKER = '__EXCLUIDO__';
+  const EMPTY_MARKER = '__VAZIO__';
+  function isTombstoneValue(v) {
+    return String(v || '').trim() === TOMBSTONE_MARKER;
+  }
+  function cleanMarkerField(v) {
+    const s = String(v || '').trim();
+    return (s === TOMBSTONE_MARKER || s === EMPTY_MARKER) ? '' : s;
+  }
+
   function normKey(s) {
     return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
   }
 
-  function getHospitalReceivers() {
+  function getHospitalReceiversRaw() {
     try {
       const raw = safeLS.getItem(LS_HOSP_RECEIVERS);
       const list = raw ? JSON.parse(raw) : [];
       if (!Array.isArray(list)) return [];
-      list.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
-      return list;
+      const cutoff60d = new Date(Date.now() - 60 * 24 * 3600 * 1000).toISOString();
+      return list.filter(r => {
+        if (!r || typeof r !== 'object') return false;
+        if (isTombstoneValue(r.nome) || r.deleted) {
+          return !r.updatedAt || String(r.updatedAt) >= cutoff60d;
+        }
+        return Boolean(String(r.nome || '').trim());
+      });
     } catch (e) {
       return [];
     }
+  }
+
+  function getHospitalReceivers() {
+    const list = getHospitalReceiversRaw()
+      .filter(r => !isTombstoneValue(r.nome) && !r.deleted && String(r.nome || '').trim())
+      .map(r => Object.assign({}, r, { corenCrm: cleanMarkerField(r.corenCrm) }));
+    list.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+    return list;
   }
 
   function setHospitalReceivers(list) {
@@ -868,25 +892,35 @@
 
   function upsertHospitalReceiver(info, skipDirty) {
     const nome = String((info && info.nome) || '').trim();
+    const hasCorenProp = Boolean(info && Object.prototype.hasOwnProperty.call(info, 'corenCrm'));
     const corenCrm = String((info && info.corenCrm) || '').trim();
     const hospital = String((info && info.hospital) || 'HBSA').trim() || 'HBSA';
-    if (!nome) return getHospitalReceivers();
+    if (!nome || isTombstoneValue(nome)) return getHospitalReceivers();
 
     const id = normKey(nome);
     if (!id) return getHospitalReceivers();
 
-    const list = getHospitalReceivers();
+    const list = getHospitalReceiversRaw();
     const now = new Date().toISOString();
+    const incomingTs = (info && info.updatedAt) || now;
     const idx = list.findIndex(item => (item.id || normKey(item.nome)) === id);
 
     if (idx >= 0) {
+      const prev = list[idx];
+      if (prev.updatedAt && String(incomingTs) < String(prev.updatedAt)) {
+        return getHospitalReceivers();
+      }
+      const wasDeleted = isTombstoneValue(prev.nome) || Boolean(prev.deleted);
+      const nextCoren = (info && info.replaceFields)
+        ? corenCrm
+        : (corenCrm || (!wasDeleted && prev.corenCrm) || (hasCorenProp ? corenCrm : ''));
       list[idx] = {
         id,
         nome,
-        corenCrm: corenCrm || list[idx].corenCrm || '',
-        hospital: hospital || list[idx].hospital || 'HBSA',
-        useCount: (Number(list[idx].useCount) || 1) + 1,
-        updatedAt: (info && info.updatedAt) || now
+        corenCrm: nextCoren,
+        hospital: hospital || (!wasDeleted && prev.hospital) || 'HBSA',
+        useCount: wasDeleted ? 1 : ((Number(prev.useCount) || 1) + 1),
+        updatedAt: incomingTs
       };
     } else {
       list.unshift({
@@ -895,7 +929,7 @@
         corenCrm,
         hospital,
         useCount: 1,
-        updatedAt: (info && info.updatedAt) || now
+        updatedAt: incomingTs
       });
     }
 
@@ -909,36 +943,124 @@
     return getHospitalReceivers();
   }
 
-  function deleteHospitalReceiver(id) {
-    const list = getHospitalReceivers().filter(item => item.id !== id);
+  function editHospitalReceiver(oldId, info) {
+    const nome = String((info && info.nome) || '').trim();
+    if (!nome || isTombstoneValue(nome)) {
+      throw new Error('Informe o nome do profissional do hospital.');
+    }
+    const corenCrm = String((info && info.corenCrm) || '').trim();
+    const hospital = String((info && info.hospital) || 'HBSA').trim() || 'HBSA';
+    const newId = normKey(nome);
+    if (!newId) {
+      throw new Error('Nome inválido.');
+    }
+
+    const list = getHospitalReceiversRaw();
+    const tDel = new Date().toISOString();
+    const tUpd = new Date(Date.now() + 5).toISOString();
+    const cleanOldId = String(oldId || '').trim();
+    let prevCount = 1;
+
+    if (cleanOldId) {
+      const oldIdx = list.findIndex(item => (item.id || normKey(item.nome)) === cleanOldId);
+      if (oldIdx >= 0) {
+        prevCount = Math.max(1, Number(list[oldIdx].useCount) || 1);
+        if (cleanOldId !== newId) {
+          list[oldIdx] = {
+            id: cleanOldId,
+            nome: TOMBSTONE_MARKER,
+            corenCrm: '',
+            hospital: '',
+            useCount: 1,
+            updatedAt: tDel
+          };
+        }
+      }
+    }
+
+    const newIdx = list.findIndex(item => (item.id || normKey(item.nome)) === newId);
+    const updatedItem = {
+      id: newId,
+      nome,
+      corenCrm,
+      hospital,
+      useCount: prevCount,
+      updatedAt: tUpd
+    };
+    if (newIdx >= 0) {
+      list[newIdx] = updatedItem;
+    } else {
+      list.unshift(updatedItem);
+    }
+
     setHospitalReceivers(list);
     markGitHubDirty();
     if (navigator.onLine && hasGitHubConfigured()) {
       syncInternalDbWithGitHub({ pushChanges: true }).catch(() => {});
     }
-    return list;
+    return updatedItem;
+  }
+
+  function deleteHospitalReceiver(id) {
+    const cleanId = String(id || '').trim();
+    if (!cleanId) return getHospitalReceivers();
+    const list = getHospitalReceiversRaw();
+    const now = new Date().toISOString();
+    const idx = list.findIndex(item => (item.id || normKey(item.nome)) === cleanId);
+    const tombstone = {
+      id: cleanId,
+      nome: TOMBSTONE_MARKER,
+      corenCrm: '',
+      hospital: '',
+      useCount: 1,
+      updatedAt: now
+    };
+    if (idx >= 0) {
+      list[idx] = tombstone;
+    } else {
+      list.unshift(tombstone);
+    }
+    setHospitalReceivers(list);
+    markGitHubDirty();
+    if (navigator.onLine && hasGitHubConfigured()) {
+      syncInternalDbWithGitHub({ pushChanges: true }).catch(() => {});
+    }
+    return getHospitalReceivers();
   }
 
   /* ===================== MÉDICOS REGULADORES SALVOS AUTOMATICAMENTE ===================== */
   function extractCleanMedicoName(rawText) {
     const raw = String(rawText || '').trim();
     if (!raw) return '';
+    if (isTombstoneValue(raw)) return TOMBSTONE_MARKER;
     // Se a equipe digitou "Dr. João / Senha 1234", salva apenas o nome/CRM do médico ("Dr. João") sem a senha única da ocorrência
     const cleaned = raw.replace(/\s*(?:[\/\-–|]\s*)?\bsenha\b[\s:#\-]*[a-z0-9.\-/]*$/i, '').trim();
     if (!cleaned || cleaned.length < 2) return '';
     return cleaned;
   }
 
-  function getMedicosReguladores() {
+  function getMedicosReguladoresRaw() {
     try {
       const raw = safeLS.getItem(LS_MEDICOS_REGULADORES);
       const list = raw ? JSON.parse(raw) : [];
       if (!Array.isArray(list)) return [];
-      list.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
-      return list;
+      const cutoff60d = new Date(Date.now() - 60 * 24 * 3600 * 1000).toISOString();
+      return list.filter(m => {
+        if (!m || typeof m !== 'object') return false;
+        if (isTombstoneValue(m.nome) || m.deleted) {
+          return !m.updatedAt || String(m.updatedAt) >= cutoff60d;
+        }
+        return Boolean(String(m.nome || '').trim());
+      });
     } catch (e) {
       return [];
     }
+  }
+
+  function getMedicosReguladores() {
+    const list = getMedicosReguladoresRaw().filter(m => !isTombstoneValue(m.nome) && !m.deleted && String(m.nome || '').trim());
+    list.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+    return list;
   }
 
   function setMedicosReguladores(list) {
@@ -950,28 +1072,34 @@
   function upsertMedicoRegulador(info, skipDirty) {
     const rawNome = typeof info === 'string' ? info : ((info && info.nome) || '');
     const nome = extractCleanMedicoName(rawNome);
-    if (!nome) return getMedicosReguladores();
+    if (!nome || isTombstoneValue(nome)) return getMedicosReguladores();
 
     const id = normKey(nome);
     if (!id) return getMedicosReguladores();
 
-    const list = getMedicosReguladores();
+    const list = getMedicosReguladoresRaw();
     const now = new Date().toISOString();
+    const incomingTs = (info && typeof info === 'object' && info.updatedAt) || now;
     const idx = list.findIndex(item => (item.id || normKey(item.nome)) === id);
 
     if (idx >= 0) {
+      const prev = list[idx];
+      if (prev.updatedAt && String(incomingTs) < String(prev.updatedAt)) {
+        return getMedicosReguladores();
+      }
+      const wasDeleted = isTombstoneValue(prev.nome) || Boolean(prev.deleted);
       list[idx] = {
         id,
         nome,
-        useCount: (Number(list[idx].useCount) || 1) + 1,
-        updatedAt: (info && typeof info === 'object' && info.updatedAt) || now
+        useCount: wasDeleted ? 1 : ((Number(prev.useCount) || 1) + 1),
+        updatedAt: incomingTs
       };
     } else {
       list.unshift({
         id,
         nome,
         useCount: 1,
-        updatedAt: (info && typeof info === 'object' && info.updatedAt) || now
+        updatedAt: incomingTs
       });
     }
 
@@ -985,14 +1113,81 @@
     return getMedicosReguladores();
   }
 
-  function deleteMedicoRegulador(id) {
-    const list = getMedicosReguladores().filter(item => item.id !== id);
+  function editMedicoRegulador(oldId, newNomeRaw) {
+    const nome = extractCleanMedicoName(newNomeRaw) || String(newNomeRaw || '').trim();
+    if (!nome || nome.length < 2 || isTombstoneValue(nome)) {
+      throw new Error('Informe o nome do Médico Regulador.');
+    }
+    const newId = normKey(nome);
+    if (!newId) {
+      throw new Error('Nome inválido.');
+    }
+
+    const list = getMedicosReguladoresRaw();
+    const tDel = new Date().toISOString();
+    const tUpd = new Date(Date.now() + 5).toISOString();
+    const cleanOldId = String(oldId || '').trim();
+    let prevCount = 1;
+
+    if (cleanOldId) {
+      const oldIdx = list.findIndex(item => (item.id || normKey(item.nome)) === cleanOldId);
+      if (oldIdx >= 0) {
+        prevCount = Math.max(1, Number(list[oldIdx].useCount) || 1);
+        if (cleanOldId !== newId) {
+          list[oldIdx] = {
+            id: cleanOldId,
+            nome: TOMBSTONE_MARKER,
+            useCount: 1,
+            updatedAt: tDel
+          };
+        }
+      }
+    }
+
+    const newIdx = list.findIndex(item => (item.id || normKey(item.nome)) === newId);
+    const updatedItem = {
+      id: newId,
+      nome,
+      useCount: prevCount,
+      updatedAt: tUpd
+    };
+    if (newIdx >= 0) {
+      list[newIdx] = updatedItem;
+    } else {
+      list.unshift(updatedItem);
+    }
+
     setMedicosReguladores(list);
     markGitHubDirty();
     if (navigator.onLine && hasGitHubConfigured()) {
       syncInternalDbWithGitHub({ pushChanges: true }).catch(() => {});
     }
-    return list;
+    return updatedItem;
+  }
+
+  function deleteMedicoRegulador(id) {
+    const cleanId = String(id || '').trim();
+    if (!cleanId) return getMedicosReguladores();
+    const list = getMedicosReguladoresRaw();
+    const now = new Date().toISOString();
+    const idx = list.findIndex(item => (item.id || normKey(item.nome)) === cleanId);
+    const tombstone = {
+      id: cleanId,
+      nome: TOMBSTONE_MARKER,
+      useCount: 1,
+      updatedAt: now
+    };
+    if (idx >= 0) {
+      list[idx] = tombstone;
+    } else {
+      list.unshift(tombstone);
+    }
+    setMedicosReguladores(list);
+    markGitHubDirty();
+    if (navigator.onLine && hasGitHubConfigured()) {
+      syncInternalDbWithGitHub({ pushChanges: true }).catch(() => {});
+    }
+    return getMedicosReguladores();
   }
 
   /* ===================== AVARIAS SALVAS POR VIATURA (AMASSADOS / RISCADOS PERSISTENTES) ===================== */
@@ -1062,14 +1257,57 @@
   }
 
   /* ===================== BASE INTERNA DE PACIENTES (OFFLINE + GITHUB) ===================== */
-  function getInternalPatientsMap() {
+  function getInternalPatientsMapRaw() {
     try {
       const raw = safeLS.getItem(LS_PATIENTS_DB);
       const map = raw ? JSON.parse(raw) : {};
-      return (map && typeof map === 'object' && !Array.isArray(map)) ? map : {};
+      if (!map || typeof map !== 'object' || Array.isArray(map)) return {};
+      const cutoff90d = new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString();
+      const out = {};
+      Object.keys(map).forEach(k => {
+        const cpf11 = String(k || '').replace(/\D+/g, '');
+        if (cpf11.length !== 11) return;
+        const p = map[k];
+        if (!p || typeof p !== 'object') return;
+        if (p.deleted || isTombstoneValue(p.vitimaNome)) {
+          if (!p.updatedAt || String(p.updatedAt) >= cutoff90d) {
+            out[cpf11] = p;
+          }
+          return;
+        }
+        if (String(p.vitimaNome || '').trim()) {
+          out[cpf11] = p;
+        }
+      });
+      return out;
     } catch (e) {
       return {};
     }
+  }
+
+  function getInternalPatientsMap() {
+    const rawMap = getInternalPatientsMapRaw();
+    const activeMap = {};
+    Object.keys(rawMap).forEach(cpf11 => {
+      const p = rawMap[cpf11];
+      if (p && !p.deleted && !isTombstoneValue(p.vitimaNome) && String(p.vitimaNome || '').trim()) {
+        activeMap[cpf11] = p;
+      }
+    });
+    return activeMap;
+  }
+
+  function getInternalPatientsList() {
+    const activeMap = getInternalPatientsMap();
+    const list = Object.keys(activeMap).map(cpf11 => {
+      const p = activeMap[cpf11];
+      return Object.assign({}, p, {
+        cpf11,
+        vitimaCpf: p.vitimaCpf || formatCpf(cpf11)
+      });
+    });
+    list.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+    return list;
   }
 
   function setInternalPatientsMap(mapObj) {
@@ -1081,11 +1319,19 @@
     if (!fichaData) return;
     const cpf11 = String(fichaData.vitimaCpf || '').replace(/\D+/g, '');
     const nome = String(fichaData.vitimaNome || '').trim();
-    if (cpf11.length !== 11 || !nome) return;
+    if (cpf11.length !== 11 || !nome || isTombstoneValue(nome)) return;
 
-    const map = getInternalPatientsMap();
-    const prev = map[cpf11] || {};
+    const map = getInternalPatientsMapRaw();
+    const rawPrev = map[cpf11];
     const now = new Date().toISOString();
+    const incomingTs = fichaData.updatedAt || now;
+
+    if (rawPrev && rawPrev.updatedAt && String(incomingTs) < String(rawPrev.updatedAt)) {
+      return;
+    }
+
+    const wasDeleted = Boolean(rawPrev && (rawPrev.deleted || isTombstoneValue(rawPrev.vitimaNome)));
+    const prev = wasDeleted ? {} : (rawPrev || {});
 
     map[cpf11] = {
       vitimaNome: nome,
@@ -1107,11 +1353,110 @@
       medicamentosOutro: fichaData.medicamentosOutro || prev.medicamentosOutro || '',
       alergiasSelecionadas: (Array.isArray(fichaData.alergiasSelecionadas) && fichaData.alergiasSelecionadas.length) ? fichaData.alergiasSelecionadas : (prev.alergiasSelecionadas || []),
       alergiasOutro: fichaData.alergiasOutro || prev.alergiasOutro || '',
-      updatedAt: fichaData.updatedAt || now
+      deleted: false,
+      updatedAt: incomingTs
     };
 
     setInternalPatientsMap(map);
     if (!skipDirty) markGitHubDirty();
+  }
+
+  function saveEditedPatientInInternalDb(rawCpf, fields) {
+    const cpf11 = String(rawCpf || (fields && fields.vitimaCpf) || '').replace(/\D+/g, '');
+    if (cpf11.length !== 11) {
+      throw new Error('O CPF do paciente deve ter 11 números.');
+    }
+    const nome = String((fields && fields.vitimaNome) || '').trim();
+    if (!nome || isTombstoneValue(nome)) {
+      throw new Error('Informe o nome completo do paciente.');
+    }
+
+    const map = getInternalPatientsMapRaw();
+    const rawPrev = map[cpf11];
+    const wasDeleted = Boolean(rawPrev && (rawPrev.deleted || isTombstoneValue(rawPrev.vitimaNome)));
+    const prev = wasDeleted ? {} : (rawPrev || {});
+    const pickStr = (k, defVal) => {
+      if (fields && Object.prototype.hasOwnProperty.call(fields, k)) {
+        return String(fields[k] == null ? '' : fields[k]).trim();
+      }
+      return String(prev[k] == null ? (defVal || '') : prev[k]).trim();
+    };
+    const clearClinical = Boolean(fields && fields.clearClinicalHistory);
+    const now = new Date().toISOString();
+
+    const updated = {
+      vitimaNome: nome,
+      vitimaCpf: formatCpf(cpf11),
+      vitimaRg: pickStr('vitimaRg', ''),
+      vitimaCns: pickStr('vitimaCns', ''),
+      vitimaDn: pickStr('vitimaDn', ''),
+      vitimaIdade: pickStr('vitimaIdade', ''),
+      vitimaCep: pickStr('vitimaCep', ''),
+      vitimaCidade: pickStr('vitimaCidade', 'Orlândia'),
+      vitimaBairro: pickStr('vitimaBairro', ''),
+      vitimaEndereco: pickStr('vitimaEndereco', ''),
+      vitimaNumero: pickStr('vitimaNumero', ''),
+      vitimaNaturalidade: pickStr('vitimaNaturalidade', ''),
+      vitimaPai: pickStr('vitimaPai', ''),
+      vitimaMae: pickStr('vitimaMae', ''),
+      antecedentes: clearClinical
+        ? []
+        : (Array.isArray(fields && fields.antecedentes) ? fields.antecedentes : (prev.antecedentes || [])),
+      medicamentosSelecionados: clearClinical
+        ? []
+        : (Array.isArray(fields && fields.medicamentosSelecionados) ? fields.medicamentosSelecionados : (prev.medicamentosSelecionados || [])),
+      medicamentosOutro: clearClinical ? '' : pickStr('medicamentosOutro', ''),
+      alergiasSelecionadas: clearClinical
+        ? []
+        : (Array.isArray(fields && fields.alergiasSelecionadas) ? fields.alergiasSelecionadas : (prev.alergiasSelecionadas || [])),
+      alergiasOutro: clearClinical ? '' : pickStr('alergiasOutro', ''),
+      deleted: false,
+      updatedAt: now
+    };
+
+    map[cpf11] = updated;
+    setInternalPatientsMap(map);
+    markGitHubDirty();
+    if (navigator.onLine && hasGitHubConfigured()) {
+      syncInternalDbWithGitHub({ pushChanges: true }).catch(() => {});
+    }
+    return updated;
+  }
+
+  function deletePatientFromInternalDb(rawCpf) {
+    const cpf11 = String(rawCpf || '').replace(/\D+/g, '');
+    if (cpf11.length !== 11) return false;
+    const map = getInternalPatientsMapRaw();
+    const now = new Date().toISOString();
+    map[cpf11] = {
+      vitimaNome: TOMBSTONE_MARKER,
+      vitimaCpf: formatCpf(cpf11),
+      vitimaRg: '',
+      vitimaCns: '',
+      vitimaDn: '',
+      vitimaIdade: '',
+      vitimaCep: '',
+      vitimaCidade: '',
+      vitimaBairro: '',
+      vitimaEndereco: '',
+      vitimaNumero: '',
+      vitimaNaturalidade: '',
+      vitimaPai: '',
+      vitimaMae: '',
+      antecedentes: [],
+      medicamentosSelecionados: [],
+      medicamentosOutro: '',
+      alergiasSelecionadas: [],
+      alergiasOutro: '',
+      deleted: true,
+      updatedAt: now
+    };
+    setInternalPatientsMap(map);
+    markGitHubDirty();
+    if (navigator.onLine && hasGitHubConfigured()) {
+      syncInternalDbWithGitHub({ pushChanges: true }).catch(() => {});
+    }
+    return true;
   }
 
   /* ===================== CONSULTA E SINCRONIZAÇÃO COM BASE NO GITHUB ===================== */
@@ -1919,9 +2264,11 @@
       deletedUsernames: Object.keys(delMap),
       deletedRecordsMap: getDeletedRecordsMap(),
       users: getLocalUsers(),
-      hospitalReceivers: getHospitalReceivers(),
-      medicosReguladores: getMedicosReguladores(),
-      patients: getInternalPatientsMap(),
+      hospitalReceivers: getHospitalReceiversRaw().map(r => Object.assign({}, r, {
+        corenCrm: cleanMarkerField(r.corenCrm) || EMPTY_MARKER
+      })),
+      medicosReguladores: getMedicosReguladoresRaw(),
+      patients: getInternalPatientsMapRaw(),
       viaturaAvarias: getViaturaAvariasMap(),
       activeCrews: exportCrews,
       sharedFichas: exportShared
@@ -2131,20 +2478,29 @@
       setLocalUsers(Array.from(byUname.values()));
     }
 
-    // 3. Mescla recebedores do hospital (Nome + COREN/CRM)
+    // 3. Mescla recebedores do hospital (Nome + COREN/CRM + tombstones de exclusão/edição)
     if (Array.isArray(remote.hospitalReceivers)) {
       const recMap = new Map();
-      getHospitalReceivers().forEach(r => recMap.set(r.id || normKey(r.nome), r));
+      getHospitalReceiversRaw().forEach(r => recMap.set(r.id || normKey(r.nome), r));
       remote.hospitalReceivers.forEach(rr => {
-        if (!rr || !rr.nome) return;
-        const id = rr.id || normKey(rr.nome);
+        if (!rr || (!rr.nome && !rr.deleted)) return;
+        const isDel = Boolean(rr.deleted || isTombstoneValue(rr.nome));
+        const id = rr.id || (!isDel ? normKey(rr.nome) : '');
+        if (!id) return;
         const cur = recMap.get(id);
         if (!cur || String(rr.updatedAt || '') >= String(cur.updatedAt || '')) {
-          recMap.set(id, {
+          recMap.set(id, isDel ? {
+            id,
+            nome: TOMBSTONE_MARKER,
+            corenCrm: '',
+            hospital: '',
+            useCount: 1,
+            updatedAt: rr.updatedAt || new Date().toISOString()
+          } : {
             id,
             nome: String(rr.nome).trim(),
-            corenCrm: String(rr.corenCrm || (cur && cur.corenCrm) || '').trim(),
-            hospital: String(rr.hospital || (cur && cur.hospital) || 'HBSA').trim(),
+            corenCrm: cleanMarkerField(rr.corenCrm !== undefined ? rr.corenCrm : ((cur && !isTombstoneValue(cur.nome) && cur.corenCrm) || '')),
+            hospital: String(rr.hospital || (cur && !isTombstoneValue(cur.nome) && cur.hospital) || 'HBSA').trim(),
             useCount: Math.max(Number(rr.useCount) || 1, Number(cur && cur.useCount) || 1),
             updatedAt: rr.updatedAt || (cur && cur.updatedAt) || new Date().toISOString()
           });
@@ -2154,21 +2510,23 @@
       setHospitalReceivers(Array.from(recMap.values()));
     }
 
-    // 3b. Mescla médicos reguladores salvos nas fichas
+    // 3b. Mescla médicos reguladores salvos nas fichas (com suporte a tombstones de exclusão/edição)
     if (Array.isArray(remote.medicosReguladores)) {
       const medMap = new Map();
-      getMedicosReguladores().forEach(m => medMap.set(m.id || normKey(m.nome), m));
+      getMedicosReguladoresRaw().forEach(m => medMap.set(m.id || normKey(m.nome), m));
       remote.medicosReguladores.forEach(rm => {
-        if (!rm || !rm.nome) return;
-        const cleanNome = extractCleanMedicoName(rm.nome);
+        if (!rm || (!rm.nome && !rm.deleted)) return;
+        const isDel = Boolean(rm.deleted || isTombstoneValue(rm.nome));
+        const cleanNome = isDel ? TOMBSTONE_MARKER : extractCleanMedicoName(rm.nome);
         if (!cleanNome) return;
-        const id = rm.id || normKey(cleanNome);
+        const id = rm.id || (!isDel ? normKey(cleanNome) : '');
+        if (!id) return;
         const cur = medMap.get(id);
         if (!cur || String(rm.updatedAt || '') >= String(cur.updatedAt || '')) {
           medMap.set(id, {
             id,
             nome: cleanNome,
-            useCount: Math.max(Number(rm.useCount) || 1, Number(cur && cur.useCount) || 1),
+            useCount: isDel ? 1 : Math.max(Number(rm.useCount) || 1, Number(cur && cur.useCount) || 1),
             updatedAt: rm.updatedAt || (cur && cur.updatedAt) || new Date().toISOString()
           });
           changedLocal = true;
@@ -2177,15 +2535,16 @@
       setMedicosReguladores(Array.from(medMap.values()));
     }
 
-    // 4. Mescla base interna de pacientes por CPF
+    // 4. Mescla base interna de pacientes por CPF (com suporte a edição de endereço e tombstones de exclusão)
     if (remote.patients && typeof remote.patients === 'object') {
-      const patMap = getInternalPatientsMap();
+      const patMap = getInternalPatientsMapRaw();
       Object.keys(remote.patients).forEach(cpfKey => {
         const cleanKey = String(cpfKey).replace(/\D+/g, '');
         if (cleanKey.length !== 11) return;
         const rp = remote.patients[cpfKey];
+        if (!rp || typeof rp !== 'object') return;
         const lp = patMap[cleanKey];
-        if (!lp || String((rp && rp.updatedAt) || '') >= String((lp && lp.updatedAt) || '')) {
+        if (!lp || String(rp.updatedAt || '') >= String((lp && lp.updatedAt) || '')) {
           patMap[cleanKey] = rp;
           changedLocal = true;
         }
@@ -2822,20 +3181,30 @@
     const isRemoteMerge = Boolean(opts && opts.fromRemoteMerge);
     // Alimenta automaticamente a Base Interna Offline com o Recebedor do Hospital, Médico Regulador e o Paciente (CPF)
     if (record && record.type === 'ficha' && record.data) {
+      const recTs = isRemoteMerge
+        ? (record.updatedAt || record.createdAt || '2026-01-01T00:00:00.000Z')
+        : (record.updatedAt || new Date().toISOString());
       if (record.data.recebidoPorNome && String(record.data.recebidoPorNome).trim()) {
         upsertHospitalReceiver({
           nome: record.data.recebidoPorNome,
           corenCrm: record.data.recebidoCorenCrm || '',
-          hospital: record.data.destino || 'HBSA'
+          hospital: record.data.destino || 'HBSA',
+          updatedAt: recTs
         }, isRemoteMerge);
       }
       if (record.data.medicoRegulador && String(record.data.medicoRegulador).trim()) {
         upsertMedicoRegulador({
-          nome: record.data.medicoRegulador
+          nome: record.data.medicoRegulador,
+          updatedAt: recTs
         }, isRemoteMerge);
       }
-      if (record.data.vitimaCpf && record.data.vitimaNome) {
-        upsertPatientInInternalDb(record.data, isRemoteMerge);
+      const isDraftRecord = Boolean(record.isDraft || record.syncStatus === 'draft');
+      const skipPatUpsert = Boolean(opts && opts.skipPatientUpsert);
+      if (!isDraftRecord && !skipPatUpsert && record.data.vitimaCpf && record.data.vitimaNome) {
+        const cleanCpf = String(record.data.vitimaCpf || '').replace(/\D+/g, '');
+        if (cleanCpf.length === 11 && (!isRemoteMerge || !getInternalPatientsMapRaw()[cleanCpf])) {
+          upsertPatientInInternalDb(Object.assign({}, record.data, { updatedAt: recTs }), isRemoteMerge);
+        }
       }
     }
 
@@ -3192,7 +3561,7 @@
     if (!settings.scriptUrl || !sess || !navigator.onLine) {
       record.syncStatus = 'pending';
       record.pendingPdfBase64 = pdfBase64 || record.pendingPdfBase64 || '';
-      await saveRecordLocal(record);
+      await saveRecordLocal(record, { skipPatientUpsert: true });
       return { synced: false, reason: !settings.scriptUrl ? 'no_url' : 'offline' };
     }
 
@@ -3217,7 +3586,7 @@
         record.driveUrl = res.driveUrl || record.driveUrl || '';
         record.syncedAt = res.syncedAt || new Date().toISOString();
         delete record.pendingPdfBase64;
-        await saveRecordLocal(record);
+        await saveRecordLocal(record, { skipPatientUpsert: true });
         return { synced: true, driveUrl: record.driveUrl };
       } else {
         throw new Error((res && res.error) || 'Falha ao enviar ao Google Drive.');
@@ -3226,7 +3595,7 @@
       record.syncStatus = 'pending';
       record.lastSyncError = err.message;
       record.pendingPdfBase64 = pdfBase64 || record.pendingPdfBase64 || '';
-      await saveRecordLocal(record);
+      await saveRecordLocal(record, { skipPatientUpsert: true });
       return { synced: false, reason: 'error', error: err.message };
     }
   }
@@ -3391,15 +3760,29 @@
     if (cleanCpf.length !== 11) throw new Error('Digite os 11 números do CPF.');
 
     // 1. Consulta instantânea na Base de Dados Interna Offline (tabela patients)
-    const internalPatients = getInternalPatientsMap();
-    if (internalPatients[cleanCpf] && internalPatients[cleanCpf].vitimaNome) {
-      return { source: 'internal_db', patient: internalPatients[cleanCpf] };
+    const rawInternal = getInternalPatientsMapRaw();
+    const rawEntry = rawInternal[cleanCpf];
+    if (rawEntry && (rawEntry.deleted || isTombstoneValue(rawEntry.vitimaNome))) {
+      // Pré-cadastro excluído manualmente: sincroniza c/ nuvem p/ verificar se houve recadastro mais novo; senão retorna vazio
+      if (navigator.onLine && hasGitHubConfigured()) {
+        try {
+          await syncInternalDbWithGitHub({ pushChanges: getGitHubMeta().dirty });
+          const afterSync = getInternalPatientsMapRaw()[cleanCpf];
+          if (afterSync && !afterSync.deleted && !isTombstoneValue(afterSync.vitimaNome) && afterSync.vitimaNome) {
+            return { source: 'github_db', patient: afterSync };
+          }
+        } catch (eSyncDel) {}
+      }
+      return null;
+    }
+    if (rawEntry && rawEntry.vitimaNome) {
+      return { source: 'internal_db', patient: rawEntry };
     }
 
-    // 2. Procura nas fichas salvas localmente no aparelho
+    // 2. Procura nas fichas finalizadas salvas localmente no aparelho
     const allLocal = await getAllRecordsLocal();
     for (const rec of allLocal) {
-      if (rec.type !== 'ficha') continue;
+      if (rec.type !== 'ficha' || rec.isDraft || rec.syncStatus === 'draft') continue;
       const rCpf = String(rec.patientCpf || (rec.data && rec.data.vitimaCpf) || '').replace(/\D+/g, '');
       if (rCpf === cleanCpf && rec.data && rec.data.vitimaNome) {
         upsertPatientInInternalDb(rec.data, true);
@@ -3407,13 +3790,16 @@
       }
     }
 
-    // 3. Se tiver internet e GitHub configurado, puxa atualização do GitHub e checa novamente
+    // 3. Se tiver internet e Google Drive configurado, puxa atualização e checa novamente
     if (navigator.onLine && hasGitHubConfigured()) {
       try {
         await syncInternalDbWithGitHub({ pushChanges: false });
-        const afterGh = getInternalPatientsMap();
-        if (afterGh[cleanCpf] && afterGh[cleanCpf].vitimaNome) {
-          return { source: 'github_db', patient: afterGh[cleanCpf] };
+        const afterRaw = getInternalPatientsMapRaw()[cleanCpf];
+        if (afterRaw && (afterRaw.deleted || isTombstoneValue(afterRaw.vitimaNome))) {
+          return null;
+        }
+        if (afterRaw && afterRaw.vitimaNome) {
+          return { source: 'github_db', patient: afterRaw };
         }
       } catch (eGh) {}
     }
@@ -3507,16 +3893,21 @@
     syncAllCrewDraftsToLocalRecords,
     getHospitalReceivers,
     upsertHospitalReceiver,
+    editHospitalReceiver,
     deleteHospitalReceiver,
     getMedicosReguladores,
     upsertMedicoRegulador,
+    editMedicoRegulador,
     deleteMedicoRegulador,
     getViaturaStorageKey,
     getViaturaAvariasMap,
     getViaturaAvarias,
     saveViaturaAvarias,
     getInternalPatientsMap,
+    getInternalPatientsList,
     upsertPatientInInternalDb,
+    saveEditedPatientInInternalDb,
+    deletePatientFromInternalDb,
     getSession,
     setSession,
     getSavedSignature,

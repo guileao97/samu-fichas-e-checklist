@@ -1154,10 +1154,12 @@ function mergeSyncDatabases_(base, incoming) {
     var id = rr.id || String(rr.nome).toLowerCase().replace(/[^a-z0-9]+/g, '_');
     var cur = recMap[id];
     if (!cur || String(rr.updatedAt || '') >= String(cur.updatedAt || '')) {
+      var nextCoren = (rr.corenCrm !== undefined) ? String(rr.corenCrm || '').trim() : String((cur && cur.corenCrm) || '').trim();
+      if (nextCoren === '__VAZIO__' || nextCoren === '__EXCLUIDO__') nextCoren = '';
       recMap[id] = {
         id: id,
         nome: String(rr.nome).trim(),
-        corenCrm: String(rr.corenCrm || (cur && cur.corenCrm) || '').trim(),
+        corenCrm: nextCoren,
         hospital: String(rr.hospital || (cur && cur.hospital) || 'HBSA').trim(),
         useCount: Math.max(Number(rr.useCount) || 1, Number((cur && cur.useCount) || 0)),
         updatedAt: rr.updatedAt || new Date().toISOString()
