@@ -16,10 +16,12 @@ O que este script faz:
 import argparse
 import base64
 import datetime
+import importlib.util
 import json
 import os
 import shutil
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -39,8 +41,8 @@ TOKEN_FILE = os.path.join(ROOT_DIR, ".github_token.local")
 VERSION_FILE = os.path.join(ROOT_DIR, "version.json")
 
 # Pastas e arquivos incluídos no repositório GitHub
-INCLUDE_DIRS = ("web-app", "android-project", "google-drive-backend", "github-database", ".github")
-INCLUDE_ROOT_FILES = ("version.json", "base_dados_samu.json", ".gitignore", "PUBLICAR_NO_GITHUB.py")
+INCLUDE_DIRS = ("web-app", "android-project", "google-drive-integracao", "google-drive-backend", "github-database", ".github")
+INCLUDE_ROOT_FILES = ("version.json", "base_dados_samu.json", ".gitignore", "PUBLICAR_NO_GITHUB.py", "PUBLICAR_ATUALIZACAO_GITHUB.bat")
 
 EXCLUDE_NAMES = {
     ".github_token.local",
@@ -168,7 +170,7 @@ def publish_github_release(token, local_ver, local_apk_path):
     ver_code = local_ver.get("apkVersionCode", 1)
     ota_rev = local_ver.get("otaRevision", 1)
     notes = local_ver.get("releaseNotes", "Atualização oficial SAMU 192 Orlândia-SP")
-    tag = f"v{ver_name}-b{ver_code}"
+    tag = f"v{ver_name}-b{ver_code}-r{ota_rev}"
 
     print(f"\nPublicando Release oficial {tag} com instalador SAMU_192_Orlandia.apk...")
     st_r, rel_obj = gh_api("GET", f"/repos/{OWNER}/{REPO}/releases/tags/{tag}", token)
@@ -198,11 +200,220 @@ def publish_github_release(token, local_ver, local_apk_path):
     print(f"   Página da Release: {rel_obj.get('html_url')}")
 
 
+def load_local_builder_module():
+    builder_path = os.path.join(ROOT_DIR, "android-project", "build_apk_ci.py")
+    if not os.path.isfile(builder_path):
+        return None
+    spec = importlib.util.spec_from_file_location("samu_build_apk_ci", builder_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def ensure_keystore_synced_with_github(token, after_build=False):
+    ks_local = os.path.join(ROOT_DIR, "android-project", "samu_orlandia_release.jks")
+    ks_repo_path = "android-project/samu_orlandia_release.jks"
+    st_ks, ks_meta = gh_api("GET", f"/repos/{OWNER}/{REPO}/contents/{ks_repo_path}?ref={BRANCH}", token)
+
+    if not after_build:
+        if not os.path.isfile(ks_local) and st_ks == 200 and ks_meta.get("content"):
+            print("🔑 Baixando certificado fixo samu_orlandia_release.jks do GitHub para manter assinatura compatível...")
+            raw_ks = base64.b64decode(ks_meta["content"])
+            os.makedirs(os.path.dirname(ks_local), exist_ok=True)
+            with open(ks_local, "wb") as kf:
+                kf.write(raw_ks)
+    else:
+        if os.path.isfile(ks_local) and st_ks == 404:
+            print("🔑 Salvando certificado fixo samu_orlandia_release.jks no GitHub para futuras compilações...")
+            with open(ks_local, "rb") as kf:
+                b64_ks = base64.b64encode(kf.read()).decode("ascii")
+            gh_api("PUT", f"/repos/{OWNER}/{REPO}/contents/{ks_repo_path}", token, {
+                "message": "chore: salvar certificado fixo para auto-update do APK [skip ci]",
+                "content": b64_ks,
+                "branch": BRANCH
+            })
+
+
+def download_latest_release_apk(token, dest_apk_path):
+    st_rel, rel_meta = gh_api("GET", f"/repos/{OWNER}/{REPO}/releases/latest", token)
+    if st_rel >= 400 or not isinstance(rel_meta, dict):
+        print(f"⚠️ Não foi possível consultar a última Release (HTTP {st_rel}).")
+        return False
+
+    apk_asset = None
+    for asset in rel_meta.get("assets", []) or []:
+        if str(asset.get("name", "")).lower().endswith(".apk"):
+            apk_asset = asset
+            break
+
+    if not apk_asset or not apk_asset.get("url"):
+        print("⚠️ Release encontrada, mas o arquivo .apk ainda não consta nos assets.")
+        return False
+
+    asset_api_url = apk_asset["url"]
+    print(f"📥 Baixando APK compilado da Release ({rel_meta.get('tag_name', 'latest')}) para esta pasta...")
+    req = urllib.request.Request(asset_api_url, method="GET")
+    req.add_header("Accept", "application/octet-stream")
+    req.add_header("X-GitHub-Api-Version", "2022-11-28")
+    req.add_header("User-Agent", "SAMU192-Orlandia-Publisher/1.0")
+    # add_unredirected_header envia o token apenas ao api.github.com e omite no redirect 302 p/ storage
+    req.add_unredirected_header("Authorization", f"Bearer {token}")
+
+    with urllib.request.urlopen(req, timeout=180) as resp:
+        apk_bytes = resp.read()
+
+    with open(dest_apk_path, "wb") as out_f:
+        out_f.write(apk_bytes)
+
+    size_mb = len(apk_bytes) / (1024 * 1024)
+    print(f"✅ APK salvo com sucesso no seu PC: {dest_apk_path} ({size_mb:.2f} MB)")
+    return True
+
+
+def trigger_and_monitor_cloud_compile(token, expected_head_sha=""):
+    wf_path = ".github/workflows/build-apk.yml"
+    st_wf, _ = gh_api("GET", f"/repos/{OWNER}/{REPO}/contents/{wf_path}?ref={BRANCH}", token)
+    if st_wf == 404:
+        print("\n⚠️ O workflow de compilação na nuvem (.github/workflows/build-apk.yml) ainda não está no GitHub")
+        print("   porque o Token atual não tem a permissão 'workflow' marcada (e o Android SDK local não foi detectado neste PC).")
+        print("   👉 Para habilitar a compilação na nuvem do GitHub:")
+        print("      1. Abra https://github.com/settings/tokens e clique no seu token;")
+        print("      2. Marque a caixinha [x] workflow e clique em 'Update token';")
+        print("      3. Rode este atalho novamente que ele já enviará o workflow e iniciará a compilação automática!")
+        return False
+
+    print("\n☁️ Verificando / iniciando compilação do APK no GitHub Actions...")
+    if expected_head_sha:
+        time.sleep(4)
+
+    target_run = None
+    st_runs, runs_data = gh_api(
+        "GET",
+        f"/repos/{OWNER}/{REPO}/actions/workflows/build-apk.yml/runs?branch={BRANCH}&per_page=5",
+        token
+    )
+    if st_runs == 200 and isinstance(runs_data, dict):
+        for r in runs_data.get("workflow_runs", []) or []:
+            r_status = r.get("status")
+            r_sha = r.get("head_sha", "")
+            if (expected_head_sha and r_sha == expected_head_sha) or r_status in ("queued", "in_progress", "waiting", "requested"):
+                target_run = r
+                break
+
+    if not target_run:
+        print("🚀 Disparando compilação imediata no GitHub Actions (workflow_dispatch)...")
+        st_disp, disp_err = gh_api(
+            "POST",
+            f"/repos/{OWNER}/{REPO}/actions/workflows/build-apk.yml/dispatches",
+            token,
+            {"ref": BRANCH}
+        )
+        if st_disp not in (200, 201, 204):
+            print(f"⚠️ Falha HTTP {st_disp} ao disparar GitHub Actions:", disp_err)
+            print(f"   Acompanhe ou inicie manualmente em: https://github.com/{OWNER}/{REPO}/actions")
+            return False
+
+        for _ in range(8):
+            time.sleep(3)
+            st_r2, runs_d2 = gh_api(
+                "GET",
+                f"/repos/{OWNER}/{REPO}/actions/workflows/build-apk.yml/runs?branch={BRANCH}&per_page=3",
+                token
+            )
+            if st_r2 == 200 and isinstance(runs_d2, dict):
+                w_runs = runs_d2.get("workflow_runs", []) or []
+                if w_runs:
+                    target_run = w_runs[0]
+                    if target_run.get("status") in ("queued", "in_progress", "waiting", "requested") or (
+                        expected_head_sha and target_run.get("head_sha") == expected_head_sha
+                    ):
+                        break
+
+    if not target_run or not target_run.get("id"):
+        print(f"✅ Compilação solicitada! Acompanhe em: https://github.com/{OWNER}/{REPO}/actions")
+        return True
+
+    run_id = target_run["id"]
+    run_url = target_run.get("html_url") or f"https://github.com/{OWNER}/{REPO}/actions/runs/{run_id}"
+    print(f"🔗 Compilação em andamento no GitHub: {run_url}")
+
+    start_ts = time.time()
+    last_line = ""
+    while time.time() - start_ts < 900:
+        st_cur, cur_run = gh_api("GET", f"/repos/{OWNER}/{REPO}/actions/runs/{run_id}", token)
+        if st_cur >= 400:
+            break
+        status = cur_run.get("status", "")
+        conclusion = cur_run.get("conclusion")
+        elapsed = int(time.time() - start_ts)
+
+        step_label = status
+        if status == "in_progress":
+            st_j, jobs_obj = gh_api("GET", f"/repos/{OWNER}/{REPO}/actions/runs/{run_id}/jobs", token)
+            if st_j == 200 and isinstance(jobs_obj, dict):
+                for jb in jobs_obj.get("jobs", []) or []:
+                    for stp in jb.get("steps", []) or []:
+                        if stp.get("status") == "in_progress":
+                            step_label = f"em andamento -> {stp.get('name')}"
+                            break
+
+        line = f"   ⏳ [{elapsed:>3}s] Status da compilação: {step_label}"
+        if line != last_line:
+            print(line)
+            last_line = line
+
+        if status == "completed":
+            if conclusion == "success":
+                print("\n🎉 Compilação concluída com SUCESSO no GitHub Actions!")
+                dest_apk = os.path.join(ROOT_DIR, "SAMU_192_Orlandia.apk")
+                time.sleep(2)
+                download_latest_release_apk(token, dest_apk)
+                return True
+            else:
+                print(f"\n❌ A compilação no GitHub terminou com status '{conclusion}'.")
+                print(f"   Veja o log detalhado em: {run_url}")
+                return False
+
+        time.sleep(8)
+
+    print(f"\n⚠️ Tempo limite de acompanhamento atingido. Confira o resultado em: {run_url}")
+    return False
+
+
+def start_apk_compilation(token, local_ver, expected_head_sha="", force_cloud=False):
+    print("\n" + "=" * 72)
+    print(" 🔨 INICIANDO COMPILAÇÃO DO INSTALADOR SAMU_192_Orlandia.apk")
+    print("=" * 72)
+
+    builder_mod = None if force_cloud else load_local_builder_module()
+    can_local = bool(builder_mod and hasattr(builder_mod, "has_local_build_environment") and builder_mod.has_local_build_environment())
+
+    if can_local:
+        print("💻 Ambiente Java + Android SDK detectado neste PC! Compilando localmente (mais rápido)...")
+        try:
+            ensure_keystore_synced_with_github(token, after_build=False)
+            builder_mod.main()
+            ensure_keystore_synced_with_github(token, after_build=True)
+            local_apk_path = os.path.join(ROOT_DIR, "SAMU_192_Orlandia.apk")
+            if os.path.isfile(local_apk_path) and os.path.getsize(local_apk_path) > 50000:
+                publish_github_release(token, local_ver, local_apk_path)
+                return True
+        except Exception as exc:
+            print(f"⚠️ Falha na compilação local ({exc}). Tentando compilação na nuvem (GitHub Actions)...")
+
+    return trigger_and_monitor_cloud_compile(token, expected_head_sha=expected_head_sha)
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Publicar SAMU 192 Orlândia no GitHub")
+    parser = argparse.ArgumentParser(description="Publicar SAMU 192 Orlândia no GitHub e Compilar APK")
     parser.add_argument("--token", default="", help="Personal Access Token do GitHub")
     parser.add_argument("--novo-apk", action="store_true", help="Incrementa apkVersionCode para compilar novo .APK e forçar auto-update do APK")
-    parser.add_argument("--manter-versao", action="store_true", help="Mantém apkVersionCode e otaRevision atuais (ex: ao subir o .apk da versão atual)")
+    parser.add_argument("--manter-versao", action="store_true", help="Mantém apkVersionCode e otaRevision atuais")
+    parser.add_argument("--compilar", action="store_true", help="Já inicia a compilação do .APK logo após publicar a atualização")
+    parser.add_argument("--compilar-nuvem", action="store_true", help="Força compilação do .APK via GitHub Actions na nuvem após atualizar")
+    parser.add_argument("--apenas-compilar", action="store_true", help="Apenas inicia a compilação do .APK da versão atual sem subir novo commit")
+    parser.add_argument("--perguntar-compilar", action="store_true", help="Pergunta ao final da atualização se já deseja iniciar a compilação do .APK")
+    parser.add_argument("--subir-apk-local", action="store_true", help="Publica na Release um SAMU_192_Orlandia.apk já existente na pasta")
     parser.add_argument("--notas", default="", help="Descrição desta atualização")
     args = parser.parse_args()
 
@@ -273,6 +484,16 @@ def main():
     with open(VERSION_FILE, "r", encoding="utf-8") as vf:
         local_ver = json.load(vf)
 
+    if args.apenas_compilar:
+        sync_local_assets_www()
+        start_apk_compilation(
+            token,
+            local_ver,
+            expected_head_sha=head_commit_sha,
+            force_cloud=args.compilar_nuvem
+        )
+        return
+
     now_iso = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     if remote_ver is not None and not args.manter_versao:
         next_ota = max(int(local_ver.get("otaRevision", 1)), int(remote_ver.get("otaRevision", 1))) + 1
@@ -321,7 +542,7 @@ def main():
                 "encoding": "base64"
             })
             if st_b >= 400:
-                return st_b, blob_res
+                return st_b, blob_res, ""
             tree_items.append({
                 "path": rel_path,
                 "mode": "100644",
@@ -334,7 +555,7 @@ def main():
             "tree": tree_items
         })
         if st_t >= 400:
-            return st_t, tree_res
+            return st_t, tree_res, ""
 
         msg = (
             f"release: SAMU 192 v{local_ver['apkVersionName']} "
@@ -349,44 +570,56 @@ def main():
             "parents": [head_commit_sha]
         })
         if st_c >= 400:
-            return st_c, new_commit
+            return st_c, new_commit, ""
 
         st_u, upd_res = gh_api("PATCH", f"/repos/{OWNER}/{REPO}/git/refs/heads/{BRANCH}", token, {
             "sha": new_commit["sha"],
             "force": False
         })
-        return st_u, upd_res
+        return st_u, upd_res, new_commit["sha"]
 
     has_workflow_scope = (not oauth_scopes) or ("workflow" in oauth_scopes.lower())
-    st_push, push_res = push_tree(include_workflows=has_workflow_scope)
+    st_push, push_res, pushed_sha = push_tree(include_workflows=has_workflow_scope)
     if has_workflow_scope and st_push in (403, 404, 422):
         print(f"\nAVISO (HTTP {st_push} ao incluir workflow): tentando envio sem '.github/workflows/build-apk.yml'...")
         has_workflow_scope = False
-        st_push, push_res = push_tree(include_workflows=False)
+        st_push, push_res, pushed_sha = push_tree(include_workflows=False)
 
     if st_push >= 400:
         print(f"ERRO HTTP {st_push} ao publicar commit:", push_res)
         sys.exit(5)
 
-    # Se existir SAMU_192_Orlandia.apk compilado localmente, também publica/atualiza a Release Oficial no GitHub!
-    local_apk_path = os.path.join(ROOT_DIR, "SAMU_192_Orlandia.apk")
-    if os.path.isfile(local_apk_path) and os.path.getsize(local_apk_path) > 50000:
-        publish_github_release(token, local_ver, local_apk_path)
-
-    if not has_workflow_scope:
-        print("\n✅ Código completo, Base de Dados (base_dados_samu.json) e Auto-Update OTA enviados com sucesso!")
-        print("⚠️ Detalhe sobre o Token reutilizado: ele possui escopo 'repo', mas NÃO está com a caixinha 'workflow' marcada.")
-        print("   Para o GitHub Actions também compilar próximos APKs na nuvem sozinho:")
-        print("   Abra https://github.com/settings/tokens -> clique no seu token -> marque a caixinha [x] workflow -> Update token -> rode PUBLICAR_ATUALIZACAO_GITHUB.bat.")
-        return
-
     print("\n" + "=" * 72)
-    print(f"✅ PUBLICADO COM SUCESSO EM https://github.com/{OWNER}/{REPO} !")
+    print(f"✅ ATUALIZAÇÃO PUBLICADA COM SUCESSO EM https://github.com/{OWNER}/{REPO} !")
     print(f"   Versão APK : v{local_ver['apkVersionName']} (versionCode {local_ver['apkVersionCode']})")
     print(f"   Revisão OTA: #{local_ver['otaRevision']} (os celulares atualizam sozinhos ao conectar!)")
-    print(f"   Compilação : https://github.com/{OWNER}/{REPO}/actions")
     print(f"   Download   : https://github.com/{OWNER}/{REPO}/releases/latest")
     print("=" * 72)
+
+    if not has_workflow_scope:
+        print("\n⚠️ Observação sobre o Token: ele possui escopo 'repo', mas NÃO está com a caixinha 'workflow' marcada.")
+        print("   Se quiser que o GitHub Actions compile na nuvem: abra https://github.com/settings/tokens -> marque [x] workflow -> Update token.")
+
+    should_compile = bool(args.compilar or args.compilar_nuvem)
+    if not should_compile and args.perguntar_compilar:
+        try:
+            ans = input("\n👉 Deseja já iniciar a compilação do SAMU_192_Orlandia.apk agora? (S/N, Enter = N): ").strip().lower()
+            if ans in ("s", "sim", "y", "yes", "1"):
+                should_compile = True
+        except EOFError:
+            pass
+
+    if should_compile:
+        start_apk_compilation(
+            token,
+            local_ver,
+            expected_head_sha=pushed_sha,
+            force_cloud=args.compilar_nuvem
+        )
+    elif args.subir_apk_local:
+        local_apk_path = os.path.join(ROOT_DIR, "SAMU_192_Orlandia.apk")
+        if os.path.isfile(local_apk_path) and os.path.getsize(local_apk_path) > 50000:
+            publish_github_release(token, local_ver, local_apk_path)
 
 
 if __name__ == "__main__":

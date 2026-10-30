@@ -1,8 +1,8 @@
 {
   "apkVersionCode": 3,
   "apkVersionName": "1.0.2",
-  "otaRevision": 3,
-  "updatedAt": "2026-10-30T14:39:28Z",
+  "otaRevision": 4,
+  "updatedAt": "2026-10-30T14:44:55Z",
   "releaseNotes": "SAMU 192 Orlândia-SP: SQLite Nativo, Ficha USB, Check Lists, Foto Cabeçalho p/ Regulação WhatsApp e Auto-Update via GitHub",
   "repo": "guileao97/samu-fichas-e-checklist",
   "branch": "main",
