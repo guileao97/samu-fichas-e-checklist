@@ -1301,6 +1301,17 @@
     if (existingSession) {
       enterSession(existingSession, { promptCrew: false });
     }
+
+    const mainViewEl = document.getElementById('main-view');
+    if (mainViewEl) {
+      disableExternalAutofillInContainer(mainViewEl);
+      if (typeof MutationObserver === 'function') {
+        const autofillObserver = new MutationObserver(() => {
+          disableExternalAutofillInContainer(mainViewEl);
+        });
+        autofillObserver.observe(mainViewEl, { childList: true, subtree: true });
+      }
+    }
   }
 
   /* ===================== EQUIPE DO PLANTÃO (ATÉ 3 MEMBROS) & FICHA COMPARTILHADA ===================== */
@@ -2686,7 +2697,35 @@
     });
   }
 
+  let autofillNeutralSeq = 0;
+  function disableExternalAutofillInContainer(root) {
+    if (!root || !root.querySelectorAll) return;
+    root.querySelectorAll('form').forEach(fm => {
+      fm.setAttribute('autocomplete', 'off');
+    });
+    root.querySelectorAll('input:not([type="checkbox"]):not([type="radio"]):not([type="file"]), textarea').forEach(el => {
+      if (el.dataset.samuNoAutofill === '1') return;
+      el.dataset.samuNoAutofill = '1';
+      el.setAttribute('autocomplete', 'off');
+      el.setAttribute('autocorrect', 'off');
+      el.setAttribute('data-form-type', 'other');
+      el.setAttribute('data-lpignore', 'true');
+      el.setAttribute('data-1p-ignore', 'true');
+      el.setAttribute('data-bwignore', 'true');
+      if (!el.getAttribute('name')) {
+        autofillNeutralSeq = (autofillNeutralSeq + 1) % 999999;
+        el.setAttribute('name', 's_op_' + autofillNeutralSeq);
+      }
+      const im = el.getAttribute('inputmode') || '';
+      if (im === 'numeric' || im === 'decimal' || el.type === 'number') {
+        el.setAttribute('spellcheck', 'false');
+        el.setAttribute('autocapitalize', 'off');
+      }
+    });
+  }
+
   function bindQuickDraftBarEvents(container) {
+    disableExternalAutofillInContainer(container);
     container.querySelectorAll('.js-btn-save-draft').forEach(btn => {
       btn.addEventListener('click', () => {
         saveCurrentAsDraftRecord(btn.dataset.draftKind || 'ficha', false);
@@ -3031,30 +3070,30 @@
 
           <div class="grid-cep-addr">
             <div class="field field-full-phone">
-              <label>CEP do Local (Wi-Fi/4G)</label>
+              <label>C&#8204;EP do Local (Wi-Fi/4G)</label>
               <div class="input-action-row">
-                <input type="text" inputmode="numeric" id="inp-occ-cep" placeholder="00000-000" data-f="ocorrenciaCep" value="${escapeHtml(d.ocorrenciaCep || '')}" />
-                <button type="button" class="btn-lookup" id="btn-lookup-occ-cep">🔍 CEP</button>
+                <input type="text" inputmode="numeric" id="f-occ-cod" autocomplete="off" placeholder="00000&#8204;-000" data-f="ocorrenciaCep" value="${escapeHtml(d.ocorrenciaCep || '')}" />
+                <button type="button" class="btn-lookup" id="btn-lookup-occ-cep">🔍 C&#8204;EP</button>
               </div>
               <div id="occ-cep-hint" class="field-hint"></div>
             </div>
             <div class="field">
-              <label>Endereço da Ocorrência</label>
-              <input type="text" id="inp-occ-end" placeholder="Rua / Avenida / Rodovia" data-f="ocorrenciaEndereco" value="${escapeHtml(d.ocorrenciaEndereco)}" />
+              <label>Endere&#8204;ço da Ocorrência</label>
+              <input type="text" id="f-occ-loc1" autocomplete="off" placeholder="R&#8204;ua / Aveni&#8204;da / Rodov&#8204;ia" data-f="ocorrenciaEndereco" value="${escapeHtml(d.ocorrenciaEndereco)}" />
             </div>
             <div class="field">
-              <label>Número / KM</label>
-              <input type="text" id="inp-occ-num" placeholder="Nº ou KM" data-f="ocorrenciaNumero" value="${escapeHtml(d.ocorrenciaNumero)}" />
+              <label>Núme&#8204;ro / KM</label>
+              <input type="text" id="f-occ-loc2" autocomplete="off" placeholder="N&#8204;º ou KM" data-f="ocorrenciaNumero" value="${escapeHtml(d.ocorrenciaNumero)}" />
             </div>
           </div>
           <div class="grid-2">
             <div class="field">
-              <label>Ponto de Referência / Bairro</label>
-              <input type="text" id="inp-occ-ref" placeholder="Próximo a..." data-f="ocorrenciaReferencia" value="${escapeHtml(d.ocorrenciaReferencia)}" />
+              <label>Ponto de Referência / Bair&#8204;ro</label>
+              <input type="text" id="f-occ-obs1" autocomplete="off" placeholder="Próximo a..." data-f="ocorrenciaReferencia" value="${escapeHtml(d.ocorrenciaReferencia)}" />
             </div>
             <div class="field">
-              <label>Contato / Telefone</label>
-              <input type="tel" placeholder="(16) 99999-9999" data-f="ocorrenciaContato" value="${escapeHtml(d.ocorrenciaContato)}" />
+              <label>Conta&#8204;to / Tele&#8204;fone</label>
+              <input type="text" inputmode="numeric" id="f-occ-cnt1" autocomplete="off" placeholder="(16) 999&#8204;99-9999" data-f="ocorrenciaContato" value="${escapeHtml(d.ocorrenciaContato)}" />
             </div>
           </div>
         </div>
@@ -3071,85 +3110,85 @@
         <div class="card">
           <div class="card-title">
             <span>👤 Dados da Vítima / Paciente</span>
-            <button type="button" class="btn btn-outline btn-sm" id="btn-copy-occ-addr">📍 Usar Endereço da Ocorrência</button>
+            <button type="button" class="btn btn-outline btn-sm" id="btn-copy-occ-addr">📍 Usar Endere&#8204;ço da Ocorrência</button>
           </div>
 
           <div class="grid-cpf-docs">
             <div class="field field-full-phone">
-              <label>CPF (puxa cadastro salvo / Wi-Fi)</label>
+              <label>C&#8204;PF (puxa cadastro salvo / Wi-Fi)</label>
               <div class="input-action-row">
-                <input type="text" inputmode="numeric" id="inp-vitima-cpf" placeholder="000.000.000-00" data-f="vitimaCpf" value="${escapeHtml(d.vitimaCpf)}" />
-                <button type="button" class="btn-lookup" id="btn-lookup-cpf" title="Buscar dados do paciente pelo CPF">🔍 CPF</button>
+                <input type="text" inputmode="numeric" id="f-vit-doc1" autocomplete="off" placeholder="000.000&#8204;.000-00" data-f="vitimaCpf" value="${escapeHtml(d.vitimaCpf)}" />
+                <button type="button" class="btn-lookup" id="btn-lookup-cpf" title="Buscar dados do paciente pelo CPF">🔍 C&#8204;PF</button>
               </div>
               <div id="cpf-lookup-hint" class="field-hint">${cpfHintInit}</div>
             </div>
             <div class="field">
-              <label>RG</label>
-              <input type="text" id="inp-vitima-rg" placeholder="RG" data-f="vitimaRg" value="${escapeHtml(d.vitimaRg)}" />
+              <label>R&#8204;G</label>
+              <input type="text" id="f-vit-doc2" autocomplete="off" placeholder="R&#8204;G" data-f="vitimaRg" value="${escapeHtml(d.vitimaRg)}" />
             </div>
             <div class="field">
               <label>Cartão SUS (CNS)</label>
-              <input type="text" id="inp-vitima-cns" inputmode="numeric" placeholder="Opcional" data-f="vitimaCns" value="${escapeHtml(d.vitimaCns)}" />
+              <input type="text" id="f-vit-doc3" inputmode="numeric" autocomplete="off" placeholder="Opcional" data-f="vitimaCns" value="${escapeHtml(d.vitimaCns)}" />
             </div>
           </div>
 
           <div class="field">
-            <label>Nome Completo da Vítima (usado na busca do histórico)</label>
-            <input type="text" id="inp-vitima-nome" placeholder="Digite o nome do paciente" data-f="vitimaNome" value="${escapeHtml(d.vitimaNome)}" />
+            <label>No&#8204;me Completo da Vítima (usado na busca do histórico)</label>
+            <input type="text" id="f-vit-ident" autocomplete="off" placeholder="Digite o no&#8204;me do paciente" data-f="vitimaNome" value="${escapeHtml(d.vitimaNome)}" />
           </div>
           <div class="grid-dn-age">
             <div class="field">
               <label>Data de Nascimento (DN)</label>
-              <input type="date" id="inp-vitima-dn" data-f="vitimaDn" value="${escapeHtml(d.vitimaDn)}" />
+              <input type="date" id="f-vit-nasc" autocomplete="off" data-f="vitimaDn" value="${escapeHtml(d.vitimaDn)}" />
             </div>
             <div class="field">
               <label>Idade</label>
-              <input type="text" id="inp-vitima-idade" placeholder="Ex: 54 anos" data-f="vitimaIdade" value="${escapeHtml(d.vitimaIdade)}" />
+              <input type="text" id="f-vit-anos" autocomplete="off" placeholder="Ex: 54 anos" data-f="vitimaIdade" value="${escapeHtml(d.vitimaIdade)}" />
             </div>
           </div>
 
           <div class="grid-cep-city">
             <div class="field field-full-phone">
-              <label>CEP Residencial (puxa rua no Wi-Fi)</label>
+              <label>C&#8204;EP Residencial (puxa r&#8204;ua no Wi-Fi)</label>
               <div class="input-action-row">
-                <input type="text" inputmode="numeric" id="inp-vitima-cep" placeholder="00000-000" data-f="vitimaCep" value="${escapeHtml(d.vitimaCep)}" onfocus="this.select()" />
-                <button type="button" class="btn-lookup" id="btn-lookup-vit-cep" title="Buscar endereço pelo CEP online">🔍 CEP</button>
+                <input type="text" inputmode="numeric" id="f-vit-cod" autocomplete="off" placeholder="00000&#8204;-000" data-f="vitimaCep" value="${escapeHtml(d.vitimaCep)}" onfocus="this.select()" />
+                <button type="button" class="btn-lookup" id="btn-lookup-vit-cep" title="Buscar endereço pelo CEP online">🔍 C&#8204;EP</button>
               </div>
               <div id="cep-lookup-hint" class="field-hint"></div>
             </div>
             <div class="field">
-              <label>Cidade</label>
-              <input type="text" id="inp-vitima-cidade" data-f="vitimaCidade" value="${escapeHtml(d.vitimaCidade)}" />
+              <label>Cida&#8204;de</label>
+              <input type="text" id="f-vit-mun" autocomplete="off" data-f="vitimaCidade" value="${escapeHtml(d.vitimaCidade)}" />
             </div>
             <div class="field">
-              <label>Bairro</label>
-              <input type="text" id="inp-vitima-bairro" placeholder="Bairro" data-f="vitimaBairro" value="${escapeHtml(d.vitimaBairro)}" />
+              <label>Bair&#8204;ro</label>
+              <input type="text" id="f-vit-area" autocomplete="off" placeholder="Bair&#8204;ro" data-f="vitimaBairro" value="${escapeHtml(d.vitimaBairro)}" />
             </div>
           </div>
 
           <div class="grid-addr-num">
             <div class="field">
-              <label>Endereço Residencial</label>
-              <input type="text" id="inp-vitima-end" placeholder="Rua / Av." data-f="vitimaEndereco" value="${escapeHtml(d.vitimaEndereco)}" />
+              <label>Endere&#8204;ço Residencial</label>
+              <input type="text" id="f-vit-loc1" autocomplete="off" placeholder="R&#8204;ua / Av." data-f="vitimaEndereco" value="${escapeHtml(d.vitimaEndereco)}" />
             </div>
             <div class="field">
-              <label>Número</label>
-              <input type="text" id="inp-vitima-num" placeholder="Nº" data-f="vitimaNumero" value="${escapeHtml(d.vitimaNumero)}" />
+              <label>Núme&#8204;ro</label>
+              <input type="text" id="f-vit-loc2" autocomplete="off" placeholder="N&#8204;º" data-f="vitimaNumero" value="${escapeHtml(d.vitimaNumero)}" />
             </div>
           </div>
 
           <div class="grid-3">
             <div class="field">
               <label>Naturalidade</label>
-              <input type="text" id="inp-vitima-nat" placeholder="Cidade/UF" data-f="vitimaNaturalidade" value="${escapeHtml(d.vitimaNaturalidade)}" />
+              <input type="text" id="f-vit-orig" autocomplete="off" placeholder="Cida&#8204;de/UF" data-f="vitimaNaturalidade" value="${escapeHtml(d.vitimaNaturalidade)}" />
             </div>
             <div class="field">
-              <label>Nome do Pai</label>
-              <input type="text" id="inp-vitima-pai" data-f="vitimaPai" value="${escapeHtml(d.vitimaPai)}" />
+              <label>No&#8204;me do Pai</label>
+              <input type="text" id="f-vit-fil1" autocomplete="off" data-f="vitimaPai" value="${escapeHtml(d.vitimaPai)}" />
             </div>
             <div class="field">
-              <label>Nome da Mãe</label>
-              <input type="text" id="inp-vitima-mae" data-f="vitimaMae" value="${escapeHtml(d.vitimaMae)}" />
+              <label>No&#8204;me da Mãe</label>
+              <input type="text" id="f-vit-fil2" autocomplete="off" data-f="vitimaMae" value="${escapeHtml(d.vitimaMae)}" />
             </div>
           </div>
         </div>
@@ -3446,12 +3485,12 @@
           </div>
           <div class="grid-2">
             <div class="field">
-              <label>Nome Completo do Assinante</label>
-              <input type="text" id="inp-termo-nome" data-f="termoNome" value="${escapeHtml(d.termoNome)}" />
+              <label>No&#8204;me Completo do Assinante</label>
+              <input type="text" id="f-trm-ident" autocomplete="off" data-f="termoNome" value="${escapeHtml(d.termoNome)}" />
             </div>
             <div class="field">
-              <label>CPF do Assinante</label>
-              <input type="text" id="inp-termo-cpf" inputmode="numeric" data-f="termoCpf" value="${escapeHtml(d.termoCpf)}" />
+              <label>C&#8204;PF do Assinante</label>
+              <input type="text" id="f-trm-doc1" inputmode="numeric" autocomplete="off" data-f="termoCpf" value="${escapeHtml(d.termoCpf)}" />
             </div>
           </div>
           <div class="field">
@@ -3537,13 +3576,13 @@
                 `;
               })()}
               <div class="field" style="margin-top:6px;">
-                <label>Nome do Profissional</label>
-                <input type="text" id="inp-recebido-nome" placeholder="Quem recebeu o paciente no hospital" data-f="recebidoPorNome" value="${escapeHtml(d.recebidoPorNome)}" />
+                <label>No&#8204;me do Profissional</label>
+                <input type="text" id="f-rec-prof" autocomplete="off" placeholder="Quem recebeu o paciente no hospital" data-f="recebidoPorNome" value="${escapeHtml(d.recebidoPorNome)}" />
               </div>
               <div class="field">
                 <label>COREN / CRM</label>
                 <div class="input-action-row">
-                  <input type="text" id="inp-recebido-coren" placeholder="COREN ou CRM" data-f="recebidoCorenCrm" value="${escapeHtml(d.recebidoCorenCrm)}" />
+                  <input type="text" id="f-rec-reg" autocomplete="off" placeholder="COREN ou CRM" data-f="recebidoCorenCrm" value="${escapeHtml(d.recebidoCorenCrm)}" />
                   <button type="button" class="btn-lookup" id="btn-save-receiver-now" title="Salvar este Nome e COREN/CRM na lista rápida agora">💾 Salvar</button>
                 </div>
               </div>
@@ -3838,7 +3877,7 @@
     //Funções auxiliares de consulta online de CEP e CPF (em Wi-Fi / 4G)
     const executeCepLookup = async (mode, manualClick) => {
       const isOcc = mode === 'occ';
-      const inp = document.getElementById(isOcc ? 'inp-occ-cep' : 'inp-vitima-cep');
+      const inp = document.getElementById(isOcc ? 'f-occ-cod' : 'f-vit-cod');
       const btn = document.getElementById(isOcc ? 'btn-lookup-occ-cep' : 'btn-lookup-vit-cep');
       const hint = document.getElementById(isOcc ? 'occ-cep-hint' : 'cep-lookup-hint');
       if (!inp) return;
@@ -3856,12 +3895,12 @@
           inp.value = res.cep;
           if (res.endereco) {
             fichaState.ocorrenciaEndereco = res.endereco;
-            const endEl = document.getElementById('inp-occ-end');
+            const endEl = document.getElementById('f-occ-loc1');
             if (endEl) endEl.value = res.endereco;
           }
           if (res.bairro && !fichaState.ocorrenciaReferencia) {
             fichaState.ocorrenciaReferencia = 'Bairro ' + res.bairro;
-            const refEl = document.getElementById('inp-occ-ref');
+            const refEl = document.getElementById('f-occ-obs1');
             if (refEl) refEl.value = fichaState.ocorrenciaReferencia;
           }
           persistFichaDraft({ immediate: true });
@@ -3870,24 +3909,24 @@
               ? `<span class="hint-ok">✅ ${escapeHtml(res.endereco)} (${escapeHtml(res.cidade)}-${escapeHtml(res.uf)})</span>`
               : `<span class="hint-ok">✅ CEP geral de ${escapeHtml(res.cidade)}-${escapeHtml(res.uf)} confirmado! Digite a rua.</span>`;
           }
-          const numEl = document.getElementById('inp-occ-num');
+          const numEl = document.getElementById('f-occ-loc2');
           if (res.endereco && numEl) numEl.focus();
         } else {
           fichaState.vitimaCep = res.cep;
           inp.value = res.cep;
           if (res.cidade) {
             fichaState.vitimaCidade = res.cidade;
-            const cidEl = document.getElementById('inp-vitima-cidade');
+            const cidEl = document.getElementById('f-vit-mun');
             if (cidEl) cidEl.value = res.cidade;
           }
           if (res.bairro) {
             fichaState.vitimaBairro = res.bairro;
-            const baiEl = document.getElementById('inp-vitima-bairro');
+            const baiEl = document.getElementById('f-vit-area');
             if (baiEl) baiEl.value = res.bairro;
           }
           if (res.endereco) {
             fichaState.vitimaEndereco = res.endereco;
-            const endEl = document.getElementById('inp-vitima-end');
+            const endEl = document.getElementById('f-vit-loc1');
             if (endEl) endEl.value = res.endereco;
           }
           persistFichaDraft({ immediate: true });
@@ -3896,7 +3935,7 @@
               ? `<span class="hint-ok">✅ Endereço puxado: ${escapeHtml(res.endereco)}</span>`
               : `<span class="hint-ok">✅ CEP único de ${escapeHtml(res.cidade)}-${escapeHtml(res.uf)}. Informe o bairro e rua.</span>`;
           }
-          const numEl = document.getElementById('inp-vitima-num');
+          const numEl = document.getElementById('f-vit-loc2');
           if (res.endereco && numEl) numEl.focus();
         }
       } catch (err) {
@@ -3907,7 +3946,7 @@
     };
 
     const executeCpfLookup = async (manualClick) => {
-      const inp = document.getElementById('inp-vitima-cpf');
+      const inp = document.getElementById('f-vit-doc1');
       const btn = document.getElementById('btn-lookup-cpf');
       const hint = document.getElementById('cpf-lookup-hint');
       if (!inp) return;
@@ -3933,20 +3972,20 @@
               if (el) el.value = val;
             }
           };
-          applyField('vitimaNome', 'inp-vitima-nome', p.vitimaNome);
-          applyField('vitimaDn', 'inp-vitima-dn', p.vitimaDn);
+          applyField('vitimaNome', 'f-vit-ident', p.vitimaNome);
+          applyField('vitimaDn', 'f-vit-nasc', p.vitimaDn);
           const calcAge = p.vitimaDn ? calcAgeFromDn(p.vitimaDn) : '';
-          applyField('vitimaIdade', 'inp-vitima-idade', calcAge || p.vitimaIdade);
-          applyField('vitimaRg', 'inp-vitima-rg', p.vitimaRg);
-          applyField('vitimaCns', 'inp-vitima-cns', p.vitimaCns);
-          applyField('vitimaCep', 'inp-vitima-cep', p.vitimaCep);
-          applyField('vitimaCidade', 'inp-vitima-cidade', p.vitimaCidade);
-          applyField('vitimaBairro', 'inp-vitima-bairro', p.vitimaBairro);
-          applyField('vitimaEndereco', 'inp-vitima-end', p.vitimaEndereco);
-          applyField('vitimaNumero', 'inp-vitima-num', p.vitimaNumero);
-          applyField('vitimaNaturalidade', 'inp-vitima-nat', p.vitimaNaturalidade);
-          applyField('vitimaPai', 'inp-vitima-pai', p.vitimaPai);
-          applyField('vitimaMae', 'inp-vitima-mae', p.vitimaMae);
+          applyField('vitimaIdade', 'f-vit-anos', calcAge || p.vitimaIdade);
+          applyField('vitimaRg', 'f-vit-doc2', p.vitimaRg);
+          applyField('vitimaCns', 'f-vit-doc3', p.vitimaCns);
+          applyField('vitimaCep', 'f-vit-cod', p.vitimaCep);
+          applyField('vitimaCidade', 'f-vit-mun', p.vitimaCidade);
+          applyField('vitimaBairro', 'f-vit-area', p.vitimaBairro);
+          applyField('vitimaEndereco', 'f-vit-loc1', p.vitimaEndereco);
+          applyField('vitimaNumero', 'f-vit-loc2', p.vitimaNumero);
+          applyField('vitimaNaturalidade', 'f-vit-orig', p.vitimaNaturalidade);
+          applyField('vitimaPai', 'f-vit-fil1', p.vitimaPai);
+          applyField('vitimaMae', 'f-vit-fil2', p.vitimaMae);
 
           // Se antecedentes / medicamentos / alergias ainda estiverem em branco nesta ficha, aproveita o histórico do paciente
           if ((!fichaState.antecedentes || fichaState.antecedentes.length === 0) && Array.isArray(p.antecedentes) && p.antecedentes.length > 0) {
@@ -4079,7 +4118,7 @@
           const calc = calcAgeFromDn(val);
           if (calc) {
             fichaState.vitimaIdade = calc;
-            const ageEl = document.getElementById('inp-vitima-idade');
+            const ageEl = document.getElementById('f-vit-anos');
             if (ageEl) ageEl.value = fichaState.vitimaIdade;
           }
         }

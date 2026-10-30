@@ -19,7 +19,12 @@ import android.print.PrintDocumentInfo;
 import android.print.PrintManager;
 import android.provider.Settings;
 import android.util.Base64;
+import android.util.SparseArray;
+import android.view.View;
+import android.view.ViewStructure;
 import android.view.Window;
+import android.view.autofill.AutofillManager;
+import android.view.autofill.AutofillValue;
 import android.webkit.JavascriptInterface;
 import android.webkit.JsResult;
 import android.webkit.WebChromeClient;
@@ -76,13 +81,46 @@ public class MainActivity extends Activity {
             window.setStatusBarColor(Color.parseColor("#990B22"));
         }
 
-        webView = new WebView(this);
+        // Bloqueia completamente Samsung Pass / Google Autofill no WebView para não sugerir nem colar
+        // endereços, CEPs ou telefones pessoais dos socorristas dentro das fichas de atendimento.
+        webView = new WebView(this) {
+            @Override
+            public int getImportantForAutofill() {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    return View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS;
+                }
+                return super.getImportantForAutofill();
+            }
+
+            @Override
+            public void onProvideAutofillVirtualStructure(ViewStructure structure, int flags) {
+                // Não expõe campos virtuais HTML ao Samsung Pass / AutofillManager
+            }
+
+            @Override
+            public void autofill(SparseArray<AutofillValue> values) {
+                // Ignora preenchimento externo automático de endereços/dados pessoais
+            }
+        };
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            webView.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
+            if (window != null && window.getDecorView() != null) {
+                window.getDecorView().setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
+            }
+            try {
+                AutofillManager afm = getSystemService(AutofillManager.class);
+                if (afm != null) {
+                    afm.cancel();
+                }
+            } catch (Exception ignored) {}
+        }
         setContentView(webView);
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
+        settings.setSaveFormData(false);
         settings.setAllowFileAccess(true);
         settings.setLoadWithOverviewMode(true);
         settings.setUseWideViewPort(true);
