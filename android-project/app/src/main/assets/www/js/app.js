@@ -4262,18 +4262,19 @@
   }
 
   /* ==========================================================================
-   * ABA 1: FICHA DE ATENDIMENTO USB INTERATIVA (6 ETAPAS RÁPIDAS)
+   * ABA 1: FICHA DE ATENDIMENTO USB INTERATIVA (5 ETAPAS RÁPIDAS)
    * ========================================================================== */
   function renderFichaView() {
     const container = document.getElementById('main-view');
     const d = fichaState;
+    if (fichaStep > 5) fichaStep = 5;
+    if (fichaStep < 1) fichaStep = 1;
     const steps = [
       { n: 1, label: '1. Ocorrência' },
       { n: 2, label: '2. Vítima' },
-      { n: 3, label: '3. Horários' },
-      { n: 4, label: '4. Avaliação' },
-      { n: 5, label: '5. Conduta/Relatório' },
-      { n: 6, label: '6. Assinaturas' }
+      { n: 3, label: '3. Avaliação' },
+      { n: 4, label: '4. Conduta/Relatório' },
+      { n: 5, label: '5. Assinaturas' }
     ];
 
     let stepHtml = '';
@@ -4301,6 +4302,22 @@
               <label>KM Final <small style="color:var(--muted);font-weight:600;">(próx. inicial)</small></label>
               <input type="number" inputmode="numeric" id="inp-km-final" placeholder="Ex: 84532" data-f="kmFinal" value="${escapeHtml(d.kmFinal)}" />
             </div>
+          </div>
+
+          <div style="display:flex; justify-content:space-between; align-items:baseline; gap:6px; flex-wrap:wrap; margin:4px 0 6px;">
+            <div class="section-subtitle" style="margin:0;">⏱️ Horários da Ocorrência</div>
+            <small style="color:var(--muted); font-size:0.74rem; font-weight:600;">Toque em <strong>AGORA</strong> para cravar ou digite</small>
+          </div>
+          <div class="time-grid" style="margin-bottom:14px;">
+            ${window.SAMU_SCHEMA.horariosFicha.map(h => `
+              <div class="time-card">
+                <label>${h.label}</label>
+                <div class="time-input-row">
+                  <input type="time" autocomplete="off" data-horario="${h.key}" value="${escapeHtml((d.horarios && d.horarios[h.key]) || '')}" />
+                  <button type="button" class="btn-now" data-now="${h.key}">⏱ AGORA</button>
+                </div>
+              </div>
+            `).join('')}
           </div>
 
           <div class="field">
@@ -4454,32 +4471,10 @@
               <input type="text" id="f-vit-fil2" autocomplete="off" data-f="vitimaMae" value="${escapeHtml(d.vitimaMae)}" />
             </div>
           </div>
-        </div>
-      `;
-    } else if (fichaStep === 3) {
-      stepHtml = `
-        <div class="card">
-          <div class="card-title">
-            <span>⏱️ Controle de Horários da Ocorrência</span>
-          </div>
-          <p style="margin:0 0 12px; font-size:0.84rem; color:var(--muted);">
-            Toque em <strong>AGORA</strong> para cravar o horário exato com 1 toque ou digite manualmente.
-          </p>
-          <div class="time-grid">
-            ${window.SAMU_SCHEMA.horariosFicha.map(h => `
-              <div class="time-card">
-                <label>${h.label}</label>
-                <div class="time-input-row">
-                  <input type="time" data-horario="${h.key}" value="${escapeHtml((d.horarios && d.horarios[h.key]) || '')}" />
-                  <button type="button" class="btn-now" data-now="${h.key}">⏱ AGORA</button>
-                </div>
-              </div>
-            `).join('')}
-          </div>
 
           <div class="regulacao-callout">
             <div style="font-size:0.84rem; color:#14532d; font-weight:700;">
-              📲 <strong>Envio para a Regulação Médica:</strong> gera uma foto nítida apenas da parte frontal do PDF preenchido — do início da ficha até esta barra de Horários (Chamado, Saída, Chegada...).
+              📲 <strong>Envio para a Regulação Médica:</strong> gera uma foto nítida apenas da parte frontal do PDF preenchido — do início da ficha até a barra de Horários (Ocorrência, Vítima e Horários).
             </div>
             <button type="button" class="btn btn-whatsapp js-btn-send-regulacao">
               📲 Enviar Cabeçalho p/ Regulação no WhatsApp
@@ -4487,7 +4482,7 @@
           </div>
         </div>
       `;
-    } else if (fichaStep === 4) {
+    } else if (fichaStep === 3) {
       const assets = window.SAMU_ASSETS || {};
       const tiposFlat = window.SAMU_SCHEMA.tiposAtendimentoGrid.flat().filter(x => x !== '__OUTRO__');
       stepHtml = `
@@ -4661,7 +4656,7 @@
           </div>
         </div>
       `;
-    } else if (fichaStep === 5) {
+    } else if (fichaStep === 4) {
       const procsFlat = window.SAMU_SCHEMA.procedimentosGrid.flat().filter(x => x !== '__OUTRO__');
       stepHtml = `
         <div class="card">
@@ -4732,7 +4727,7 @@
           </div>
         </div>
       `;
-    } else if (fichaStep === 6) {
+    } else if (fichaStep === 5) {
       stepHtml = `
         <div class="card">
           <div class="card-title">
@@ -5032,7 +5027,7 @@
 
       <div style="display:flex; justify-content:space-between; gap:10px; margin-bottom:10px;">
         <button type="button" class="btn btn-outline" id="btn-prev-step" ${fichaStep === 1 ? 'disabled style="opacity:0.4"' : ''}>⬅️ Etapa Anterior</button>
-        <button type="button" class="btn btn-outline" id="btn-next-step" ${fichaStep === 6 ? 'disabled style="opacity:0.4"' : ''}>Próxima Etapa ➡️</button>
+        <button type="button" class="btn btn-outline" id="btn-next-step" ${fichaStep === 5 ? 'disabled style="opacity:0.4"' : ''}>Próxima Etapa ➡️</button>
       </div>
 
       <div class="sticky-form-actions">
@@ -5063,7 +5058,7 @@
     const prevBtn = document.getElementById('btn-prev-step');
     const nextBtn = document.getElementById('btn-next-step');
     if (prevBtn) prevBtn.addEventListener('click', () => { if (fichaStep > 1) { if (crewDirtySinceLastPush) flushCrewCloudPushNow(); openSelectBoxKey = ''; fichaStep--; renderFichaView(); window.scrollTo(0, 0); } });
-    if (nextBtn) nextBtn.addEventListener('click', () => { if (fichaStep < 6) { if (crewDirtySinceLastPush) flushCrewCloudPushNow(); openSelectBoxKey = ''; fichaStep++; renderFichaView(); window.scrollTo(0, 0); } });
+    if (nextBtn) nextBtn.addEventListener('click', () => { if (fichaStep < 5) { if (crewDirtySinceLastPush) flushCrewCloudPushNow(); openSelectBoxKey = ''; fichaStep++; renderFichaView(); window.scrollTo(0, 0); } });
 
     container.querySelectorAll('.js-open-crew-modal').forEach(btn => {
       btn.addEventListener('click', () => {
