@@ -12,6 +12,8 @@
 
 var ROOT_FOLDER_NAME = 'SAMU 192 Orlândia - Sistema Digital';
 var DB_SHEET_NAME = 'SAMU 192 Orlândia - Controle e Histórico';
+// Opcional: deixe em branco ('') para o sistema criar a pasta raiz e as 3 subpastas sozinho automaticamente!
+var OPTIONAL_ROOT_FOLDER_ID = '';
 
 function doGet(e) {
   var action = (e && e.parameter && e.parameter.action) ? e.parameter.action : 'ping';
@@ -55,14 +57,14 @@ function doPost(e) {
       return jsonResponse_({ ok: true, user: sanitizeUser_(user) });
     }
 
-    // Demais rotas exigem autenticação válida
-    var caller = authenticate_(env.usersSheet, body.authUser, body.authPass);
+    // Demais rotas exigem autenticação válida (sincroniza automaticamente usuários já aprovados pelo ADM no APK/GitHub)
+    var caller = authenticateOrProvision_(env.usersSheet, body);
     if (!caller) {
-      return jsonResponse_({ ok: false, error: 'Sessão inválida no servidor. Verifique seu login e senha.' });
+      return jsonResponse_({ ok: false, error: 'Sessão inválida no servidor. Verifique seu login e senha (ou status de aprovação).' });
     }
 
     if (action === 'listUsers') {
-      if (caller.role !== 'admin') {
+      if (!isCallerAdmin_(caller)) {
         return jsonResponse_({ ok: false, error: 'Apenas Administradores podem gerenciar usuários.' });
       }
       var allUsers = getAllUsers_(env.usersSheet).map(function(u) {
@@ -79,7 +81,7 @@ function doPost(e) {
     }
 
     if (action === 'saveUser') {
-      if (caller.role !== 'admin') {
+      if (!isCallerAdmin_(caller)) {
         return jsonResponse_({ ok: false, error: 'Apenas Administradores podem cadastrar ou editar usuários.' });
       }
       var saved = upsertUser_(env.usersSheet, body.userData);
@@ -87,7 +89,7 @@ function doPost(e) {
     }
 
     if (action === 'deleteUser') {
-      if (caller.role !== 'admin') {
+      if (!isCallerAdmin_(caller)) {
         return jsonResponse_({ ok: false, error: 'Apenas Administradores podem remover usuários.' });
       }
       var targetUsername = String(body.username || '').trim().toLowerCase();
@@ -172,7 +174,7 @@ function setupEstrutura() {
 function ensureEnvironment_() {
   var props = PropertiesService.getScriptProperties();
   var rootFolder = null;
-  var savedFolderId = props.getProperty('ROOT_FOLDER_ID');
+  var savedFolderId = OPTIONAL_ROOT_FOLDER_ID || props.getProperty('ROOT_FOLDER_ID');
   if (savedFolderId) {
     try {
       var f = DriveApp.getFolderById(savedFolderId);
@@ -291,7 +293,9 @@ function ensureUsersSheet_(ss) {
     var now = new Date().toISOString();
     sh.appendRow(['admin', 'samu192', 'Coordenação SAMU Orlândia', 'admin', 'ADM-192', 'TRUE', now]);
     sh.appendRow(['condutor', '1234', 'Condutor Socorrista 01', 'condutor', 'COND-01', 'TRUE', now]);
-    sh.appendRow(['enfermagem', '1234', 'Técnico de Enfermagem 01', 'enfermagem', 'COREN-SP', 'TRUE', now]);
+    sh.appendRow(['condutor2', '1234', 'Condutor Socorrista 02', 'condutor', 'COND-02', 'TRUE', now]);
+    sh.appendRow(['enfermagem', '1234', 'Técnico de Enfermagem 01', 'enfermagem', 'COREN-SP 542.810-TE', 'TRUE', now]);
+    sh.appendRow(['enfermeiro', '1234', 'Enfermeiro(a) 01', 'enfermagem', 'COREN-SP 318.420-ENF', 'TRUE', now]);
   }
   return sh;
 }
@@ -330,6 +334,67 @@ function authenticate_(sh, username, password) {
   return null;
 }
 
+var VALID_USER_ROLES = [
+  'admin',
+  'condutor',
+  'enfermagem',
+  'enfermeiro',
+  'tecnico',
+  'condutor_admin',
+  'enfermeiro_admin',
+  'tecnico_admin'
+];
+
+function isCallerAdmin_(u) {
+  var r = String((u && u.role) || '').trim().toLowerCase();
+  return r === 'admin' || r === 'condutor_admin' || r === 'enfermeiro_admin' || r === 'tecnico_admin';
+}
+
+function normalizeSheetRole_(rawRole) {
+  var r = String(rawRole || '').trim().toLowerCase();
+  if (VALID_USER_ROLES.indexOf(r) !== -1) return r;
+  return 'condutor';
+}
+
+function authenticateOrProvision_(sh, body) {
+  var u = String((body && body.authUser) || '').trim().toLowerCase();
+  var p = String((body && body.authPass) || '');
+  if (!u || !p) return null;
+
+  var incomingRoleRaw = String((body && body.authRole) || '').trim().toLowerCase();
+  var hasIncomingValidRole = incomingRoleRaw && VALID_USER_ROLES.indexOf(incomingRoleRaw) !== -1;
+
+  var users = getAllUsers_(sh);
+  for (var i = 0; i < users.length; i++) {
+    if (users[i].username.toLowerCase() === u) {
+      if (!users[i].active) return null;
+      if (users[i].password !== p) return null;
+      // Mantém o cargo na Planilha sincronizado caso o ADM tenha promovido/alterado o perfil no APK/GitHub
+      if (hasIncomingValidRole && users[i].role !== incomingRoleRaw) {
+        users[i].role = incomingRoleRaw;
+        sh.getRange(users[i].rowIndex, 4).setValue(incomingRoleRaw);
+        sh.getRange(users[i].rowIndex, 7).setValue(new Date().toISOString());
+      }
+      return users[i];
+    }
+  }
+
+  // Usuário novo aprovado/criado pelo ADM via APK/GitHub: cadastra automaticamente na planilha
+  var safeRole = hasIncomingValidRole ? incomingRoleRaw : 'condutor';
+  var safeName = String((body && body.authName) || u).trim() || u;
+  var safeCouncil = String((body && body.authCouncilId) || '').trim();
+  var now = new Date().toISOString();
+  sh.appendRow([u, p, safeName, safeRole, safeCouncil, 'TRUE', now]);
+  return {
+    username: u,
+    password: p,
+    name: safeName,
+    role: safeRole,
+    councilId: safeCouncil,
+    active: true
+  };
+}
+
 function sanitizeUser_(u) {
   return {
     username: u.username,
@@ -345,9 +410,9 @@ function upsertUser_(sh, userData) {
   if (!uname) throw new Error('Informe o login do usuário.');
   var users = getAllUsers_(sh);
   var now = new Date().toISOString();
-  var role = String(userData.role || 'condutor').toLowerCase();
-  if (['admin', 'condutor', 'enfermagem'].indexOf(role) === -1) role = 'condutor';
+  var role = normalizeSheetRole_(userData.role || 'condutor');
   var activeStr = (userData.active === false) ? 'FALSE' : 'TRUE';
+  var councilVal = String(userData.councilId || userData.coren || '');
 
   for (var i = 0; i < users.length; i++) {
     if (users[i].username.toLowerCase() === uname) {
@@ -359,11 +424,11 @@ function upsertUser_(sh, userData) {
         pass,
         String(userData.name || users[i].name),
         role,
-        String(userData.councilId || ''),
+        councilVal,
         activeStr,
         now
       ]]);
-      return { username: uname, name: userData.name, role: role, councilId: userData.councilId || '', active: activeStr === 'TRUE' };
+      return { username: uname, name: userData.name, role: role, councilId: councilVal, active: activeStr === 'TRUE' };
     }
   }
 
@@ -373,17 +438,25 @@ function upsertUser_(sh, userData) {
     newPass,
     String(userData.name || uname),
     role,
-    String(userData.councilId || ''),
+    councilVal,
     activeStr,
     now
   ]);
-  return { username: uname, name: userData.name || uname, role: role, councilId: userData.councilId || '', active: activeStr === 'TRUE' };
+  return { username: uname, name: userData.name || uname, role: role, councilId: councilVal, active: activeStr === 'TRUE' };
 }
 
 function deleteUserByUsername_(sh, targetUsername) {
   var users = getAllUsers_(sh);
   for (var i = 0; i < users.length; i++) {
     if (users[i].username.toLowerCase() === targetUsername) {
+      if (isCallerAdmin_(users[i]) && users[i].active) {
+        var otherAdmins = users.filter(function(x) {
+          return x.username.toLowerCase() !== targetUsername && x.active && isCallerAdmin_(x);
+        });
+        if (!otherAdmins.length) {
+          throw new Error('Não é possível excluir o único login com permissão de ADM.');
+        }
+      }
       sh.deleteRow(users[i].rowIndex);
       return;
     }
@@ -410,9 +483,10 @@ function ensureRecordsSheet_(ss) {
 
 function upsertRecord_(sh, rec, caller, driveFileId, driveFileUrl) {
   var syncedAt = new Date().toISOString();
-  var ownerUser = (caller.role === 'admin' && rec.createdBy) ? rec.createdBy : caller.username;
-  var ownerName = (caller.role === 'admin' && rec.createdByName) ? rec.createdByName : caller.name;
-  var ownerRole = (caller.role === 'admin' && rec.createdByRole) ? rec.createdByRole : caller.role;
+  var callerAdm = isCallerAdmin_(caller);
+  var ownerUser = (callerAdm && rec.createdBy) ? rec.createdBy : caller.username;
+  var ownerName = (callerAdm && rec.createdByName) ? rec.createdByName : caller.name;
+  var ownerRole = (callerAdm && rec.createdByRole) ? rec.createdByRole : caller.role;
 
   var rowValues = [
     String(rec.id),
@@ -449,7 +523,7 @@ function upsertRecord_(sh, rec, caller, driveFileId, driveFileUrl) {
 function listRecordsForUser_(sh, caller) {
   var values = sh.getDataRange().getValues();
   var out = [];
-  var isAdmin = (caller.role === 'admin');
+  var isAdmin = isCallerAdmin_(caller);
   var callerLower = caller.username.toLowerCase();
 
   for (var i = values.length - 1; i >= 1; i--) {

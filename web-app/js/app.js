@@ -926,7 +926,8 @@
         showToast(`Simulando visão: ${res.user.name}`);
       } catch (e) {
         const users = window.SamuStorage.getLocalUsers();
-        const byUserOrRole = users.find(u => u.username === creds[0]) || users.find(u => u.role === target);
+        const byUserOrRole = users.find(u => u.username === creds[0]) ||
+          users.find(u => target === 'admin' ? window.SamuStorage.isUserAdmin(u) : u.role === target);
         if (byUserOrRole) {
           window.SamuStorage.setSession(byUserOrRole);
           await enterSession(byUserOrRole, { promptCrew: true });
@@ -1221,7 +1222,7 @@
     // Sincronização rápida a cada 8s entre os celulares da equipe durante o preenchimento da Ficha
     let crewTickCounter = 0;
     setInterval(async () => {
-      if (!currentUser || currentUser.role === 'admin' || document.hidden || !navigator.onLine) return;
+      if (!currentUser || !window.SamuStorage.hasOperationalRole(currentUser) || document.hidden || !navigator.onLine) return;
       if (!window.SamuStorage.hasGitHubConfigured()) return;
       crewTickCounter++;
       // Quando vinculado em equipe na aba Ficha sincroniza a cada 8s; se ainda sem vínculo, checa a cada 24s para detectar vínculo feito pelo colega
@@ -1245,7 +1246,7 @@
     const btn = document.getElementById('btn-top-crew');
     const txt = document.getElementById('top-crew-text');
     if (!btn || !txt) return;
-    if (!currentUser || currentUser.role === 'admin') {
+    if (!currentUser || !window.SamuStorage.hasOperationalRole(currentUser)) {
       btn.classList.add('hidden');
       return;
     }
@@ -1328,7 +1329,7 @@
   }
 
   async function pullAndApplyCrewFichaChanges(opts) {
-    if (!currentUser || currentUser.role === 'admin' || !fichaState) return false;
+    if (!currentUser || !window.SamuStorage.hasOperationalRole(currentUser) || !fichaState) return false;
     const prevCrewId = activeCrew ? activeCrew.crewId : '';
     activeCrew = window.SamuStorage.getActiveCrewForUser(currentUser.username);
     updateTopbarCrewButton();
@@ -1425,7 +1426,7 @@
   }
 
   function openCrewSelectionModal(options) {
-    if (!currentUser || currentUser.role === 'admin') return;
+    if (!currentUser || !window.SamuStorage.hasOperationalRole(currentUser)) return;
     const opts = options || {};
     const modal = document.getElementById('crew-modal');
     const body = document.getElementById('crew-modal-body');
@@ -1433,7 +1434,7 @@
 
     activeCrew = window.SamuStorage.getActiveCrewForUser(currentUser.username);
     const allApproved = window.SamuStorage.getLocalUsers().filter(u =>
-      u.active !== false && u.status === 'approved' && u.role !== 'admin'
+      u.active !== false && u.status === 'approved' && window.SamuStorage.hasOperationalRole(u)
     );
     const meLower = currentUser.username.toLowerCase();
     const mySubRole = window.SamuStorage.getUserSubRole(currentUser);
@@ -1662,15 +1663,39 @@
     modal.classList.remove('hidden');
   }
 
+  function updateTopbarUserHeader() {
+    if (!currentUser) return;
+    const nameEl = document.getElementById('top-user-name');
+    const roleEl = document.getElementById('top-user-role');
+    if (nameEl) nameEl.textContent = currentUser.name;
+    const choice = window.SamuStorage.getUserProfileChoice(currentUser);
+    const shortRoleMap = {
+      admin: 'ADM / COORDENAÇÃO',
+      condutor: 'CONDUTOR SOCORRISTA',
+      condutor_admin: 'CONDUTOR + ADM',
+      enfermeiro: 'ENFERMEIRO(A)',
+      enfermeiro_admin: 'ENFERMEIRO(A) + ADM',
+      tecnico: 'TÉC. ENFERM.',
+      tecnico_admin: 'TÉC. ENFERM. + ADM'
+    };
+    const userCoren = currentUser.coren || currentUser.councilId || '';
+    const roleBadgeText = (currentUser.role === 'enfermagem' && userCoren)
+      ? `${shortRoleMap[choice] || 'ENFERMAGEM'} • ${userCoren}`
+      : (shortRoleMap[choice] || currentUser.role);
+    if (roleEl) roleEl.textContent = roleBadgeText;
+    updateTopbarCrewButton();
+  }
+
   async function enterSession(user, options) {
     const opts = options || {};
-    // Recarrega dados mais frescos do usuário na base interna (ex: COREN e subRole atualizados)
+    // Recarrega dados mais frescos do usuário na base interna (ex: COREN, subRole e isAdmin atualizados)
     const freshLocal = window.SamuStorage.getLocalUsers().find(u => u.username.toLowerCase() === String(user.username || '').toLowerCase());
     if (freshLocal && freshLocal.active) {
       user = Object.assign({}, user, {
         name: freshLocal.name || user.name,
         role: freshLocal.role || user.role,
         subRole: window.SamuStorage.getUserSubRole(freshLocal),
+        isAdmin: window.SamuStorage.isUserAdmin(freshLocal),
         coren: freshLocal.coren || freshLocal.councilId || user.coren || user.councilId || '',
         councilId: freshLocal.coren || freshLocal.councilId || user.councilId || '',
         cpf: freshLocal.cpf || user.cpf || ''
@@ -1679,27 +1704,16 @@
     }
 
     currentUser = user;
-    activeCrew = user.role !== 'admin' ? window.SamuStorage.getActiveCrewForUser(user.username) : null;
+    const isOperational = window.SamuStorage.hasOperationalRole(user);
+    activeCrew = isOperational ? window.SamuStorage.getActiveCrewForUser(user.username) : null;
     manualShowSecondEnf = false;
     manualShowSecondCond = false;
 
     document.getElementById('login-screen').classList.add('hidden');
     document.getElementById('app-shell').classList.remove('hidden');
 
-    document.getElementById('top-user-name').textContent = user.name;
-    const subRole = window.SamuStorage.getUserSubRole(user);
-    const shortRoleMap = {
-      admin: 'ADM / COORDENAÇÃO',
-      condutor: 'CONDUTOR SOCORRISTA',
-      enfermeiro: 'ENFERMEIRO(A)',
-      tecnico: 'TÉC. ENFERM.'
-    };
+    updateTopbarUserHeader();
     const userCoren = user.coren || user.councilId || '';
-    const roleBadgeText = (user.role === 'enfermagem' && userCoren)
-      ? `${shortRoleMap[subRole] || 'ENFERMAGEM'} • ${userCoren}`
-      : (shortRoleMap[subRole] || user.role);
-    document.getElementById('top-user-role').textContent = roleBadgeText;
-    updateTopbarCrewButton();
 
     // Carrega rascunhos em andamento salvos deste usuário
     const draftFicha = await window.SamuStorage.getDraft(user.username, 'ficha');
@@ -1777,18 +1791,21 @@
 
     await refreshDraftCount();
     const pendingCount = window.SamuStorage.getPendingUsers().length;
-    if (user.role === 'admin') {
+    if (window.SamuStorage.isUserAdmin(user) && !isOperational) {
       activeTab = pendingCount > 0 ? 'aprovacoes' : 'historico';
     } else {
       activeTab = 'ficha';
+      if (window.SamuStorage.isUserAdmin(user) && pendingCount > 0) {
+        showToast(`🔔 Há ${pendingCount} cadastro(s) aguardando aprovação na aba "✅ Aprovar"!`);
+      }
     }
     renderBottomNav();
     renderActiveView();
     await refreshSyncBadge();
     triggerBackgroundSync(false);
 
-    // Toda vez que o Téc. de Enfermagem, Enfermeiro(a) ou Condutor logar, pergunta com quem está trabalhando no plantão!
-    if (opts.promptCrew && user.role !== 'admin') {
+    // Toda vez que o Téc. de Enfermagem, Enfermeiro(a) ou Condutor (inclusive híbrido c/ ADM) logar, pergunta com quem está trabalhando no plantão!
+    if (opts.promptCrew && isOperational) {
       openCrewSelectionModal({ isLoginPrompt: true });
     }
   }
@@ -1835,7 +1852,7 @@
 
     if (!settings.scriptUrl && !hasGh) {
       if (interactive) {
-        if (currentUser.role === 'admin') {
+        if (window.SamuStorage.isUserAdmin(currentUser)) {
           activeTab = 'admin';
           renderBottomNav();
           renderActiveView();
@@ -1866,9 +1883,24 @@
     }
   }
 
-  function getNavTabsForRole(role) {
-    if (role === 'admin') {
+  function getNavTabsForUser(user) {
+    if (window.SamuStorage.isUserAdmin(user)) {
       const pendingUsersCount = window.SamuStorage.getPendingUsers().length;
+      if (window.SamuStorage.hasOperationalRole(user)) {
+        const isCond = user.role === 'condutor';
+        return [
+          { id: 'ficha', icon: '📋', label: 'Ficha' },
+          isCond
+            ? { id: 'condutor', icon: '🚑', label: 'CK Cond.' }
+            : { id: 'enfermagem', icon: '🩺', label: 'CK Enf.' },
+          isCond
+            ? { id: 'enfermagem', icon: '🩺', label: 'CK Enf.' }
+            : { id: 'condutor', icon: '🚑', label: 'CK Cond.' },
+          { id: 'historico', icon: '🔎', label: 'Histórico' },
+          { id: 'aprovacoes', icon: '✅', label: 'Aprovar', badge: pendingUsersCount },
+          { id: 'admin', icon: '⚙️', label: 'Base/GitHub' }
+        ];
+      }
       return [
         { id: 'historico', icon: '🔎', label: 'Histórico' },
         { id: 'aprovacoes', icon: '✅', label: 'Aprovar', badge: pendingUsersCount },
@@ -1878,7 +1910,7 @@
         { id: 'admin', icon: '⚙️', label: 'Base/GitHub' }
       ];
     }
-    if (role === 'condutor') {
+    if (user && user.role === 'condutor') {
       return [
         { id: 'ficha', icon: '📋', label: 'Ficha USB' },
         { id: 'condutor', icon: '🚑', label: 'Check List' },
@@ -1894,7 +1926,7 @@
 
   function renderBottomNav() {
     const nav = document.getElementById('bottom-nav');
-    const tabs = getNavTabsForRole(currentUser.role);
+    const tabs = getNavTabsForUser(currentUser);
     nav.innerHTML = tabs.map(t => `
       <button type="button" class="nav-tab ${activeTab === t.id ? 'active' : ''}" data-tab="${t.id}">
         ${t.badge > 0 ? `<span class="nav-badge">${t.badge}</span>` : ''}
@@ -1931,7 +1963,7 @@
     }
 
     stampChangedFichaFields(Date.now());
-    if (currentUser.role !== 'admin') {
+    if (window.SamuStorage.hasOperationalRole(currentUser)) {
       activeCrew = window.SamuStorage.getActiveCrewForUser(currentUser.username);
       if (activeCrew) {
         if (!currentCrewSessionId) {
@@ -3232,7 +3264,7 @@
     }
 
     const crewBarHtml = (() => {
-      if (!currentUser || currentUser.role === 'admin') return '';
+      if (!currentUser || !window.SamuStorage.hasOperationalRole(currentUser)) return '';
       activeCrew = window.SamuStorage.getActiveCrewForUser(currentUser.username);
       updateTopbarCrewButton();
       if (activeCrew && activeCrew.membersDetailed && activeCrew.membersDetailed.length >= 2) {
@@ -4075,7 +4107,7 @@
               hospital: fichaState.destino || 'HBSA'
             });
           }
-          if (currentUser && currentUser.role !== 'admin') {
+          if (currentUser && window.SamuStorage.hasOperationalRole(currentUser)) {
             activeCrew = window.SamuStorage.getActiveCrewForUser(currentUser.username);
           }
           persistFichaDraft();
@@ -4139,7 +4171,7 @@
     const d = JSON.parse(JSON.stringify(fichaState));
     const tipos = (d.tiposAtendimento || []).slice();
     if (d.tipoOutroTexto) tipos.push(d.tipoOutroTexto);
-    const crewObj = (currentUser && currentUser.role !== 'admin')
+    const crewObj = (currentUser && window.SamuStorage.hasOperationalRole(currentUser))
       ? window.SamuStorage.getActiveCrewForUser(currentUser.username)
       : null;
 
@@ -5110,7 +5142,7 @@
    * ========================================================================== */
   async function renderHistoricoView() {
     const container = document.getElementById('main-view');
-    const isAdmin = currentUser.role === 'admin';
+    const isAdmin = window.SamuStorage.isUserAdmin(currentUser);
     const visibleRecords = await window.SamuStorage.getVisibleRecords(currentUser);
 
     // Lista de profissionais únicos (para filtro do Admin)
@@ -5357,8 +5389,80 @@
   /* ==========================================================================
    * ABA EXCLUSIVA ADM: APROVAÇÃO DE NOVOS CADASTROS (OFFLINE + GITHUB)
    * ========================================================================== */
+  function buildProfileSelectOptionsHtml(selectedVal, selfAdminOnly) {
+    const cur = String(selectedVal || 'tecnico');
+    const opts = [
+      { value: 'tecnico', label: '🩺 Téc. de Enfermagem', admin: false },
+      { value: 'enfermeiro', label: '👩‍⚕️ Enfermeiro(a)', admin: false },
+      { value: 'condutor', label: '🚑 Condutor Socorrista', admin: false },
+      { value: 'condutor_admin', label: '🚑🔑 Condutor Socorrista + ADM (Híbrido)', admin: true },
+      { value: 'enfermeiro_admin', label: '👩‍⚕️🔑 Enfermeiro(a) + ADM (Híbrido)', admin: true },
+      { value: 'tecnico_admin', label: '🩺🔑 Téc. de Enfermagem + ADM (Híbrido)', admin: true },
+      { value: 'admin', label: '🔑 Somente Administrador / Coordenação (ADM)', admin: true }
+    ];
+    return opts
+      .filter(o => !selfAdminOnly || o.admin)
+      .map(o => `<option value="${o.value}" ${cur === o.value ? 'selected' : ''}>${o.label}</option>`)
+      .join('');
+  }
+
+  function profileChoiceUsesCoren(choiceVal) {
+    const c = String(choiceVal || '');
+    return c !== 'condutor' && c !== 'condutor_admin';
+  }
+
+  async function deleteUserAccountWithSync(uname) {
+    const cleanUname = String(uname || '').trim().toLowerCase();
+    if (!cleanUname) return false;
+    if (currentUser && cleanUname === currentUser.username.toLowerCase()) {
+      samuAlert('Você está logado neste usuário agora. Entre com outro login de ADM caso queira excluir esta conta.');
+      return false;
+    }
+    const allUsers = window.SamuStorage.getLocalUsers();
+    const target = allUsers.find(u => u.username.toLowerCase() === cleanUname);
+    if (target && window.SamuStorage.isUserAdmin(target)) {
+      const otherAdmins = allUsers.filter(u =>
+        u.username.toLowerCase() !== cleanUname &&
+        u.active !== false &&
+        u.status !== 'pending' &&
+        window.SamuStorage.isUserAdmin(u)
+      );
+      if (!otherAdmins.length) {
+        samuAlert('Não é possível excluir o único login com permissão de ADM do sistema. Crie ou promova outro ADM primeiro.');
+        return false;
+      }
+    }
+
+    const labelName = target ? `"${target.name}" (login: ${target.username})` : `"${cleanUname}"`;
+    if (!(await samuConfirm(`Excluir permanentemente o login ${labelName} da Base Interna e do GitHub?`))) {
+      return false;
+    }
+
+    window.SamuStorage.deleteLocalUser(cleanUname);
+    if (navigator.onLine && window.SamuStorage.hasGitHubConfigured() && window.SamuStorage.getSettings().githubToken) {
+      try { await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true }); } catch (eGh) {}
+    }
+    const curSettings = window.SamuStorage.getSettings();
+    if (curSettings.scriptUrl && navigator.onLine) {
+      try {
+        await window.SamuStorage.apiPost({
+          action: 'deleteUser',
+          authUser: currentUser.username,
+          authPass: currentUser.password,
+          authName: currentUser.name,
+          authRole: window.SamuStorage.getUserProfileChoice(currentUser),
+          username: cleanUname
+        });
+      } catch (e) {}
+    }
+    renderBottomNav();
+    await refreshSyncBadge();
+    showToast(`🗑️ Login "${cleanUname}" excluído com sucesso!`);
+    return true;
+  }
+
   async function renderAprovacoesView(skipAutoPull) {
-    if (!currentUser || currentUser.role !== 'admin') return;
+    if (!currentUser || !window.SamuStorage.isUserAdmin(currentUser)) return;
     const container = document.getElementById('main-view');
     const hasGh = window.SamuStorage.hasGitHubConfigured();
     const ghMeta = window.SamuStorage.getGitHubMeta();
@@ -5366,7 +5470,7 @@
     // Consulta automaticamente a base do GitHub quando tiver internet
     if (!skipAutoPull && navigator.onLine && hasGh) {
       window.SamuStorage.syncInternalDbWithGitHub().then(async () => {
-        if (currentUser && currentUser.role === 'admin' && activeTab === 'aprovacoes') {
+        if (currentUser && window.SamuStorage.isUserAdmin(currentUser) && activeTab === 'aprovacoes') {
           renderBottomNav();
           await refreshSyncBadge();
           renderAprovacoesView(true);
@@ -5431,15 +5535,12 @@
 
               <div class="grid-2" style="margin-bottom:10px;">
                 <div class="field" style="margin-bottom:0;">
-                  <label>Cargo / Nível de Acesso ao Aprovar</label>
+                  <label>Cargo / Nível de Acesso ao Aprovar (suporta Híbrido)</label>
                   <select data-aprov-role="${escapeHtml(u.username)}">
-                    <option value="tecnico" ${subRole === 'tecnico' ? 'selected' : ''}>🩺 Téc. de Enfermagem</option>
-                    <option value="enfermeiro" ${subRole === 'enfermeiro' ? 'selected' : ''}>👩‍⚕️ Enfermeiro(a)</option>
-                    <option value="condutor" ${subRole === 'condutor' ? 'selected' : ''}>🚑 Condutor Socorrista</option>
-                    <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>🔑 Administrador / Coordenação (ADM)</option>
+                    ${buildProfileSelectOptionsHtml(window.SamuStorage.getUserProfileChoice(u), false)}
                   </select>
                 </div>
-                <div class="field" data-aprov-coren-wrap="${escapeHtml(u.username)}" style="margin-bottom:0; ${subRole === 'condutor' ? 'display:none;' : ''}">
+                <div class="field" data-aprov-coren-wrap="${escapeHtml(u.username)}" style="margin-bottom:0; ${!profileChoiceUsesCoren(window.SamuStorage.getUserProfileChoice(u)) ? 'display:none;' : ''}">
                   <label>Confirmar / Ajustar COREN</label>
                   <input type="text" data-aprov-coren="${escapeHtml(u.username)}" value="${escapeHtml(u.coren || u.councilId || '')}" placeholder="Ex: COREN-SP 542.810-TE" />
                 </div>
@@ -5455,41 +5556,38 @@
       </div>
 
       <div class="card">
-        <div class="card-title"><span>👥 Equipe Já Aprovada – Alterar / Subir de Cargo (${approvedUsers.length})</span></div>
+        <div class="card-title"><span>👥 Equipe Já Aprovada – Alterar Cargo (Híbrido) ou Excluir Login (${approvedUsers.length})</span></div>
         <p style="margin:0 0 10px; font-size:0.8rem; color:var(--muted);">
-          Você pode promover qualquer integrante já aprovado (ex.: tornar <strong>🔑 ADM</strong> ou subir de <strong>Téc. Enfermagem</strong> para <strong>Enfermeiro(a)</strong>) direto abaixo:
+          Altere para cargos híbridos (ex.: <strong>🚑🔑 Condutor + ADM</strong> ou <strong>👩‍⚕️🔑 Enfermeiro(a) + ADM</strong>), promova integrantes ou exclua logins antigos:
         </p>
         <div>
           ${approvedUsers.map(u => {
-            const subRole = window.SamuStorage.getUserSubRole(u);
-            const curSelVal = u.role === 'admin' ? 'admin' : (u.role === 'condutor' ? 'condutor' : subRole);
+            const curSelVal = window.SamuStorage.getUserProfileChoice(u);
             const isSelf = u.username.toLowerCase() === currentUser.username.toLowerCase();
-            const roleIcon = u.role === 'admin' ? '🔑' : (u.role === 'condutor' ? '🚑' : (subRole === 'enfermeiro' ? '👩‍⚕️' : '🩺'));
+            const roleIcon = window.SamuStorage.getUserRoleIcon(u);
             const roleBadge = `${roleIcon} ${window.SamuStorage.getUserRoleLabel(u)}`;
             const corenTxt = u.coren || u.councilId || '';
+            const showCorenInp = curSelVal === 'tecnico' || curSelVal === 'enfermeiro' || curSelVal === 'tecnico_admin' || curSelVal === 'enfermeiro_admin';
             return `
               <div class="check-item-row" style="flex-wrap:wrap; gap:8px;">
                 <div class="check-item-info" style="min-width:190px;">
-                  <strong>${escapeHtml(u.name)}</strong> <small style="color:var(--muted);">(${escapeHtml(roleBadge)})</small><br>
+                  <strong>${escapeHtml(u.name)}</strong> <small style="color:var(--muted);">(${escapeHtml(roleBadge)})</small>
+                  ${isSelf ? `<span class="type-badge" style="background:#dcfce7; color:#14532d; margin-left:4px;">Você</span>` : ''}
+                  <br>
                   <small style="color:var(--muted);">
                     Login: <code>${escapeHtml(u.username)}</code>
                     ${u.cpf ? ` • CPF: ${escapeHtml(u.cpf)}` : ''}
                     ${corenTxt ? ` • <strong>${escapeHtml(corenTxt)}</strong>` : ''}
                   </small>
                 </div>
-                ${isSelf ? `
-                  <span class="type-badge" style="background:#f1f5f9; color:#334155;">🔑 Seu login atual (ADM)</span>
-                ` : `
-                  <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; flex:1; justify-content:flex-end;">
-                    <select data-promote-role="${escapeHtml(u.username)}" style="flex:1; min-width:175px; max-width:260px; padding:8px 10px; border:1.5px solid var(--border); border-radius:8px; font-size:0.83rem; font-weight:700; background:#fff;">
-                      <option value="tecnico" ${curSelVal === 'tecnico' ? 'selected' : ''}>🩺 Téc. Enfermagem</option>
-                      <option value="enfermeiro" ${curSelVal === 'enfermeiro' ? 'selected' : ''}>👩‍⚕️ Enfermeiro(a)</option>
-                      <option value="condutor" ${curSelVal === 'condutor' ? 'selected' : ''}>🚑 Condutor</option>
-                      <option value="admin" ${curSelVal === 'admin' ? 'selected' : ''}>🔑 Administrador (ADM)</option>
-                    </select>
-                    <button type="button" class="btn btn-primary btn-sm" data-promote-save="${escapeHtml(u.username)}">⬆️ Salvar Cargo</button>
-                  </div>
-                `}
+                <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; flex:1; justify-content:flex-end;">
+                  <select data-promote-role="${escapeHtml(u.username)}" style="flex:1; min-width:185px; max-width:270px; padding:8px 10px; border:1.5px solid var(--border); border-radius:8px; font-size:0.82rem; font-weight:700; background:#fff;">
+                    ${buildProfileSelectOptionsHtml(curSelVal, isSelf)}
+                  </select>
+                  <input type="text" data-promote-coren="${escapeHtml(u.username)}" value="${escapeHtml(corenTxt)}" placeholder="COREN-SP..." style="width:155px; padding:8px 10px; border:1.5px solid var(--border); border-radius:8px; font-size:0.82rem; ${showCorenInp ? '' : 'display:none;'}" />
+                  <button type="button" class="btn btn-primary btn-sm" data-promote-save="${escapeHtml(u.username)}">⬆️ Salvar Cargo</button>
+                  ${!isSelf ? `<button type="button" class="btn btn-secondary btn-sm" data-aprov-del-u="${escapeHtml(u.username)}">🗑️ Excluir</button>` : ''}
+                </div>
               </div>
             `;
           }).join('')}
@@ -5542,16 +5640,23 @@
         const uname = sel.dataset.aprovRole;
         const escUname = CSS.escape ? CSS.escape(uname) : uname;
         const wrap = container.querySelector(`[data-aprov-coren-wrap="${escUname}"]`);
-        if (wrap) wrap.style.display = sel.value === 'condutor' ? 'none' : '';
+        if (wrap) wrap.style.display = profileChoiceUsesCoren(sel.value) ? '' : 'none';
       });
     });
 
-    const mapRoleChoiceToFields = (choiceVal) => {
-      if (choiceVal === 'admin') return { role: 'admin', subRole: 'admin' };
-      if (choiceVal === 'condutor') return { role: 'condutor', subRole: 'condutor' };
-      if (choiceVal === 'enfermeiro') return { role: 'enfermagem', subRole: 'enfermeiro' };
-      return { role: 'enfermagem', subRole: 'tecnico' };
-    };
+    container.querySelectorAll('[data-promote-role]').forEach(sel => {
+      sel.addEventListener('change', () => {
+        const uname = sel.dataset.promoteRole;
+        const escUname = CSS.escape ? CSS.escape(uname) : uname;
+        const cInp = container.querySelector(`[data-promote-coren="${escUname}"]`);
+        if (cInp) {
+          const isNurs = sel.value === 'tecnico' || sel.value === 'enfermeiro' || sel.value === 'tecnico_admin' || sel.value === 'enfermeiro_admin';
+          cInp.style.display = isNurs ? '' : 'none';
+        }
+      });
+    });
+
+    const mapRoleChoiceToFields = (choiceVal) => window.SamuStorage.mapProfileChoiceToFields(choiceVal);
 
     container.querySelectorAll('[data-approve-user]').forEach(btn => {
       btn.addEventListener('click', async () => {
@@ -5594,13 +5699,18 @@
         const uname = btn.dataset.promoteSave;
         const escUname = CSS.escape ? CSS.escape(uname) : uname;
         const sel = container.querySelector(`[data-promote-role="${escUname}"]`);
+        const corenInp = container.querySelector(`[data-promote-coren="${escUname}"]`);
         if (!sel) return;
         const target = approvedUsers.find(u => u.username.toLowerCase() === uname.toLowerCase());
         if (!target) return;
 
         const mapped = mapRoleChoiceToFields(sel.value);
-        const curSelVal = target.role === 'admin' ? 'admin' : (target.role === 'condutor' ? 'condutor' : window.SamuStorage.getUserSubRole(target));
-        if (sel.value === curSelVal) {
+        const curSelVal = window.SamuStorage.getUserProfileChoice(target);
+        const nextCoren = mapped.role === 'condutor'
+          ? ''
+          : ((corenInp ? corenInp.value.trim() : '') || target.coren || target.councilId || '');
+
+        if (sel.value === curSelVal && nextCoren === String(target.coren || target.councilId || '')) {
           showToast(`"${target.name}" já está com este cargo.`);
           return;
         }
@@ -5612,12 +5722,28 @@
         }
 
         const updatedUser = Object.assign({}, target, mapped, {
+          coren: mapped.role === 'enfermagem' ? nextCoren : '',
+          councilId: mapped.role === 'condutor' ? '' : nextCoren,
           updatedAt: new Date().toISOString()
         });
         btn.disabled = true;
         btn.textContent = 'Salvando...';
         try {
           window.SamuStorage.upsertLocalUser(updatedUser);
+          if (currentUser && target.username.toLowerCase() === currentUser.username.toLowerCase()) {
+            const refreshedSelf = window.SamuStorage.getLocalUsers().find(x => x.username.toLowerCase() === currentUser.username.toLowerCase());
+            if (refreshedSelf) {
+              currentUser = Object.assign({}, currentUser, {
+                role: refreshedSelf.role,
+                subRole: window.SamuStorage.getUserSubRole(refreshedSelf),
+                isAdmin: window.SamuStorage.isUserAdmin(refreshedSelf),
+                coren: refreshedSelf.coren || refreshedSelf.councilId || '',
+                councilId: refreshedSelf.coren || refreshedSelf.councilId || ''
+              });
+              window.SamuStorage.setSession(currentUser);
+              updateTopbarUserHeader();
+            }
+          }
           let ghSynced = false;
           if (navigator.onLine && window.SamuStorage.hasGitHubConfigured() && window.SamuStorage.getSettings().githubToken) {
             try {
@@ -5632,7 +5758,9 @@
                 action: 'saveUser',
                 authUser: currentUser.username,
                 authPass: currentUser.password,
-                userData: updatedUser
+                authName: currentUser.name,
+                authRole: window.SamuStorage.getUserProfileChoice(currentUser),
+                userData: Object.assign({}, updatedUser, { role: window.SamuStorage.getUserProfileChoice(updatedUser) })
               });
             } catch (eGs) {}
           }
@@ -5647,6 +5775,13 @@
           btn.disabled = false;
           btn.textContent = '⬆️ Salvar Cargo';
         }
+      });
+    });
+
+    container.querySelectorAll('[data-aprov-del-u]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const ok = await deleteUserAccountWithSync(btn.dataset.aprovDelU);
+        if (ok) renderAprovacoesView(true);
       });
     });
 
@@ -5667,7 +5802,7 @@
    * ABA 6 (EXCLUSIVA ADM): BASE INTERNA + GITHUB, EQUIPE & GOOGLE DRIVE
    * ========================================================================== */
   async function renderAdminView() {
-    if (!currentUser || currentUser.role !== 'admin') return;
+    if (!currentUser || !window.SamuStorage.isUserAdmin(currentUser)) return;
     const container = document.getElementById('main-view');
     const settings = window.SamuStorage.getSettings();
 
@@ -5681,7 +5816,9 @@
         const res = await window.SamuStorage.apiPost({
           action: 'listUsers',
           authUser: currentUser.username,
-          authPass: currentUser.password
+          authPass: currentUser.password,
+          authName: currentUser.name,
+          authRole: window.SamuStorage.getUserProfileChoice(currentUser)
         });
         if (res && res.ok && Array.isArray(res.users)) {
           window.SamuStorage.setLocalUsers(res.users);
@@ -5787,12 +5924,9 @@
               <input type="text" id="u-name" placeholder="Ex: Marcos Oliveira" required />
             </div>
             <div class="field">
-              <label>Função / Perfil de Acesso</label>
+              <label>Função / Perfil de Acesso (suporta Cargo Híbrido c/ ADM)</label>
               <select id="u-role">
-                <option value="tecnico">🩺 Técnico(a) de Enfermagem (COREN pré-preenche na ficha)</option>
-                <option value="enfermeiro">👩‍⚕️ Enfermeiro(a) (COREN pré-preenche na ficha)</option>
-                <option value="condutor">🚑 Condutor Socorrista (Login, Senha e CPF)</option>
-                <option value="admin">🔑 Administrador / Coordenação (vê tudo e aprova cadastros)</option>
+                ${buildProfileSelectOptionsHtml('tecnico', false)}
               </select>
             </div>
           </div>
@@ -5824,26 +5958,26 @@
         <div class="card-title"><span>📋 Equipe Aprovada (${users.length})</span></div>
         <div>
           ${users.map(u => {
-            const subRole = window.SamuStorage.getUserSubRole(u);
-            const roleIcon = u.role === 'admin' ? '🔑' : (u.role === 'condutor' ? '🚑' : (subRole === 'enfermeiro' ? '👩‍⚕️' : '🩺'));
-            const roleBadge = u.role === 'admin'
-              ? '🔑 ADM (Vê Tudo)'
-              : `${roleIcon} ${window.SamuStorage.getUserRoleLabel(u)}`;
+            const roleIcon = window.SamuStorage.getUserRoleIcon(u);
+            const roleBadge = `${roleIcon} ${window.SamuStorage.getUserRoleLabel(u)}`;
             const corenVal = u.coren || u.councilId || '';
+            const isSelf = u.username.toLowerCase() === currentUser.username.toLowerCase();
             return `
-              <div class="check-item-row" style="flex-wrap:wrap;">
+              <div class="check-item-row" style="flex-wrap:wrap; gap:8px;">
                 <div class="check-item-info">
-                  <strong>${escapeHtml(u.name)}</strong> <small style="color:var(--muted);">(${escapeHtml(roleBadge)})</small><br>
+                  <strong>${escapeHtml(u.name)}</strong> <small style="color:var(--muted);">(${escapeHtml(roleBadge)})</small>
+                  ${isSelf ? `<span class="type-badge" style="background:#dcfce7; color:#14532d; margin-left:4px;">Você</span>` : ''}
+                  <br>
                   <small style="color:var(--muted);">
                     Login: <code>${escapeHtml(u.username)}</code> • Senha: <code>${escapeHtml(u.password || '****')}</code>
                     ${u.cpf ? ` • CPF: ${escapeHtml(u.cpf)}` : ''}
                     ${corenVal ? ` • <strong>${escapeHtml(corenVal)}</strong>` : ''}
                   </small>
                 </div>
-                <div style="display:flex; gap:6px;">
-                  <button type="button" class="btn btn-outline btn-sm" data-edit-u="${escapeHtml(u.username)}">Editar</button>
-                  ${u.username.toLowerCase() !== currentUser.username.toLowerCase()
-                    ? `<button type="button" class="btn btn-secondary btn-sm" data-del-u="${escapeHtml(u.username)}">Excluir</button>`
+                <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                  <button type="button" class="btn btn-outline btn-sm" data-edit-u="${escapeHtml(u.username)}">✏️ Editar</button>
+                  ${!isSelf
+                    ? `<button type="button" class="btn btn-secondary btn-sm" data-del-u="${escapeHtml(u.username)}">🗑️ Excluir Login</button>`
                     : ''}
                 </div>
               </div>
@@ -5853,15 +5987,15 @@
       </div>
     `;
 
-    // Oculta campo COREN quando perfil selecionado for Condutor e ajusta exemplo p/ Enfermeiro vs Técnico
+    // Oculta campo COREN quando perfil selecionado for Condutor / Condutor + ADM e ajusta exemplo p/ Enfermeiro vs Técnico
     const uRoleSel = document.getElementById('u-role');
     const uCorenWrap = document.getElementById('u-coren-wrap');
     const uCouncilInp = document.getElementById('u-council');
     const syncRoleCorenVisibility = () => {
       if (!uRoleSel || !uCorenWrap) return;
-      uCorenWrap.style.display = uRoleSel.value === 'condutor' ? 'none' : '';
+      uCorenWrap.style.display = profileChoiceUsesCoren(uRoleSel.value) ? '' : 'none';
       if (uCouncilInp) {
-        uCouncilInp.placeholder = uRoleSel.value === 'enfermeiro'
+        uCouncilInp.placeholder = (uRoleSel.value === 'enfermeiro' || uRoleSel.value === 'enfermeiro_admin')
           ? 'Ex: COREN-SP 318.420-ENF'
           : 'Ex: COREN-SP 542.810-TE';
       }
@@ -6013,8 +6147,11 @@
             rootFolderUrl: res.rootFolderUrl || '',
             spreadsheetUrl: res.spreadsheetUrl || ''
           });
+          if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
+            window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true }).catch(() => {});
+          }
           await refreshSyncBadge();
-          showToast('Conectado ao Google Drive com sucesso!');
+          showToast('Conectado ao Google Drive e sincronizado p/ todos os celulares!');
           renderAdminView();
         } else {
           throw new Error((res && res.error) || 'Resposta inesperada.');
@@ -6041,18 +6178,22 @@
     document.getElementById('adm-user-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const selVal = document.getElementById('u-role').value;
-      const isNursingRole = selVal === 'tecnico' || selVal === 'enfermeiro' || selVal === 'enfermagem';
-      const roleVal = isNursingRole ? 'enfermagem' : selVal;
-      const subRoleVal = selVal === 'enfermeiro' ? 'enfermeiro' : (isNursingRole ? 'tecnico' : selVal);
-      const corenVal = roleVal === 'condutor' ? '' : document.getElementById('u-council').value.trim();
+      const mapped = window.SamuStorage.mapProfileChoiceToFields(selVal);
+      const targetUname = document.getElementById('u-username').value.trim().toLowerCase();
+      if (currentUser && targetUname === currentUser.username.toLowerCase() && !mapped.isAdmin) {
+        samuAlert('Para manter seu acesso administrativo atual, escolha um perfil com ADM (ex.: Condutor + ADM, Enfermeiro + ADM ou Somente ADM).');
+        return;
+      }
+      const corenVal = mapped.role === 'condutor' ? '' : document.getElementById('u-council').value.trim();
       const userData = {
         name: document.getElementById('u-name').value.trim(),
-        role: roleVal,
-        subRole: subRoleVal,
-        username: document.getElementById('u-username').value.trim().toLowerCase(),
+        role: mapped.role,
+        subRole: mapped.subRole,
+        isAdmin: mapped.isAdmin,
+        username: targetUname,
         password: document.getElementById('u-password').value.trim(),
         cpf: window.SamuStorage.formatCpf(document.getElementById('u-cpf').value),
-        coren: corenVal,
+        coren: mapped.role === 'enfermagem' ? corenVal : '',
         councilId: corenVal,
         status: 'approved',
         active: true,
@@ -6063,6 +6204,23 @@
       btn.textContent = 'Salvando...';
       try {
         window.SamuStorage.upsertLocalUser(userData);
+        if (currentUser && targetUname === currentUser.username.toLowerCase()) {
+          const refreshedSelf = window.SamuStorage.getLocalUsers().find(x => x.username.toLowerCase() === targetUname);
+          if (refreshedSelf) {
+            currentUser = Object.assign({}, currentUser, {
+              name: refreshedSelf.name,
+              password: refreshedSelf.password,
+              role: refreshedSelf.role,
+              subRole: window.SamuStorage.getUserSubRole(refreshedSelf),
+              isAdmin: window.SamuStorage.isUserAdmin(refreshedSelf),
+              coren: refreshedSelf.coren || refreshedSelf.councilId || '',
+              councilId: refreshedSelf.coren || refreshedSelf.councilId || '',
+              cpf: refreshedSelf.cpf || ''
+            });
+            window.SamuStorage.setSession(currentUser);
+            updateTopbarUserHeader();
+          }
+        }
         if (navigator.onLine && window.SamuStorage.hasGitHubConfigured() && window.SamuStorage.getSettings().githubToken) {
           try { await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true }); } catch (eGh) {}
         }
@@ -6072,12 +6230,15 @@
             action: 'saveUser',
             authUser: currentUser.username,
             authPass: currentUser.password,
-            userData
+            authName: currentUser.name,
+            authRole: window.SamuStorage.getUserProfileChoice(currentUser),
+            userData: Object.assign({}, userData, { role: selVal })
           });
           if (res && !res.ok) throw new Error(res.error);
         }
         renderBottomNav();
-        showToast(`✅ Profissional "${userData.username}" salvo na Base Interna${window.SamuStorage.hasGitHubConfigured() ? ' e GitHub' : ''}!`);
+        const roleSavedLbl = window.SamuStorage.getUserRoleLabel(userData);
+        showToast(`✅ "${userData.username}" salvo como ${roleSavedLbl} na Base Interna${window.SamuStorage.hasGitHubConfigured() ? ' e GitHub' : ''}!`);
         renderAdminView();
       } catch (err) {
         samuAlert('Salvo na Base Interna, mas houve aviso na nuvem: ' + err.message);
@@ -6093,9 +6254,7 @@
         const target = users.find(u => u.username.toLowerCase() === btn.dataset.editU.toLowerCase());
         if (!target) return;
         document.getElementById('u-name').value = target.name || '';
-        document.getElementById('u-role').value = target.role === 'admin'
-          ? 'admin'
-          : (target.role === 'condutor' ? 'condutor' : window.SamuStorage.getUserSubRole(target));
+        document.getElementById('u-role').value = window.SamuStorage.getUserProfileChoice(target);
         document.getElementById('u-username').value = target.username || '';
         document.getElementById('u-password').value = target.password || '';
         document.getElementById('u-cpf').value = target.cpf || '';
@@ -6107,26 +6266,8 @@
 
     container.querySelectorAll('[data-del-u]').forEach(btn => {
       btn.addEventListener('click', async () => {
-        const uname = btn.dataset.delU;
-        if (!(await samuConfirm(`Remover o login "${uname}" da Base Interna e GitHub?`))) return;
-        window.SamuStorage.deleteLocalUser(uname);
-        if (navigator.onLine && window.SamuStorage.hasGitHubConfigured() && window.SamuStorage.getSettings().githubToken) {
-          try { await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true }); } catch (eGh) {}
-        }
-        const curSettings = window.SamuStorage.getSettings();
-        if (curSettings.scriptUrl && navigator.onLine) {
-          try {
-            await window.SamuStorage.apiPost({
-              action: 'deleteUser',
-              authUser: currentUser.username,
-              authPass: currentUser.password,
-              username: uname
-            });
-          } catch (e) {}
-        }
-        renderBottomNav();
-        showToast(`Usuário "${uname}" removido.`);
-        renderAdminView();
+        const ok = await deleteUserAccountWithSync(btn.dataset.delU);
+        if (ok) renderAdminView();
       });
     });
   }

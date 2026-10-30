@@ -281,7 +281,19 @@
     if (next.githubBranch) next.githubBranch = next.githubBranch.trim() || 'main';
     if (next.githubFilePath) next.githubFilePath = next.githubFilePath.trim() || 'base_dados_samu.json';
     if (next.githubToken) next.githubToken = next.githubToken.trim();
+    const driveChanged = (
+      (partial && Object.prototype.hasOwnProperty.call(partial, 'scriptUrl') && next.scriptUrl !== cur.scriptUrl) ||
+      (partial && Object.prototype.hasOwnProperty.call(partial, 'rootFolderUrl') && next.rootFolderUrl !== cur.rootFolderUrl) ||
+      (partial && Object.prototype.hasOwnProperty.call(partial, 'spreadsheetUrl') && next.spreadsheetUrl !== cur.spreadsheetUrl)
+    );
+    if (driveChanged && !(partial && partial._fromRemoteMerge)) {
+      next.driveUpdatedAt = new Date().toISOString();
+    }
+    delete next._fromRemoteMerge;
     saveInternalJson(LS_SETTINGS, next);
+    if (driveChanged && !(partial && partial._fromRemoteMerge)) {
+      markGitHubDirty();
+    }
     return next;
   }
 
@@ -328,15 +340,32 @@
     return rev === Number(cpf[10]);
   }
 
-  /* ===================== USUÁRIOS, AUTO-CADASTRO E APROVAÇÃO ===================== */
+  /* ===================== USUÁRIOS, CARGOS HÍBRIDOS, AUTO-CADASTRO E APROVAÇÃO ===================== */
+  function isUserAdmin(u) {
+    if (!u) return false;
+    if (u.isAdmin === true) return true;
+    const rawRole = String(u.role || '').trim().toLowerCase();
+    const rawSub = String(u.subRole || '').trim().toLowerCase();
+    return rawRole === 'admin' || rawSub === 'admin' || /_admin$/.test(rawRole) || /_admin$/.test(rawSub);
+  }
+
   function getUserSubRole(u) {
     if (!u) return 'condutor';
-    const role = String(u.role || 'condutor').trim().toLowerCase();
-    if (role === 'admin') return 'admin';
-    if (role === 'condutor') return 'condutor';
+    const rawRole = String(u.role || 'condutor').trim().toLowerCase();
     const rawSub = String(u.subRole || '').trim().toLowerCase();
+
+    if (rawRole === 'condutor_admin' || rawSub === 'condutor_admin') return 'condutor';
+    if (rawRole === 'enfermeiro_admin' || rawSub === 'enfermeiro_admin') return 'enfermeiro';
+    if (rawRole === 'tecnico_admin' || rawSub === 'tecnico_admin') return 'tecnico';
+
+    if (rawSub === 'condutor') return 'condutor';
     if (rawSub === 'enfermeiro' || rawSub === 'enfermeira') return 'enfermeiro';
     if (rawSub === 'tecnico') return 'tecnico';
+
+    if (rawRole === 'admin') return 'admin';
+    if (rawRole === 'condutor') return 'condutor';
+    if (rawRole === 'enfermeiro' || rawRole === 'enfermeira') return 'enfermeiro';
+
     const coren = String(u.coren || u.councilId || '');
     const name = String(u.name || '');
     if (String(u.username || '').toLowerCase() === 'enfermeiro' || /-\s*ENF\b/i.test(coren) || /\benfermeir[oa]\b/i.test(name)) {
@@ -345,18 +374,61 @@
     return 'tecnico';
   }
 
-  function getUserRoleLabel(u) {
+  function hasOperationalRole(u) {
+    if (!u) return false;
     const sub = getUserSubRole(u);
-    if (sub === 'admin') return 'Coordenação / ADM';
-    if (sub === 'condutor') return 'Condutor Socorrista';
-    if (sub === 'enfermeiro') return 'Enfermeiro(a)';
+    return sub === 'condutor' || sub === 'enfermeiro' || sub === 'tecnico';
+  }
+
+  function getUserProfileChoice(u) {
+    const adm = isUserAdmin(u);
+    const sub = getUserSubRole(u);
+    if (sub === 'admin') return 'admin';
+    if (sub === 'condutor') return adm ? 'condutor_admin' : 'condutor';
+    if (sub === 'enfermeiro') return adm ? 'enfermeiro_admin' : 'enfermeiro';
+    return adm ? 'tecnico_admin' : 'tecnico';
+  }
+
+  function mapProfileChoiceToFields(choiceVal) {
+    const c = String(choiceVal || 'tecnico').trim().toLowerCase();
+    if (c === 'condutor_admin') return { role: 'condutor', subRole: 'condutor', isAdmin: true };
+    if (c === 'enfermeiro_admin') return { role: 'enfermagem', subRole: 'enfermeiro', isAdmin: true };
+    if (c === 'tecnico_admin') return { role: 'enfermagem', subRole: 'tecnico', isAdmin: true };
+    if (c === 'admin') return { role: 'admin', subRole: 'admin', isAdmin: true };
+    if (c === 'condutor') return { role: 'condutor', subRole: 'condutor', isAdmin: false };
+    if (c === 'enfermeiro') return { role: 'enfermagem', subRole: 'enfermeiro', isAdmin: false };
+    return { role: 'enfermagem', subRole: 'tecnico', isAdmin: false };
+  }
+
+  function getUserRoleLabel(u) {
+    const choice = getUserProfileChoice(u);
+    if (choice === 'condutor_admin') return 'Condutor Socorrista + ADM';
+    if (choice === 'enfermeiro_admin') return 'Enfermeiro(a) + ADM';
+    if (choice === 'tecnico_admin') return 'Téc. de Enfermagem + ADM';
+    if (choice === 'admin') return 'Coordenação / ADM';
+    if (choice === 'condutor') return 'Condutor Socorrista';
+    if (choice === 'enfermeiro') return 'Enfermeiro(a)';
     return 'Téc. de Enfermagem';
+  }
+
+  function getUserRoleIcon(u) {
+    const choice = getUserProfileChoice(u);
+    if (choice === 'condutor_admin') return '🚑🔑';
+    if (choice === 'enfermeiro_admin') return '👩‍⚕️🔑';
+    if (choice === 'tecnico_admin') return '🩺🔑';
+    if (choice === 'admin') return '🔑';
+    if (choice === 'condutor') return '🚑';
+    if (choice === 'enfermeiro') return '👩‍⚕️';
+    return '🩺';
   }
 
   function normalizeUserObj(u) {
     const uname = String((u && u.username) || '').trim().toLowerCase();
-    const rawRole = String((u && u.role) || 'condutor').trim().toLowerCase();
-    const role = rawRole === 'enfermeiro' ? 'enfermagem' : rawRole;
+    const mapped = mapProfileChoiceToFields(getUserProfileChoice(u));
+    const role = mapped.role;
+    const subRole = mapped.subRole;
+    const isAdminFlag = Boolean(mapped.isAdmin);
+
     let corenVal = String((u && (u.coren || (role === 'enfermagem' ? u.councilId : ''))) || '').trim();
     if (uname === 'enfermagem' && (!corenVal || corenVal === 'COREN-SP')) {
       corenVal = 'COREN-SP 542.810-TE';
@@ -374,7 +446,6 @@
     }
     const isApproved = status === 'approved' && (u ? u.active !== false : true);
     const rawCpf = String((u && u.cpf) || '').replace(/\D+/g, '');
-    const subRole = getUserSubRole(Object.assign({}, u, { username: uname, role, coren: corenVal, councilId: councilVal }));
 
     return {
       username: uname,
@@ -382,6 +453,7 @@
       name: String((u && u.name) || uname),
       role: role,
       subRole: subRole,
+      isAdmin: isAdminFlag,
       cpf: rawCpf.length === 11 ? formatCpf(rawCpf) : String((u && u.cpf) || '').trim(),
       coren: role === 'enfermagem' ? corenVal : '',
       councilId: councilVal,
@@ -485,11 +557,28 @@
 
   function deleteLocalUser(username, skipDirty) {
     const uname = String(username || '').trim().toLowerCase();
+    if (!uname) return getLocalUsers();
+    const nowIso = new Date().toISOString();
     const users = getLocalUsers().filter(u => u.username.toLowerCase() !== uname);
     setLocalUsers(users);
     const delMap = getDeletedUsersMap();
-    delMap[uname] = new Date().toISOString();
+    delMap[uname] = nowIso;
     setDeletedUsersMap(delMap);
+
+    // Desativa equipes ativas do plantão que tinham este usuário excluído
+    try {
+      const crewsMap = getCrewTeamsMap();
+      let crewsTouched = false;
+      Object.keys(crewsMap).forEach(cid => {
+        const c = crewsMap[cid];
+        if (c && c.active !== false && Array.isArray(c.members) && c.members.some(m => String(m).toLowerCase() === uname)) {
+          crewsMap[cid] = Object.assign({}, c, { active: false, updatedAt: nowIso });
+          crewsTouched = true;
+        }
+      });
+      if (crewsTouched) setCrewTeamsMap(crewsMap);
+    } catch (e) {}
+
     if (!skipDirty) markGitHubDirty();
     return users;
   }
@@ -600,13 +689,15 @@
 
     const settings = getSettings();
     const sess = getSession();
-    if (navigator.onLine && settings.scriptUrl && sess && sess.role === 'admin') {
+    if (navigator.onLine && settings.scriptUrl && sess && isUserAdmin(sess)) {
       try {
         await apiPost({
           action: 'saveUser',
           authUser: sess.username,
           authPass: sess.password,
-          userData: updated
+          authName: sess.name || sess.username,
+          authRole: getUserProfileChoice(sess),
+          userData: Object.assign({}, updated, { role: getUserProfileChoice(updated) })
         });
       } catch (e) {}
     }
@@ -621,12 +712,14 @@
     }
     const settings = getSettings();
     const sess = getSession();
-    if (navigator.onLine && settings.scriptUrl && sess && sess.role === 'admin') {
+    if (navigator.onLine && settings.scriptUrl && sess && isUserAdmin(sess)) {
       try {
         await apiPost({
           action: 'deleteUser',
           authUser: sess.username,
           authPass: sess.password,
+          authName: sess.name || sess.username,
+          authRole: getUserProfileChoice(sess),
           username
         });
       } catch (e) {}
@@ -1691,10 +1784,17 @@
       }
     });
 
+    const curSet = getSettings();
     return {
       schemaVersion: 3,
       system: 'SAMU 192 - Orlandia-SP',
-      defaultHospital: getSettings().defaultHospital || 'HBSA',
+      defaultHospital: curSet.defaultHospital || 'HBSA',
+      driveConfig: {
+        scriptUrl: curSet.scriptUrl || '',
+        rootFolderUrl: curSet.rootFolderUrl || '',
+        spreadsheetUrl: curSet.spreadsheetUrl || '',
+        updatedAt: curSet.driveUpdatedAt || ''
+      },
       updatedAt: new Date().toISOString(),
       deletedUsersMap: delMap,
       deletedUsernames: Object.keys(delMap),
@@ -1780,12 +1880,15 @@
         try { safeLS.setItem(LS_USER_SIGS, JSON.stringify(sigMap)); } catch (e) {}
       }
 
-      // Remove quem foi excluído mais recentemente
+      // Remove quem foi excluído mais recentemente (garantindo sempre pelo menos 1 ADM ativo no sistema)
       Array.from(byUname.keys()).forEach(uname => {
-        if (uname === 'admin') return;
         const u = byUname.get(uname);
         const delTs = mergedDel[uname];
         if (delTs && String(delTs) > String(u.updatedAt || '')) {
+          if (isUserAdmin(u)) {
+            const otherActiveAdmins = Array.from(byUname.values()).filter(x => x.username !== uname && x.active !== false && isUserAdmin(x));
+            if (!otherActiveAdmins.length) return;
+          }
           byUname.delete(uname);
           changedLocal = true;
         }
@@ -1934,6 +2037,25 @@
       }
     }
 
+    // 7b. Sincroniza automaticamente a URL do Google Drive configurada pelo ADM para todos os celulares
+    if (remote.driveConfig && typeof remote.driveConfig === 'object') {
+      const rDrive = remote.driveConfig;
+      const curSet = getSettings();
+      const rTs = String(rDrive.updatedAt || '');
+      const lTs = String(curSet.driveUpdatedAt || '');
+      const shouldApplyDrive = (!curSet.scriptUrl && rDrive.scriptUrl) || (rTs && rTs > lTs);
+      if (shouldApplyDrive) {
+        saveSettings({
+          scriptUrl: String(rDrive.scriptUrl || '').trim(),
+          rootFolderUrl: String(rDrive.rootFolderUrl || '').trim(),
+          spreadsheetUrl: String(rDrive.spreadsheetUrl || '').trim(),
+          driveUpdatedAt: rTs || remote.updatedAt || new Date().toISOString(),
+          _fromRemoteMerge: true
+        });
+        changedLocal = true;
+      }
+    }
+
     // Se o usuário logado atualmente teve seu COREN, perfil ou KM da equipe atualizado, atualiza a sessão ativa
     const sess = getSession();
     if (sess && sess.username) {
@@ -1943,6 +2065,7 @@
           name: freshMe.name,
           role: freshMe.role,
           subRole: getUserSubRole(freshMe),
+          isAdmin: isUserAdmin(freshMe),
           coren: freshMe.coren || freshMe.councilId || '',
           councilId: freshMe.coren || freshMe.councilId || '',
           cpf: freshMe.cpf || ''
@@ -2372,6 +2495,7 @@
         name: byUser.name,
         role: byUser.role,
         subRole: getUserSubRole(byUser),
+        isAdmin: isUserAdmin(byUser),
         cpf: byUser.cpf || '',
         coren: byUser.coren || byUser.councilId || '',
         councilId: byUser.coren || byUser.councilId || '',
@@ -2570,7 +2694,7 @@
   async function getVisibleRecords(user) {
     if (!user) return [];
     const all = await getAllRecordsLocal();
-    if (user.role === 'admin') {
+    if (isUserAdmin(user)) {
       return all;
     }
     const uname = user.username.toLowerCase();
@@ -2681,6 +2805,9 @@
         action: 'uploadRecord',
         authUser: sess.username,
         authPass: sess.password,
+        authName: sess.name || sess.username,
+        authRole: getUserProfileChoice(sess),
+        authCouncilId: sess.coren || sess.councilId || '',
         record: cleanRecordForCloud,
         pdfBase64: pdfBase64 || record.pendingPdfBase64 || ''
       });
@@ -2720,7 +2847,7 @@
     }
 
     const allLocal = await getAllRecordsLocal();
-    const pendingList = allLocal.filter(r => r.syncStatus === 'pending' && (sess.role === 'admin' || String(r.createdBy || '').toLowerCase() === sess.username.toLowerCase()));
+    const pendingList = allLocal.filter(r => r.syncStatus === 'pending' && (isUserAdmin(sess) || String(r.createdBy || '').toLowerCase() === sess.username.toLowerCase()));
     let uploadedCount = 0;
 
     for (const item of pendingList) {
@@ -2738,7 +2865,10 @@
     const histRes = await apiPost({
       action: 'listHistory',
       authUser: sess.username,
-      authPass: sess.password
+      authPass: sess.password,
+      authName: sess.name || sess.username,
+      authRole: getUserProfileChoice(sess),
+      authCouncilId: sess.coren || sess.councilId || ''
     });
 
     if (histRes && histRes.ok && Array.isArray(histRes.records)) {
@@ -2865,6 +2995,9 @@
           action: 'lookupCpf',
           authUser: sess.username,
           authPass: sess.password,
+          authName: sess.name || sess.username,
+          authRole: getUserProfileChoice(sess),
+          authCouncilId: sess.coren || sess.councilId || '',
           cpf: cleanCpf
         });
         if (res && res.ok && res.found && res.patient) {
@@ -2913,8 +3046,13 @@
     reloadForOtaUpdate,
     buildInternalDbExportObject,
     importInternalDbJson,
+    isUserAdmin,
+    hasOperationalRole,
     getUserSubRole,
+    getUserProfileChoice,
+    mapProfileChoiceToFields,
     getUserRoleLabel,
+    getUserRoleIcon,
     getLocalUsers,
     setLocalUsers,
     upsertLocalUser,

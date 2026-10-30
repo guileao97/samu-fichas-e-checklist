@@ -29,13 +29,14 @@ Esta integração é **100% gratuita**, usa a própria conta Google escolhida pe
    - **Usuário inicial:** `admin`
    - **Senha inicial:** `samu192`
 2. Toque na aba **Admin / Equipe** -> seção **Integração Google Drive**.
-3. Cole a **URL do App da Web** (`/exec`) e toque em **Testar e Salvar Conexão** (você também pode gerar um código/link rápido para configurar os celulares da equipe em segundos!).
-4. Pronto! O sistema criará sozinho no seu Google Drive a pasta:
-   - 📁 `SAMU 192 Orlândia - Sistema Digital`
-     - 📁 `Fichas de Atendimento` -> subpastas por mês (`2026-10`, `2026-11`, ...)
-     - 📁 `Check List - Condutor Socorrista` -> subpastas por mês
-     - 📁 `Check List - Enfermagem` -> subpastas por mês
-     - 📊 `SAMU 192 Orlândia - Controle e Histórico` (Planilha Google com abas `Usuarios` e `Registros`)
+3. Cole a **URL do App da Web** (`/exec`) e toque em **Testar e Salvar Conexão Drive**.
+   - **Sincronização automática para a equipe:** Se o GitHub já estiver conectado, essa URL do Drive é sincronizada automaticamente para todos os celulares da equipe via `base_dados_samu.json` (ninguém precisa colar o link manualmente em cada aparelho!).
+4. Pronto! **Você NÃO precisa criar nenhuma pasta manualmente** — o sistema cria toda a estrutura sozinho no seu Google Drive:
+   - 📁 `SAMU 192 Orlândia - Sistema Digital` *(pasta raiz principal)*
+     - 📁 `Fichas de Atendimento` -> subpastas automáticas por mês (`2026-10`, `2026-11`, ...)
+     - 📁 `Check List - Condutor Socorrista` -> subpastas automáticas por mês (`2026-10`, `2026-11`, ...)
+     - 📁 `Check List - Enfermagem` -> subpastas automáticas por mês (`2026-10`, `2026-11`, ...)
+     - 📊 `SAMU 192 Orlândia - Controle e Histórico` *(Planilha Google criada automaticamente com abas `Usuarios` e `Registros` + link clicável de cada PDF)*
 
 ---
 
