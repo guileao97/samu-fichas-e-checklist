@@ -174,6 +174,9 @@ public class MainActivity extends Activity {
                 launchApkInstaller(f);
             }
         }
+        if (webView != null) {
+            webView.evaluateJavascript("window.__onAndroidAppResume && window.__onAndroidAppResume();", null);
+        }
     }
 
     private static String readStreamUtf8(InputStream is) throws Exception {

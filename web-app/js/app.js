@@ -849,6 +849,9 @@
         } catch (err) {
           samuAlert('Configuração salva, mas houve erro ao consultar o GitHub: ' + err.message);
         }
+        if (window.__samuCheckAppUpdate) {
+          window.__samuCheckAppUpdate(false);
+        }
       } else {
         showToast('Configurações de conexão salvas neste aparelho!');
       }
@@ -1141,7 +1144,15 @@
 
         if (interactive) {
           if (res.status === 'repo_empty_yet') {
-            showToast('🐙 Repositório guileao97/samu-fichas-e-checklist pronto para receber o primeiro envio!');
+            const curSet = window.SamuStorage.getSettings();
+            if (!curSet.githubToken) {
+              samuAlert(
+                `🔒 O repositório "${curSet.githubRepo || 'guileao97/samu-fichas-e-checklist'}" é PRIVADO no GitHub.\n\n` +
+                `Para este celular receber atualizações automáticas e sincronizar a base, cole o Token do GitHub em "⚙️ Configurar Base GitHub & Google Drive" (ou deixe o repositório Público).`
+              );
+            } else {
+              showToast('🐙 Repositório guileao97/samu-fichas-e-checklist pronto para receber o primeiro envio!');
+            }
           } else {
             showToast(`✅ Aplicativo atualizado (v${res.local.apkVersionName} • Rev #${res.local.otaRevision})!`);
           }
@@ -1152,6 +1163,11 @@
     };
 
     window.__samuCheckAppUpdate = runAutoUpdateCheck;
+
+    const btnLoginCheckUpd = document.getElementById('btn-login-check-update');
+    if (btnLoginCheckUpd) {
+      btnLoginCheckUpd.addEventListener('click', () => runAutoUpdateCheck(true));
+    }
 
     const pullGitHubWheneverOnline = async () => {
       if (!navigator.onLine || !window.SamuStorage.hasGitHubConfigured()) return;
@@ -1204,12 +1220,25 @@
       }
     });
 
-    // Callback nativo do Android ConnectivityManager assim que o celular pega Wi-Fi ou 4G
+    // Callback nativo do Android ConnectivityManager assim que o celular pega Wi-Fi ou 4G ou volta do segundo plano
+    let lastResumeCheckTs = 0;
+    const checkOnResumeOrFocus = () => {
+      const now = Date.now();
+      if (now - lastResumeCheckTs < 6000) return;
+      lastResumeCheckTs = now;
+      if (navigator.onLine) {
+        pullGitHubWheneverOnline();
+      }
+    };
     window.__onAndroidNetworkOnline = () => {
       refreshSyncBadge();
       pullGitHubWheneverOnline();
       triggerBackgroundSync(false);
     };
+    window.__onAndroidAppResume = checkOnResumeOrFocus;
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) checkOnResumeOrFocus();
+    });
 
     // Consulta inicial ao GitHub na abertura do APK e checagem periódica automática quando online
     pullGitHubWheneverOnline();

@@ -10,6 +10,12 @@
 <body>
   <div id="toast-banner" class="toast-banner hidden"></div>
 
+  <!-- BANNER GLOBAL DE ATUALIZAÇÃO AUTOMÁTICA DO APK VIA GITHUB (VISÍVEL NO LOGIN E DENTRO DO APP) -->
+  <div id="auto-update-banner" class="hidden" style="position: sticky; top: 0; z-index: 250; background: linear-gradient(135deg, #15803d 0%, #16a34a 100%); color: #fff; padding: 10px 14px; font-size: 0.83rem; font-weight: 700; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; box-shadow: 0 4px 12px rgba(0,0,0,0.25);">
+    <span id="auto-update-banner-text">🚀 Nova atualização disponível no GitHub!</span>
+    <button type="button" class="btn btn-sm" id="btn-auto-update-action" style="background: #fff; color: #14532d; font-weight: 800; padding: 6px 12px;">Atualizar Agora</button>
+  </div>
+
   <!-- ===================== TELA DE LOGIN ===================== -->
   <section id="login-screen" class="login-screen">
     <div class="login-card">
@@ -30,7 +36,7 @@
       <form id="login-form" autocomplete="off">
         <div class="field">
           <label for="login-user">Usuário (Login)</label>
-          <input type="text" id="login-user" placeholder="Ex: condutor, enfermagem ou admin" autocapitalize="none" required />
+          <input type="text" id="login-user" placeholder="Digite seu usuário" autocapitalize="none" required />
         </div>
         <div class="field">
           <label for="login-pass">Senha</label>
@@ -105,22 +111,14 @@
         <button type="button" class="btn btn-orange btn-sm btn-block" id="btn-save-login-drive">Salvar e Consultar Base Agora</button>
       </div>
 
-      <div class="login-demo-box">
-        <div><strong>Acessos iniciais configurados (editáveis pelo Adm):</strong></div>
-        <div>• <strong>Adm (vê tudo):</strong> <code>admin</code> / senha: <code>samu192</code></div>
-        <div>• <strong>Condutores:</strong> <code>condutor</code> ou <code>condutor2</code> / senha: <code>1234</code></div>
-        <div>• <strong>Téc. Enfermagem:</strong> <code>enfermagem</code> / senha: <code>1234</code></div>
-        <div>• <strong>Enfermeiro(a):</strong> <code>enfermeiro</code> / senha: <code>1234</code></div>
+      <div id="login-version-footer" style="margin-top: 12px; text-align: center; font-size: 0.74rem; color: var(--muted); font-weight: 700;"></div>
+      <div style="margin-top: 6px; text-align: center;">
+        <button type="button" id="btn-login-check-update" style="background: none; border: none; color: var(--samu-red); font-size: 0.76rem; font-weight: 800; cursor: pointer; text-decoration: underline; padding: 4px 8px;">
+          🔄 Verificar Atualização do Aplicativo
+        </button>
       </div>
-      <div id="login-version-footer" style="margin-top: 10px; text-align: center; font-size: 0.74rem; color: var(--muted); font-weight: 700;"></div>
     </div>
   </section>
-
-  <!-- BANNER GLOBAL DE ATUALIZAÇÃO AUTOMÁTICA DO APK VIA GITHUB -->
-  <div id="auto-update-banner" class="hidden" style="position: sticky; top: 0; z-index: 190; background: linear-gradient(135deg, #15803d 0%, #16a34a 100%); color: #fff; padding: 9px 14px; font-size: 0.82rem; font-weight: 700; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; box-shadow: 0 4px 12px rgba(0,0,0,0.2);">
-    <span id="auto-update-banner-text">🚀 Nova atualização disponível no GitHub!</span>
-    <button type="button" class="btn btn-sm" id="btn-auto-update-action" style="background: #fff; color: #14532d; font-weight: 800; padding: 5px 12px;">Atualizar Agora</button>
-  </div>
 
   <!-- ===================== SHELL PRINCIPAL DO APP ===================== -->
   <section id="app-shell" class="app-shell hidden">
