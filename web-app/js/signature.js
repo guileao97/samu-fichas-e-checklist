@@ -3,6 +3,9 @@
  * ============================================================================ */
 
 (function() {
+  const SIG_INK_BLUE = '#1248c4';
+  const SIG_INK_RGB = [18, 72, 196];
+
   let modalEl = null;
   let canvas = null;
   let ctx = null;
@@ -11,6 +14,80 @@
   let points = [];
   let currentCallback = null;
   let currentOpts = {};
+
+  function tintCanvasPixelsToBlue(targetCanvas) {
+    if (!targetCanvas || !targetCanvas.width || !targetCanvas.height) return false;
+    const tctx = targetCanvas.getContext('2d');
+    let changed = false;
+    try {
+      const imgData = tctx.getImageData(0, 0, targetCanvas.width, targetCanvas.height);
+      const px = imgData.data;
+      for (let i = 0; i < px.length; i += 4) {
+        const a = px[i + 3];
+        if (a < 10) continue;
+        const lum = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+        if (a > 240 && lum > 242) {
+          px[i + 3] = 0;
+          changed = true;
+        } else if (px[i] !== SIG_INK_RGB[0] || px[i + 1] !== SIG_INK_RGB[1] || px[i + 2] !== SIG_INK_RGB[2]) {
+          px[i] = SIG_INK_RGB[0];
+          px[i + 1] = SIG_INK_RGB[1];
+          px[i + 2] = SIG_INK_RGB[2];
+          changed = true;
+        }
+      }
+      if (changed) tctx.putImageData(imgData, 0, 0);
+    } catch (e) {
+      tctx.save();
+      tctx.globalCompositeOperation = 'source-in';
+      tctx.fillStyle = SIG_INK_BLUE;
+      tctx.fillRect(0, 0, targetCanvas.width, targetCanvas.height);
+      tctx.restore();
+      changed = true;
+    }
+    return changed;
+  }
+
+  function tintDataUrlToBlueInk(dataUrl) {
+    if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) {
+      return Promise.resolve(dataUrl || '');
+    }
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        if (!img.width || !img.height) {
+          resolve(dataUrl);
+          return;
+        }
+        const tmp = document.createElement('canvas');
+        tmp.width = img.width;
+        tmp.height = img.height;
+        const tctx = tmp.getContext('2d');
+        tctx.drawImage(img, 0, 0);
+        try {
+          const px = tctx.getImageData(0, 0, tmp.width, tmp.height).data;
+          let needsRecolor = false;
+          for (let i = 0; i < px.length; i += 16) {
+            const a = px[i + 3];
+            if (a > 110) {
+              if (Math.abs(px[i] - SIG_INK_RGB[0]) > 14 || Math.abs(px[i + 1] - SIG_INK_RGB[1]) > 18 || px[i + 2] < 165) {
+                needsRecolor = true;
+                break;
+              }
+            }
+          }
+          if (!needsRecolor) {
+            resolve(dataUrl);
+            return;
+          }
+        } catch (e) {}
+        tintCanvasPixelsToBlue(tmp);
+        resolve(tmp.toDataURL('image/png'));
+      };
+      img.onerror = () => resolve(dataUrl);
+      img.src = dataUrl;
+    });
+  }
 
   function ensureModal() {
     if (modalEl) return;
@@ -75,7 +152,7 @@
       points = [p];
       ctx.beginPath();
       ctx.arc(p.x, p.y, 1.3, 0, Math.PI * 2);
-      ctx.fillStyle = '#0a2463';
+      ctx.fillStyle = SIG_INK_BLUE;
       ctx.fill();
     };
 
@@ -85,7 +162,7 @@
       const p = getPos(e);
       points.push(p);
 
-      ctx.strokeStyle = '#0a2463';
+      ctx.strokeStyle = SIG_INK_BLUE;
       ctx.lineWidth = 2.6;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
@@ -195,6 +272,7 @@
       const dw = img.width * scale;
       const dh = img.height * scale;
       ctx.drawImage(img, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
+      tintCanvasPixelsToBlue(canvas);
       hasStrokes = true;
     };
     img.src = dataUrl;
@@ -220,7 +298,10 @@
       }
     }
 
-    if (!found) return canvas.toDataURL('image/png');
+    if (!found) {
+      tintCanvasPixelsToBlue(canvas);
+      return canvas.toDataURL('image/png');
+    }
     const pad = 16;
     minX = Math.max(0, minX - pad);
     minY = Math.max(0, minY - pad);
@@ -233,6 +314,7 @@
     tmp.width = tw;
     tmp.height = th;
     tmp.getContext('2d').drawImage(canvas, minX, minY, tw, th, 0, 0, tw, th);
+    tintCanvasPixelsToBlue(tmp);
     return tmp.toDataURL('image/png');
   }
 
@@ -274,6 +356,7 @@
   }
 
   window.SamuSignature = {
-    open: openSignaturePad
+    open: openSignaturePad,
+    tintDataUrlBlue: tintDataUrlToBlueInk
   };
 })();

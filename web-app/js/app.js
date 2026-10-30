@@ -1326,13 +1326,97 @@
     const mainViewEl = document.getElementById('main-view');
     if (mainViewEl) {
       disableExternalAutofillInContainer(mainViewEl);
+      tintRenderedSignatureImages(mainViewEl);
       if (typeof MutationObserver === 'function') {
         const autofillObserver = new MutationObserver(() => {
           disableExternalAutofillInContainer(mainViewEl);
+          tintRenderedSignatureImages(mainViewEl);
         });
         autofillObserver.observe(mainViewEl, { childList: true, subtree: true });
       }
     }
+  }
+
+  /* ===================== TINTA AZUL DE CANETA NAS ASSINATURAS SALVAS E NA TELA ===================== */
+  const blueSigCache = new Map();
+
+  function tintSignatureCached(dataUrl) {
+    if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) {
+      return Promise.resolve(dataUrl || '');
+    }
+    if (blueSigCache.has(dataUrl)) {
+      return Promise.resolve(blueSigCache.get(dataUrl));
+    }
+    if (!window.SamuSignature || typeof window.SamuSignature.tintDataUrlBlue !== 'function') {
+      return Promise.resolve(dataUrl);
+    }
+    return window.SamuSignature.tintDataUrlBlue(dataUrl).then(tinted => {
+      const out = tinted || dataUrl;
+      blueSigCache.set(dataUrl, out);
+      blueSigCache.set(out, out);
+      return out;
+    }).catch(() => dataUrl);
+  }
+
+  function tintRenderedSignatureImages(rootEl) {
+    const scope = rootEl || document;
+    scope.querySelectorAll('.sig-preview-box img').forEach(img => {
+      const src = img.getAttribute('src') || '';
+      if (!src.startsWith('data:image/')) return;
+      if (blueSigCache.has(src)) {
+        const cached = blueSigCache.get(src);
+        if (cached && cached !== src) img.setAttribute('src', cached);
+        return;
+      }
+      tintSignatureCached(src).then(tinted => {
+        if (tinted && tinted !== src && img.getAttribute('src') === src) {
+          img.setAttribute('src', tinted);
+        }
+      });
+    });
+  }
+
+  async function upgradeExistingSignaturesToBlueInk() {
+    if (!window.SamuSignature || typeof window.SamuSignature.tintDataUrlBlue !== 'function') return;
+    try {
+      if (currentUser && currentUser.username) {
+        const saved = window.SamuStorage.getSavedSignature(currentUser.username);
+        if (saved) {
+          const tinted = await tintSignatureCached(saved);
+          if (tinted && tinted !== saved) {
+            window.SamuStorage.savePersonalSignature(currentUser.username, tinted);
+          }
+        }
+      }
+      if (activeCrew) {
+        for (const list of [activeCrew.membersDetailed, activeCrew.teammates, activeCrew.nursingSlots, activeCrew.driverSlots]) {
+          if (!Array.isArray(list)) continue;
+          for (const m of list) {
+            if (m && m.savedSignature) {
+              m.savedSignature = await tintSignatureCached(m.savedSignature);
+            }
+          }
+        }
+      }
+      if (fichaState) {
+        for (const k of ['sigTermo', 'sigRecebido', 'sigEnfermagem', 'sigEnfermagem2', 'sigCondutor', 'sigCondutor2']) {
+          if (fichaState[k]) {
+            fichaState[k] = await tintSignatureCached(fichaState[k]);
+          }
+        }
+      }
+      if (condutorState) {
+        for (const k of ['sigCondutorDiurno', 'sigCondutorNoturno', 'sigAbastecimento']) {
+          if (condutorState[k]) {
+            condutorState[k] = await tintSignatureCached(condutorState[k]);
+          }
+        }
+      }
+      if (enfermagemState && enfermagemState.sigEnfermagem) {
+        enfermagemState.sigEnfermagem = await tintSignatureCached(enfermagemState.sigEnfermagem);
+      }
+      tintRenderedSignatureImages(document);
+    } catch (eSig) {}
   }
 
   /* ===================== EQUIPE DO PLANTÃO (ATÉ 3 MEMBROS) & FICHA COMPARTILHADA ===================== */
@@ -3376,6 +3460,7 @@
     }
     renderBottomNav();
     renderActiveView();
+    upgradeExistingSignaturesToBlueInk();
     await refreshSyncBadge();
     triggerBackgroundSync(false);
 
@@ -3442,6 +3527,7 @@
     try {
       if (interactive) showToast('☁️ Sincronizando dados e PDFs com Google Drive...');
       const res = await window.SamuStorage.syncAllWithCloud();
+      upgradeExistingSignaturesToBlueInk();
       renderBottomNav();
       await refreshSyncBadge();
       if (activeTab === 'historico') renderHistoricoView();

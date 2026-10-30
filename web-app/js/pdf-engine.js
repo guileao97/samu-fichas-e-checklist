@@ -4,6 +4,8 @@
  * ============================================================================ */
 
 (function() {
+  const INK_BLUE = '#1248c4';
+  const INK_RGB = [18, 72, 196];
   const imgCache = {};
 
   function loadImg(src) {
@@ -30,13 +32,13 @@
     return dStr;
   }
 
-  function drawCheckbox(ctx, x, y, size, checked, label, font) {
+  function drawCheckbox(ctx, x, y, size, checked, label, font, opts) {
     ctx.save();
     ctx.strokeStyle = '#111111';
     ctx.lineWidth = 1.8;
     ctx.strokeRect(x, y, size, size);
     if (checked) {
-      ctx.fillStyle = '#111111';
+      ctx.fillStyle = INK_BLUE;
       ctx.fillRect(x + 3, y + 3, size - 6, size - 6);
       ctx.strokeStyle = '#ffffff';
       ctx.lineWidth = 2.4;
@@ -47,7 +49,7 @@
       ctx.stroke();
     }
     if (label) {
-      ctx.fillStyle = '#000000';
+      ctx.fillStyle = (opts && opts.blueLabel) ? INK_BLUE : '#000000';
       ctx.font = font || '20px Arial, sans-serif';
       ctx.textBaseline = 'middle';
       ctx.fillText(label, x + size + 8, y + size / 2 + 1);
@@ -91,17 +93,72 @@
   }
 
   function drawSignatureFit(ctx, sigImg, x, y, w, h) {
-    if (!sigImg) return;
+    if (!sigImg || !sigImg.width || !sigImg.height) return;
     const scale = Math.min(w / sigImg.width, h / sigImg.height);
-    const dw = sigImg.width * scale;
-    const dh = sigImg.height * scale;
-    ctx.drawImage(sigImg, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
+    const dw = Math.max(1, Math.round(sigImg.width * scale));
+    const dh = Math.max(1, Math.round(sigImg.height * scale));
+
+    const tmp = document.createElement('canvas');
+    tmp.width = dw;
+    tmp.height = dh;
+    const tctx = tmp.getContext('2d');
+    tctx.drawImage(sigImg, 0, 0, dw, dh);
+    try {
+      const imgData = tctx.getImageData(0, 0, dw, dh);
+      const px = imgData.data;
+      for (let i = 0; i < px.length; i += 4) {
+        const a = px[i + 3];
+        if (a < 10) continue;
+        const lum = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+        if (a > 240 && lum > 242) {
+          px[i + 3] = 0;
+        } else {
+          px[i] = INK_RGB[0];
+          px[i + 1] = INK_RGB[1];
+          px[i + 2] = INK_RGB[2];
+        }
+      }
+      tctx.putImageData(imgData, 0, 0);
+    } catch (e) {
+      tctx.save();
+      tctx.globalCompositeOperation = 'source-in';
+      tctx.fillStyle = INK_BLUE;
+      tctx.fillRect(0, 0, dw, dh);
+      tctx.restore();
+    }
+
+    ctx.drawImage(tmp, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
   }
 
   function fitText(ctx, text, x, y, maxW, font) {
     if (!text) return;
     ctx.save();
     if (font) ctx.font = font;
+    let s = String(text);
+    if (ctx.measureText(s).width > maxW) {
+      while (s.length > 1 && ctx.measureText(s + '…').width > maxW) {
+        s = s.slice(0, -1);
+      }
+      s += '…';
+    }
+    ctx.fillText(s, x, y);
+    ctx.restore();
+  }
+
+  function fillTextInk(ctx, text, x, y, font) {
+    if (text === null || text === undefined || text === '') return;
+    ctx.save();
+    if (font) ctx.font = font;
+    ctx.fillStyle = INK_BLUE;
+    ctx.fillText(String(text), x, y);
+    ctx.restore();
+  }
+
+  function fitTextInk(ctx, text, x, y, maxW, font) {
+    if (text === null || text === undefined || text === '') return;
+    ctx.save();
+    if (font) ctx.font = font;
+    ctx.fillStyle = INK_BLUE;
     let s = String(text);
     if (ctx.measureText(s).width > maxW) {
       while (s.length > 1 && ctx.measureText(s + '…').width > maxW) {
@@ -183,24 +240,25 @@
     g.stroke();
     g.font = '21px Arial, sans-serif';
     g.fillText('DATA:', bx + 20, by + 27);
-    g.font = 'bold 21px Arial, sans-serif';
-    g.fillText(formatDateBR(d.data), bx + 110, by + 27);
+    if (d.data) {
+      fillTextInk(g, formatDateBR(d.data), bx + 110, by + 27, 'bold 21px Arial, sans-serif');
+    } else {
+      g.font = 'bold 21px Arial, sans-serif';
+      g.fillText('    /    /      ', bx + 110, by + 27);
+    }
     g.font = '21px Arial, sans-serif';
     g.fillText('KM INICIAL:', bx + 14, by + brh + 27);
-    g.font = 'bold 21px Arial, sans-serif';
-    fitText(g, d.kmInicial || '', bx + 145, by + brh + 27, 225);
+    fitTextInk(g, d.kmInicial || '', bx + 145, by + brh + 27, 225, 'bold 21px Arial, sans-serif');
     g.font = '21px Arial, sans-serif';
     g.fillText('KM FINAL:', bx + 20, by + brh * 2 + 27);
-    g.font = 'bold 21px Arial, sans-serif';
-    fitText(g, d.kmFinal || '', bx + 145, by + brh * 2 + 27, 225);
+    fitTextInk(g, d.kmFinal || '', bx + 145, by + brh * 2 + 27, 225, 'bold 21px Arial, sans-serif');
 
     y += 168;
     // MOTIVO DA SOLICITAÇÃO
     g.strokeRect(M, y, CW, 40);
     g.font = '21px Arial, sans-serif';
     g.fillText('MOTIVO DA SOLICITAÇÃO:', M + 12, y + 28);
-    g.font = 'bold 21px Arial, sans-serif';
-    fitText(g, d.motivoSolicitacao || '', M + 305, y + 28, CW - 320);
+    fitTextInk(g, d.motivoSolicitacao || '', M + 305, y + 28, CW - 320, 'bold 21px Arial, sans-serif');
 
     y += 50;
     // CLASSIFICAÇÃO DE RISCO
@@ -232,25 +290,21 @@
     drawCheckbox(g, M + 755, y + 8, 22, locais.includes('RODOVIA'), 'RODOVIA', '20px Arial');
     drawCheckbox(g, M + 960, y + 8, 22, locais.includes('PS'), 'PS', '20px Arial');
     drawCheckbox(g, M + 1070, y + 8, 22, locais.includes('UBS'), 'UBS', '20px Arial');
-    drawCheckbox(g, M + 1195, y + 8, 22, Boolean(d.localOutroCheck || d.localOutroTexto), d.localOutroTexto || '', '19px Arial');
+    drawCheckbox(g, M + 1195, y + 8, 22, Boolean(d.localOutroCheck || d.localOutroTexto), d.localOutroTexto || '', 'bold 19px Arial', { blueLabel: true });
 
     g.font = '21px Arial, sans-serif';
     g.fillText('ENDEREÇO:', M + 12, y + 65);
-    g.font = 'bold 20px Arial, sans-serif';
-    fitText(g, d.ocorrenciaEndereco || '', M + 155, y + 65, 980);
+    fitTextInk(g, d.ocorrenciaEndereco || '', M + 155, y + 65, 980, 'bold 20px Arial, sans-serif');
     g.font = '21px Arial, sans-serif';
     g.fillText('NÚMERO:', M + 1160, y + 65);
-    g.font = 'bold 20px Arial, sans-serif';
-    fitText(g, d.ocorrenciaNumero || '', M + 1275, y + 65, 260);
+    fitTextInk(g, d.ocorrenciaNumero || '', M + 1275, y + 65, 260, 'bold 20px Arial, sans-serif');
 
     g.font = '21px Arial, sans-serif';
     g.fillText('REFERÊNCIA:', M + 12, y + 103);
-    g.font = 'bold 20px Arial, sans-serif';
-    fitText(g, d.ocorrenciaReferencia || '', M + 170, y + 103, 860);
+    fitTextInk(g, d.ocorrenciaReferencia || '', M + 170, y + 103, 860, 'bold 20px Arial, sans-serif');
     g.font = '21px Arial, sans-serif';
     g.fillText('CONTATO:', M + 1055, y + 103);
-    g.font = 'bold 20px Arial, sans-serif';
-    fitText(g, d.ocorrenciaContato || '', M + 1180, y + 103, 355);
+    fitTextInk(g, d.ocorrenciaContato || '', M + 1180, y + 103, 355, 'bold 20px Arial, sans-serif');
 
     y += locH + 28;
     // DADOS DA VÍTIMA
@@ -265,69 +319,55 @@
     // Linha 1: NOME | IDADE | DN
     g.font = '21px Arial, sans-serif';
     g.fillText('NOME:', M + 12, y + 27);
-    g.font = 'bold 21px Arial, sans-serif';
-    fitText(g, d.vitimaNome || '', M + 95, y + 27, 965);
+    fitTextInk(g, d.vitimaNome || '', M + 95, y + 27, 965, 'bold 21px Arial, sans-serif');
     g.font = '21px Arial, sans-serif';
     g.fillText('IDADE:', M + 1075, y + 27);
-    g.font = 'bold 20px Arial, sans-serif';
-    fitText(g, d.vitimaIdade || '', M + 1158, y + 27, 105);
+    fitTextInk(g, d.vitimaIdade || '', M + 1158, y + 27, 105, 'bold 20px Arial, sans-serif');
     g.font = '21px Arial, sans-serif';
     g.fillText('DN:', M + 1275, y + 27);
-    g.font = 'bold 20px Arial, sans-serif';
-    fitText(g, d.vitimaDn ? formatDateBR(d.vitimaDn) : '', M + 1322, y + 27, 215);
+    fitTextInk(g, d.vitimaDn ? formatDateBR(d.vitimaDn) : '', M + 1322, y + 27, 215, 'bold 20px Arial, sans-serif');
 
     // Linha 2: ENDEREÇO | NÚMERO | BAIRRO
     g.font = '21px Arial, sans-serif';
     g.fillText('ENDEREÇO:', M + 12, y + 65);
-    g.font = 'bold 20px Arial, sans-serif';
-    fitText(g, d.vitimaEndereco || '', M + 150, y + 65, 600);
+    fitTextInk(g, d.vitimaEndereco || '', M + 150, y + 65, 600, 'bold 20px Arial, sans-serif');
     g.font = '21px Arial, sans-serif';
     g.fillText('NÚMERO:', M + 765, y + 65);
-    g.font = 'bold 20px Arial, sans-serif';
-    fitText(g, d.vitimaNumero || '', M + 875, y + 65, 160);
+    fitTextInk(g, d.vitimaNumero || '', M + 875, y + 65, 160, 'bold 20px Arial, sans-serif');
     g.font = '21px Arial, sans-serif';
     g.fillText('BAIRRO:', M + 1050, y + 65);
-    g.font = 'bold 20px Arial, sans-serif';
-    fitText(g, d.vitimaBairro || '', M + 1150, y + 65, 385);
+    fitTextInk(g, d.vitimaBairro || '', M + 1150, y + 65, 385, 'bold 20px Arial, sans-serif');
 
     // Linha 3: CIDADE | CEP | NATURALIDADE
     g.font = '21px Arial, sans-serif';
     g.fillText('CIDADE:', M + 12, y + 103);
-    g.font = 'bold 20px Arial, sans-serif';
-    fitText(g, d.vitimaCidade || '', M + 112, y + 103, 420);
+    fitTextInk(g, d.vitimaCidade || '', M + 112, y + 103, 420, 'bold 20px Arial, sans-serif');
     g.font = '21px Arial, sans-serif';
     g.fillText('CEP:', M + 550, y + 103);
-    g.font = 'bold 20px Arial, sans-serif';
-    fitText(g, d.vitimaCep || '', M + 615, y + 103, 315);
+    fitTextInk(g, d.vitimaCep || '', M + 615, y + 103, 315, 'bold 20px Arial, sans-serif');
     g.font = '21px Arial, sans-serif';
     g.fillText('NATURALIDADE:', M + 950, y + 103);
-    g.font = 'bold 20px Arial, sans-serif';
-    fitText(g, d.vitimaNaturalidade || '', M + 1140, y + 103, 395);
+    fitTextInk(g, d.vitimaNaturalidade || '', M + 1140, y + 103, 395, 'bold 20px Arial, sans-serif');
 
     // Linha 4: PAI | MÃE
     g.font = '21px Arial, sans-serif';
     g.fillText('PAI:', M + 12, y + 141);
-    g.font = 'bold 20px Arial, sans-serif';
-    fitText(g, d.vitimaPai || '', M + 65, y + 141, 630);
+    fitTextInk(g, d.vitimaPai || '', M + 65, y + 141, 630, 'bold 20px Arial, sans-serif');
     g.font = '21px Arial, sans-serif';
     g.fillText('MÃE:', M + 715, y + 141);
-    g.font = 'bold 20px Arial, sans-serif';
-    fitText(g, d.vitimaMae || '', M + 780, y + 141, 755);
+    fitTextInk(g, d.vitimaMae || '', M + 780, y + 141, 755, 'bold 20px Arial, sans-serif');
 
     // Linha 5: CPF | RG | CNS (opcional)
     g.font = '21px Arial, sans-serif';
     g.fillText('CPF:', M + 12, y + 179);
-    g.font = 'bold 20px Arial, sans-serif';
-    fitText(g, d.vitimaCpf || '', M + 72, y + 179, 440);
+    fitTextInk(g, d.vitimaCpf || '', M + 72, y + 179, 440, 'bold 20px Arial, sans-serif');
     g.font = '21px Arial, sans-serif';
     g.fillText('RG:', M + 540, y + 179);
-    g.font = 'bold 20px Arial, sans-serif';
-    fitText(g, d.vitimaRg || '', M + 590, y + 179, 410);
+    fitTextInk(g, d.vitimaRg || '', M + 590, y + 179, 410, 'bold 20px Arial, sans-serif');
     if (d.vitimaCns) {
       g.font = '21px Arial, sans-serif';
       g.fillText('CNS:', M + 1025, y + 179);
-      g.font = 'bold 20px Arial, sans-serif';
-      fitText(g, d.vitimaCns, M + 1088, y + 179, 445);
+      fitTextInk(g, d.vitimaCns, M + 1088, y + 179, 445, 'bold 20px Arial, sans-serif');
     }
 
     y += vitH + 14;
@@ -355,9 +395,8 @@
         g.fillText(lines[0], cx + colW8 / 2, y + 19);
         g.fillText(lines[1], cx + colW8 / 2, y + 38);
       }
-      g.font = 'bold 22px Arial, sans-serif';
       const val = (d.horarios && d.horarios[horariosSchema[i].key]) || '';
-      g.fillText(val, cx + colW8 / 2, y + thHead + 28);
+      fillTextInk(g, val, cx + colW8 / 2, y + thHead + 28, 'bold 22px Arial, sans-serif');
     }
     g.textAlign = 'left';
 
@@ -386,8 +425,7 @@
         const cy = y + r * taRowH + 8;
         if (item === '__OUTRO__') {
           drawCheckbox(g, cx, cy, 22, Boolean(d.tipoOutroCheck || d.tipoOutroTexto), '', '17px Arial');
-          g.font = 'bold 17px Arial, sans-serif';
-          fitText(g, d.tipoOutroTexto || '', cx + 28, cy + 17, colW5 - 42);
+          fitTextInk(g, d.tipoOutroTexto || '', cx + 28, cy + 17, colW5 - 42, 'bold 17px Arial, sans-serif');
         } else {
           drawCheckbox(g, cx, cy, 22, tiposSel.includes(item), item, '17px Arial');
         }
@@ -408,7 +446,7 @@
     drawCheckbox(g, M + 592, y + 9, 22, sitSel.includes('CHAMADO FALSO'), 'CHAMADO FALSO', '19px Arial');
     drawCheckbox(g, M + 892, y + 9, 22, sitSel.includes('EVADIU-SE'), 'EVADIU-SE', '19px Arial');
     drawCheckbox(g, M + 1130, y + 9, 22, sitSel.includes('QTA'), 'QTA', '19px Arial');
-    drawCheckbox(g, M + 1285, y + 9, 22, Boolean(d.situacaoOutroCheck || d.situacaoOutroTexto), d.situacaoOutroTexto || '', '18px Arial');
+    drawCheckbox(g, M + 1285, y + 9, 22, Boolean(d.situacaoOutroCheck || d.situacaoOutroTexto), d.situacaoOutroTexto || '', 'bold 18px Arial', { blueLabel: true });
 
     y += 66;
     // DESCRIÇÃO DE CENA + BONECO REGRA DOS 9
@@ -423,7 +461,7 @@
     g.font = '19px Arial, sans-serif';
     const cenaLines = wrapTextLines(g, d.descricaoCena || '', cenaW - 24);
     for (let i = 0; i < Math.min(cenaLines.length, cenaRows); i++) {
-      g.fillText(cenaLines[i], M + 12, y + (i + 1) * cenaRowH - 8);
+      fillTextInk(g, cenaLines[i], M + 12, y + (i + 1) * cenaRowH - 8, '19px Arial, sans-serif');
     }
 
     // Boneco Regra dos 9 à direita
@@ -435,8 +473,8 @@
         g.save();
         for (const z of window.SAMU_SCHEMA.burnZones) {
           if (activeZones.includes(z.id)) {
-            g.fillStyle = 'rgba(220, 38, 38, 0.35)';
-            g.strokeStyle = '#dc2626';
+            g.fillStyle = 'rgba(18, 72, 196, 0.28)';
+            g.strokeStyle = INK_BLUE;
             g.lineWidth = 2;
             g.beginPath();
             g.ellipse(bxImg + z.cx * bwImg, byImg + z.cy * bhImg, z.rx * bwImg, z.ry * bhImg, 0, 0, Math.PI * 2);
@@ -460,8 +498,7 @@
     drawCheckbox(g, M + 325, y + 9, 22, d.haQueimaduras === 'SIM', 'SIM', '20px Arial');
     drawCheckbox(g, M + 455, y + 9, 22, d.haQueimaduras === 'NAO', 'NÃO', '20px Arial');
     g.fillText('SE SIM, QUANTOS POR CENTO:', M + 600, y + 27);
-    g.font = 'bold 21px Arial, sans-serif';
-    fitText(g, d.queimadurasPorcentagem ? String(d.queimadurasPorcentagem) : '', M + 965, y + 27, 560);
+    fitTextInk(g, d.queimadurasPorcentagem ? String(d.queimadurasPorcentagem) : '', M + 965, y + 27, 560, 'bold 21px Arial, sans-serif');
 
     y += 50;
     // AVALIAÇÃO PRIMÁRIA
@@ -566,8 +603,7 @@
       }
       g.font = '20px Arial, sans-serif';
       g.fillText(svItems[i].label, sx + svW / 2, y + 23);
-      g.font = 'bold 21px Arial, sans-serif';
-      fitText(g, svItems[i].val || '', sx + svW / 2, y + 58, svW - 12);
+      fitTextInk(g, svItems[i].val || '', sx + svW / 2, y + 58, svW - 12, 'bold 21px Arial, sans-serif');
     }
     g.textAlign = 'left';
 
@@ -638,12 +674,10 @@
       g.beginPath(); g.moveTo(mx, y); g.lineTo(mx, y + medH); g.stroke();
       const bucket = medBuckets[i];
       if (bucket.length === 1) {
-        g.font = 'bold 17px Arial, sans-serif';
-        fitText(g, bucket[0], mx + 8, y + 28, medW - 14);
+        fitTextInk(g, bucket[0], mx + 8, y + 28, medW - 14, 'bold 17px Arial, sans-serif');
       } else if (bucket.length >= 2) {
-        g.font = 'bold 14px Arial, sans-serif';
-        fitText(g, bucket[0], mx + 8, y + 17, medW - 14);
-        fitText(g, bucket.slice(1).join(', '), mx + 8, y + 37, medW - 14);
+        fitTextInk(g, bucket[0], mx + 8, y + 17, medW - 14, 'bold 14px Arial, sans-serif');
+        fitTextInk(g, bucket.slice(1).join(', '), mx + 8, y + 37, medW - 14, 'bold 14px Arial, sans-serif');
       }
     }
 
@@ -657,8 +691,7 @@
       .concat(Array.isArray(d.alergiasSelecionadas) ? d.alergiasSelecionadas : [])
       .concat(d.alergiasOutro && String(d.alergiasOutro).trim() ? [String(d.alergiasOutro).trim()] : []);
     const alergiasStr = combinedAlergias.length > 0 ? combinedAlergias.join(', ') : (d.alergias || '');
-    g.font = 'bold 18px Arial, sans-serif';
-    fitText(g, alergiasStr, M + 280, y + 27, CW - 295);
+    fitTextInk(g, alergiasStr, M + 280, y + 27, CW - 295, 'bold 18px Arial, sans-serif');
 
     y += 66;
     // PROCEDIMENTOS REALIZADOS (3x5)
@@ -681,8 +714,7 @@
         const cy = y + r * prRowH + 8;
         if (item === '__OUTRO__') {
           drawCheckbox(g, cx, cy, 21, Boolean(d.procOutroCheck || d.procOutroTexto), '', '17px Arial');
-          g.font = 'bold 17px Arial, sans-serif';
-          fitText(g, d.procOutroTexto || '', cx + 28, cy + 17, colW5 - 42);
+          fitTextInk(g, d.procOutroTexto || '', cx + 28, cy + 17, colW5 - 42, 'bold 17px Arial, sans-serif');
         } else {
           drawCheckbox(g, cx, cy, 21, procSel.includes(item), item, '18px Arial');
         }
@@ -697,16 +729,15 @@
     g.fillText('CONDUTA:', M + 12, y + 25);
     g.font = 'bold 19px Arial, sans-serif';
     const condLines = wrapTextLines(g, d.conduta || '', CW - 150);
-    if (condLines[0]) g.fillText(condLines[0], M + 135, y + 25);
-    if (condLines[1]) fitText(g, condLines.slice(1).join(' '), M + 12, y + 59, CW - 24);
+    if (condLines[0]) fillTextInk(g, condLines[0], M + 135, y + 25, 'bold 19px Arial, sans-serif');
+    if (condLines[1]) fitTextInk(g, condLines.slice(1).join(' '), M + 12, y + 59, CW - 24, 'bold 19px Arial, sans-serif');
 
     y += 78;
     // MÉDICO REGULADOR
     g.strokeRect(M, y, CW, 36);
     g.font = '20px Arial, sans-serif';
     g.fillText('MÉDICO REGULADOR:', M + 12, y + 25);
-    g.font = 'bold 19px Arial, sans-serif';
-    fitText(g, d.medicoRegulador || '', M + 255, y + 25, CW - 270);
+    fitTextInk(g, d.medicoRegulador || '', M + 255, y + 25, CW - 270, 'bold 19px Arial, sans-serif');
 
     y += 46;
     // DESCRIÇÃO DOS PERTENCES DO PACIENTE
@@ -721,8 +752,8 @@
     g.fillText('DESCRIÇÃO DOS PERTENCES DO PACIENTE (DEIXADOS NO DESTINO):', M + 12, y + pRowH - 8);
     g.font = 'bold 19px Arial, sans-serif';
     const pertLines = wrapTextLines(g, d.pertences || '', CW - 24);
-    if (pertLines[0]) g.fillText(pertLines[0], M + 12, y + pRowH * 2 - 8);
-    if (pertLines[1]) fitText(g, pertLines.slice(1).join(' '), M + 12, y + pRowH * 3 - 8, CW - 24);
+    if (pertLines[0]) fillTextInk(g, pertLines[0], M + 12, y + pRowH * 2 - 8, 'bold 19px Arial, sans-serif');
+    if (pertLines[1]) fitTextInk(g, pertLines.slice(1).join(' '), M + 12, y + pRowH * 3 - 8, CW - 24, 'bold 19px Arial, sans-serif');
 
     // -------------------- PÁGINA 2 (VERSO) --------------------
     const c2 = document.createElement('canvas');
@@ -760,7 +791,7 @@
     g2.font = '21px Arial, sans-serif';
     const relLines = wrapTextLines(g2, d.relatorioEnfermagem || '', CW - 28);
     for (let i = 0; i < Math.min(relLines.length, relRows); i++) {
-      g2.fillText(relLines[i], M + 14, y2 + (i + 2) * relRowH - 11);
+      fillTextInk(g2, relLines[i], M + 14, y2 + (i + 2) * relRowH - 11, '21px Arial, sans-serif');
     }
 
     y2 += relH + 34;
@@ -808,15 +839,13 @@
     g2.font = 'bold 21px Arial, sans-serif';
     g2.fillText('NOME COMPLETO:', M + 70, ty);
     g2.beginPath(); g2.moveTo(M + 275, ty + 4); g2.lineTo(M + 1390, ty + 4); g2.stroke();
-    g2.font = 'bold 22px Arial, sans-serif';
-    fitText(g2, d.termoNome || '', M + 285, ty - 2, 1090);
+    fitTextInk(g2, d.termoNome || '', M + 285, ty - 2, 1090, 'bold 22px Arial, sans-serif');
 
     ty += 62;
     g2.font = 'bold 21px Arial, sans-serif';
     g2.fillText('CPF:', M + 265, ty);
     g2.beginPath(); g2.moveTo(M + 325, ty + 4); g2.lineTo(M + 790, ty + 4); g2.stroke();
-    g2.font = 'bold 22px Arial, sans-serif';
-    fitText(g2, d.termoCpf || '', M + 335, ty - 2, 445);
+    fitTextInk(g2, d.termoCpf || '', M + 335, ty - 2, 445, 'bold 22px Arial, sans-serif');
 
     // Linha de Assinatura do Termo
     const sigLineX1 = M + 910, sigLineX2 = M + 1500;
@@ -866,7 +895,7 @@
     g2.font = '20px Arial, sans-serif';
     const obsLines = wrapTextLines(g2, d.obsHospital || '', CW - 28);
     for (let i = 0; i < Math.min(obsLines.length, 3); i++) {
-      g2.fillText(obsLines[i], M + 14, obsY + (i + 2) * obsRowH - 8);
+      fillTextInk(g2, obsLines[i], M + 14, obsY + (i + 2) * obsRowH - 8, '20px Arial, sans-serif');
     }
 
     y2 += setorHeadH + setorBodyH + obsH + 40;
@@ -892,7 +921,7 @@
     g2.font = 'bold 22px Arial, sans-serif';
     const destLines = wrapTextLines(g2, d.destino || '', fc[1] - 28);
     destLines.slice(0, 4).forEach((ln, idx) => {
-      g2.fillText(ln, M + 14, y2 + 80 + idx * 32);
+      fillTextInk(g2, ln, M + 14, y2 + 80 + idx * 32, 'bold 22px Arial, sans-serif');
     });
 
     // Coluna Recebido Por + linha pontilhada + COREN/CRM
@@ -910,15 +939,13 @@
       drawSignatureFit(g2, sigRecebidoImg, M + fc[1] + 14, y2 + 44, (fc[2] - fc[1]) - 28, corenY - 102 - y2);
     }
     if (d.recebidoPorNome) {
-      g2.font = 'bold 18px Arial, sans-serif';
       g2.textAlign = 'center';
-      fitText(g2, d.recebidoPorNome, M + (fc[1] + fc[2]) / 2, corenY - 16, (fc[2] - fc[1]) - 16);
+      fitTextInk(g2, d.recebidoPorNome, M + (fc[1] + fc[2]) / 2, corenY - 16, (fc[2] - fc[1]) - 16, 'bold 18px Arial, sans-serif');
       g2.textAlign = 'left';
     }
     g2.font = '20px Arial, sans-serif';
     g2.fillText('COREN/CRM:', M + fc[1] + 14, corenY + 28);
-    g2.font = 'bold 19px Arial, sans-serif';
-    fitText(g2, d.recebidoCorenCrm || '', M + fc[1] + 224, corenY + 28, (fc[2] - fc[1]) - 232);
+    fitTextInk(g2, d.recebidoCorenCrm || '', M + fc[1] + 224, corenY + 28, (fc[2] - fc[1]) - 232, 'bold 19px Arial, sans-serif');
 
     // Coluna Enfermagem SAMU (suporta 1 profissional ou 2 profissionais: Enfermeiro(a) + Téc. Enfermagem)
     const enfBodyTop = y2 + 38;
@@ -944,37 +971,31 @@
       }
       g2.textAlign = 'center';
       if (d.enfermagemNome) {
-        g2.font = 'bold 15px Arial, sans-serif';
-        fitText(g2, d.enfermagemNome, enfCenterX, midEnfY - 21, enfColW - 14);
+        fitTextInk(g2, d.enfermagemNome, enfCenterX, midEnfY - 21, enfColW - 14, 'bold 15px Arial, sans-serif');
       }
       if (d.enfermagemCoren) {
-        g2.font = '14px Arial, sans-serif';
-        fitText(g2, d.enfermagemCoren, enfCenterX, midEnfY - 5, enfColW - 14);
+        fitTextInk(g2, d.enfermagemCoren, enfCenterX, midEnfY - 5, enfColW - 14, '14px Arial, sans-serif');
       }
 
       if (sigEnf2Img) {
         drawSignatureFit(g2, sigEnf2Img, M + fc[2] + 14, midEnfY + 4, enfColW - 28, Math.max(34, halfH - 42));
       }
       if (d.enfermagem2Nome) {
-        g2.font = 'bold 15px Arial, sans-serif';
-        fitText(g2, d.enfermagem2Nome, enfCenterX, enfBodyBottom - 21, enfColW - 14);
+        fitTextInk(g2, d.enfermagem2Nome, enfCenterX, enfBodyBottom - 21, enfColW - 14, 'bold 15px Arial, sans-serif');
       }
       if (d.enfermagem2Coren) {
-        g2.font = '14px Arial, sans-serif';
-        fitText(g2, d.enfermagem2Coren, enfCenterX, enfBodyBottom - 5, enfColW - 14);
+        fitTextInk(g2, d.enfermagem2Coren, enfCenterX, enfBodyBottom - 5, enfColW - 14, '14px Arial, sans-serif');
       }
     } else {
       if (sigEnfImg) {
         drawSignatureFit(g2, sigEnfImg, M + fc[2] + 16, y2 + 48, enfColW - 32, footH - 115);
       }
-      g2.font = 'bold 18px Arial, sans-serif';
       g2.textAlign = 'center';
       if (d.enfermagemNome) {
-        fitText(g2, d.enfermagemNome, enfCenterX, y2 + footH - 38, enfColW - 16);
+        fitTextInk(g2, d.enfermagemNome, enfCenterX, y2 + footH - 38, enfColW - 16, 'bold 18px Arial, sans-serif');
       }
       if (d.enfermagemCoren) {
-        g2.font = '17px Arial, sans-serif';
-        fitText(g2, d.enfermagemCoren, enfCenterX, y2 + footH - 14, enfColW - 16);
+        fitTextInk(g2, d.enfermagemCoren, enfCenterX, y2 + footH - 14, enfColW - 16, '17px Arial, sans-serif');
       }
     }
 
@@ -1001,25 +1022,22 @@
       }
       g2.textAlign = 'center';
       if (d.condutorNome) {
-        g2.font = 'bold 16px Arial, sans-serif';
-        fitText(g2, d.condutorNome, condCenterX, midCondY - 9, condColW - 14);
+        fitTextInk(g2, d.condutorNome, condCenterX, midCondY - 9, condColW - 14, 'bold 16px Arial, sans-serif');
       }
 
       if (sigCond2Img) {
         drawSignatureFit(g2, sigCond2Img, M + fc[3] + 14, midCondY + 4, condColW - 28, Math.max(38, halfCondH - 28));
       }
       if (d.condutor2Nome) {
-        g2.font = 'bold 16px Arial, sans-serif';
-        fitText(g2, d.condutor2Nome, condCenterX, condBodyBottom - 9, condColW - 14);
+        fitTextInk(g2, d.condutor2Nome, condCenterX, condBodyBottom - 9, condColW - 14, 'bold 16px Arial, sans-serif');
       }
     } else {
       if (sigCondImg) {
         drawSignatureFit(g2, sigCondImg, M + fc[3] + 16, y2 + 48, condColW - 32, footH - 110);
       }
       g2.textAlign = 'center';
-      g2.font = 'bold 18px Arial, sans-serif';
       if (d.condutorNome) {
-        fitText(g2, d.condutorNome, condCenterX, y2 + footH - 22, condColW - 16);
+        fitTextInk(g2, d.condutorNome, condCenterX, y2 + footH - 22, condColW - 16, 'bold 18px Arial, sans-serif');
       }
     }
     g2.textAlign = 'left';
@@ -1065,13 +1083,26 @@
     // Data + Viatura
     g.strokeRect(M, y, CW, 92);
     g.font = 'bold 20px Arial, sans-serif';
-    g.fillText('Data: ' + formatDateBR(d.data), M + 14, y + 34);
+    g.fillText('Data: ', M + 14, y + 34);
+    const condDataOff = M + 14 + g.measureText('Data: ').width;
+    if (d.data) {
+      fillTextInk(g, formatDateBR(d.data), condDataOff, y + 34, 'bold 20px Arial, sans-serif');
+    } else {
+      g.fillText('    /    /      ', condDataOff, y + 34);
+    }
     g.fillText('Viatura:', M + 310, y + 34);
 
     drawCheckbox(g, M + 420, y + 14, 21, d.viaturaId === 'master_29', 'Renault Master 29  Placa: TIW 4I27', '19px Arial');
     drawCheckbox(g, M + 960, y + 14, 21, d.viaturaId === 'master_133', 'Renault Master 133  Placa: SVZ 4D86', '19px Arial');
     drawCheckbox(g, M + 420, y + 54, 21, d.viaturaId === 'iveco_46', 'Iveco Daily 46  Placa: EVA 1778', '19px Arial');
-    drawCheckbox(g, M + 960, y + 54, 21, d.viaturaId === 'outra', 'Outra Placa: ' + (d.outraPlaca || '___________'), '19px Arial');
+    drawCheckbox(g, M + 960, y + 54, 21, d.viaturaId === 'outra', 'Outra Placa: ', '19px Arial');
+    g.font = '19px Arial, sans-serif';
+    const outraPlacaOff = M + 960 + 29 + g.measureText('Outra Placa: ').width;
+    if (d.outraPlaca) {
+      fitTextInk(g, d.outraPlaca, outraPlacaOff, y + 71, M + CW - outraPlacaOff - 12, 'bold 19px Arial, sans-serif');
+    } else {
+      g.fillText('___________', outraPlacaOff, y + 71);
+    }
 
     y += 92;
     // Condutor Diurno / Noturno
@@ -1079,12 +1110,10 @@
     g.beginPath(); g.moveTo(M + CW / 2, y); g.lineTo(M + CW / 2, y + 44); g.stroke();
     g.font = '20px Arial, sans-serif';
     g.fillText('Condutor Diurno:', M + 14, y + 29);
-    g.font = 'bold 20px Arial, sans-serif';
-    fitText(g, d.condutorDiurno || '', M + 185, y + 29, CW / 2 - 200);
+    fitTextInk(g, d.condutorDiurno || '', M + 185, y + 29, CW / 2 - 200, 'bold 20px Arial, sans-serif');
     g.font = '20px Arial, sans-serif';
     g.fillText('Condutor Noturno:', M + CW / 2 + 14, y + 29);
-    g.font = 'bold 20px Arial, sans-serif';
-    fitText(g, d.condutorNoturno || '', M + CW / 2 + 195, y + 29, CW / 2 - 210);
+    fitTextInk(g, d.condutorNoturno || '', M + CW / 2 + 195, y + 29, CW / 2 - 210, 'bold 20px Arial, sans-serif');
 
     y += 44;
     // Abastecimento (com suporte a Assinatura desenhada com o dedo na tela)
@@ -1092,21 +1121,40 @@
     g.strokeRect(M, y, CW, abastBoxH);
     g.font = '20px Arial, sans-serif';
     if (d.abastRealizado === 'NAO' && !d.abastLitros && !d.abastHora && !d.abastKm && !d.abastAss && !sigAbastImg) {
-      g.fillText('Abastecimento (litros): NÃO REALIZADO      Hora: ---      KM: ---      ASS: ---', M + 14, y + 39);
+      g.fillText('Abastecimento (litros):', M + 14, y + 39);
+      fillTextInk(g, 'NÃO REALIZADO', M + 235, y + 39, 'bold 20px Arial, sans-serif');
+      g.fillText('Hora:', M + 455, y + 39);
+      fillTextInk(g, '---', M + 515, y + 39, 'bold 20px Arial, sans-serif');
+      g.fillText('KM:', M + 700, y + 39);
+      fillTextInk(g, '---', M + 748, y + 39, 'bold 20px Arial, sans-serif');
+      g.fillText('ASS:', M + 1020, y + 39);
+      fillTextInk(g, '---', M + 1084, y + 39, 'bold 20px Arial, sans-serif');
     } else {
       g.fillText('Abastecimento (litros):', M + 14, y + 39);
-      g.font = 'bold 20px Arial, sans-serif';
-      fitText(g, d.abastLitros || '______', M + 235, y + 39, 200);
+      if (d.abastLitros) {
+        fitTextInk(g, d.abastLitros, M + 235, y + 39, 200, 'bold 20px Arial, sans-serif');
+      } else {
+        g.font = 'bold 20px Arial, sans-serif';
+        g.fillText('______', M + 235, y + 39);
+      }
 
       g.font = '20px Arial, sans-serif';
       g.fillText('Hora:', M + 455, y + 39);
-      g.font = 'bold 20px Arial, sans-serif';
-      fitText(g, d.abastHora || '_____', M + 515, y + 39, 165);
+      if (d.abastHora) {
+        fitTextInk(g, d.abastHora, M + 515, y + 39, 165, 'bold 20px Arial, sans-serif');
+      } else {
+        g.font = 'bold 20px Arial, sans-serif';
+        g.fillText('_____', M + 515, y + 39);
+      }
 
       g.font = '20px Arial, sans-serif';
       g.fillText('KM:', M + 700, y + 39);
-      g.font = 'bold 20px Arial, sans-serif';
-      fitText(g, d.abastKm || '_________', M + 748, y + 39, 250);
+      if (d.abastKm) {
+        fitTextInk(g, d.abastKm, M + 748, y + 39, 250, 'bold 20px Arial, sans-serif');
+      } else {
+        g.font = 'bold 20px Arial, sans-serif';
+        g.fillText('_________', M + 748, y + 39);
+      }
 
       g.font = '20px Arial, sans-serif';
       g.fillText('ASS:', M + 1020, y + 39);
@@ -1118,8 +1166,7 @@
       if (sigAbastImg) {
         drawSignatureFit(g, sigAbastImg, M + 1082, y + 4, CW - 1106, 54);
       } else if (d.abastAss) {
-        g.font = 'bold 19px Arial, sans-serif';
-        fitText(g, d.abastAss, M + 1084, y + 39, CW - 1108);
+        fitTextInk(g, d.abastAss, M + 1084, y + 39, CW - 1108, 'bold 19px Arial, sans-serif');
       }
     }
 
@@ -1173,9 +1220,8 @@
       g.font = '19px Arial, sans-serif';
       g.textAlign = 'center';
       g.fillText(it.qty, M + 34, ry + 38);
-      g.font = 'bold 20px Arial, sans-serif';
-      g.fillText(valsDiurno[it.id] || '', M + halfW - 142, ry + 38);
-      g.fillText(valsNoturno[it.id] || '', M + halfW - 47, ry + 38);
+      fillTextInk(g, valsDiurno[it.id] || '', M + halfW - 142, ry + 38, 'bold 20px Arial, sans-serif');
+      fillTextInk(g, valsNoturno[it.id] || '', M + halfW - 47, ry + 38, 'bold 20px Arial, sans-serif');
       g.textAlign = 'left';
       g.font = '20px Arial, sans-serif';
       fitText(g, it.name, M + 80, ry + 38, halfW - 280);
@@ -1194,9 +1240,8 @@
       g.font = '19px Arial, sans-serif';
       g.textAlign = 'center';
       g.fillText(it.qty, M + halfW + 34, ry + 38);
-      g.font = 'bold 20px Arial, sans-serif';
-      g.fillText(valsDiurno[it.id] || '', M + CW - 142, ry + 38);
-      g.fillText(valsNoturno[it.id] || '', M + CW - 47, ry + 38);
+      fillTextInk(g, valsDiurno[it.id] || '', M + CW - 142, ry + 38, 'bold 20px Arial, sans-serif');
+      fillTextInk(g, valsNoturno[it.id] || '', M + CW - 47, ry + 38, 'bold 20px Arial, sans-serif');
       g.textAlign = 'left';
       g.font = '20px Arial, sans-serif';
       fitText(g, it.name, M + halfW + 80, ry + 38, halfW - 280);
@@ -1217,8 +1262,7 @@
       drawSignatureFit(g, sigDiurnoImg, M + halfW + 40, sigAreaY + 48, halfW - 80, sigBoxH - 95);
     }
     if (d.condutorDiurno) {
-      g.font = '18px Arial, sans-serif';
-      g.fillText(d.condutorDiurno, M + halfW + halfW / 2, sigAreaY + sigBoxH - 16);
+      fillTextInk(g, d.condutorDiurno, M + halfW + halfW / 2, sigAreaY + sigBoxH - 16, 'bold 18px Arial, sans-serif');
     }
 
     g.font = 'bold 21px Arial, sans-serif';
@@ -1227,8 +1271,7 @@
       drawSignatureFit(g, sigNoturnoImg, M + halfW + 40, sigAreaY + sigBoxH + 48, halfW - 80, sigBoxH - 95);
     }
     if (d.condutorNoturno) {
-      g.font = '18px Arial, sans-serif';
-      g.fillText(d.condutorNoturno, M + halfW + halfW / 2, sigAreaY + sigBoxH * 2 - 16);
+      fillTextInk(g, d.condutorNoturno, M + halfW + halfW / 2, sigAreaY + sigBoxH * 2 - 16, 'bold 18px Arial, sans-serif');
     }
     g.textAlign = 'left';
 
@@ -1256,7 +1299,7 @@
         const px = ix + mk.x * iw;
         const py = iy + mk.y * ih;
         g2.save();
-        g2.fillStyle = '#dc2626';
+        g2.fillStyle = INK_BLUE;
         g2.strokeStyle = '#ffffff';
         g2.lineWidth = 3;
         g2.beginPath(); g2.arc(px, py, 20, 0, Math.PI * 2); g2.fill(); g2.stroke();
@@ -1290,7 +1333,7 @@
       g2.font = '21px Arial, sans-serif';
       const lines = wrapTextLines(g2, text || '', CW - 32);
       for (let i = 0; i < Math.min(lines.length, obsRows); i++) {
-        g2.fillText(lines[i], M + 16, topY + (i + 2) * obsRowH - 16);
+        fillTextInk(g2, lines[i], M + 16, topY + (i + 2) * obsRowH - 16, '21px Arial, sans-serif');
       }
     };
 
@@ -1361,9 +1404,8 @@
         g.textAlign = 'center';
         g.fillText(it.qty, x + qtyW / 2, ry + rowH - 12);
 
-        g.font = 'bold 17px Arial, sans-serif';
-        fitText(g, checksDia[it.id] || '', x + qtyW + itemW + ckW / 2, ry + rowH - 12, ckW - 8);
-        fitText(g, checksNoite[it.id] || '', x + qtyW + itemW + ckW + ckW / 2, ry + rowH - 12, ckW - 8);
+        fitTextInk(g, checksDia[it.id] || '', x + qtyW + itemW + ckW / 2, ry + rowH - 12, ckW - 8, 'bold 17px Arial, sans-serif');
+        fitTextInk(g, checksNoite[it.id] || '', x + qtyW + itemW + ckW + ckW / 2, ry + rowH - 12, ckW - 8, 'bold 17px Arial, sans-serif');
 
         g.textAlign = 'left';
         g.font = '16px Arial, sans-serif';
@@ -1384,19 +1426,32 @@
       g.font = '19px Arial, sans-serif';
       const lines = wrapTextLines(g, obsText || '', (splitX - M) - 90);
       lines.slice(0, 4).forEach((ln, idx) => {
-        g.fillText(ln, M + 76, topY + 30 + idx * 30);
+        fillTextInk(g, ln, M + 76, topY + 30 + idx * 30, '19px Arial, sans-serif');
       });
 
       g.font = 'bold 20px Arial, sans-serif';
-      g.fillText('DATA: ' + formatDateBR(d.data) + '   |   TURNO: ' + (d.turno || ''), splitX + 18, topY + 34);
+      let fx = splitX + 18;
+      g.fillText('DATA: ', fx, topY + 34);
+      fx += g.measureText('DATA: ').width;
+      const enfDateStr = d.data ? formatDateBR(d.data) : '    /    /      ';
+      if (d.data) {
+        fillTextInk(g, enfDateStr, fx, topY + 34, 'bold 20px Arial, sans-serif');
+      } else {
+        g.fillText(enfDateStr, fx, topY + 34);
+      }
+      fx += g.measureText(enfDateStr).width;
+      g.fillText('   |   TURNO: ', fx, topY + 34);
+      fx += g.measureText('   |   TURNO: ').width;
+      if (d.turno) {
+        fillTextInk(g, d.turno, fx, topY + 34, 'bold 20px Arial, sans-serif');
+      }
       if (sigEnfImg) {
         drawSignatureFit(g, sigEnfImg, splitX + 80, topY + 42, (M + CW - splitX) - 160, fh - 90);
       }
       const respInfo = [d.responsavelNome, d.responsavelCoren].filter(Boolean).join(' – ');
       g.textAlign = 'center';
       if (respInfo) {
-        g.font = 'bold 18px Arial, sans-serif';
-        fitText(g, respInfo, splitX + (M + CW - splitX) / 2, topY + fh - 30, (M + CW - splitX) - 24);
+        fitTextInk(g, respInfo, splitX + (M + CW - splitX) / 2, topY + fh - 30, (M + CW - splitX) - 24, 'bold 18px Arial, sans-serif');
       }
       g.font = '16px Arial, sans-serif';
       g.fillText('ASSINATURA E CARIMBO', splitX + (M + CW - splitX) / 2, topY + fh - 10);

@@ -15,6 +15,7 @@
   --success: #16a34a;
   --warning: #d97706;
   --blue: #2563eb;
+  --ink-blue: #1248c4;
   --radius: 14px;
   --shadow: 0 4px 14px rgba(15, 23, 42, 0.07);
 }
@@ -33,6 +34,18 @@ html, body {
   font-size: 16px;
   line-height: 1.45;
   overscroll-behavior-y: none;
+}
+
+input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]),
+textarea,
+select {
+  color: var(--ink-blue);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #94a3b8;
+  font-weight: 400;
 }
 
 .hidden { display: none !important; }
@@ -404,9 +417,15 @@ body.sim-phone-mode .field-full-phone {
   border-radius: 10px;
   font-size: 0.98rem;
   font-family: inherit;
-  color: var(--text);
+  font-weight: 600;
+  color: var(--ink-blue);
   background: #ffffff;
   transition: border-color 0.15s;
+}
+
+.field input::placeholder, .field textarea::placeholder {
+  color: #94a3b8;
+  font-weight: 400;
 }
 
 .field input, .field select {
@@ -642,6 +661,7 @@ body.sim-phone-mode .risk-grid {
   font-size: 1.02rem;
   font-weight: 800;
   text-align: center;
+  color: var(--ink-blue);
   border: 1.5px solid var(--border);
   border-radius: 8px;
   background: #ffffff;
@@ -1012,6 +1032,7 @@ body.sim-phone-mode .btn-now {
   border: 2px solid var(--border);
   font-size: 1rem;
   font-weight: 600;
+  color: var(--ink-blue);
   background: #ffffff;
 }
 
@@ -1249,12 +1270,12 @@ body.sim-phone-mode .btn-now {
 }
 
 .select-box-summary.is-nega {
-  color: #0f172a;
+  color: var(--ink-blue);
   font-weight: 800;
 }
 
 .select-box-summary.is-has-items {
-  color: var(--samu-red-dark);
+  color: var(--ink-blue);
   font-weight: 800;
 }
 
@@ -1290,9 +1311,9 @@ body.sim-phone-mode .btn-now {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  background: #fef2f2;
-  border: 1px solid #fecaca;
-  color: var(--samu-red-dark);
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: var(--ink-blue);
   font-size: 0.77rem;
   font-weight: 800;
   padding: 3px 8px;
@@ -1332,6 +1353,8 @@ body.sim-phone-mode .btn-now {
   border-radius: 8px;
   font-size: 0.85rem;
   font-family: inherit;
+  font-weight: 600;
+  color: var(--ink-blue);
   background: #ffffff;
 }
 
