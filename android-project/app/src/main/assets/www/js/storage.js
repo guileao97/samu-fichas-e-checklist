@@ -16,6 +16,11 @@
   const LS_SESSION = 'samu_session_v1';
   const LS_USER_SIGS = 'samu_saved_sigs_v1';
   const LS_LAST_KM = 'samu_last_km_final_v1';
+  const LS_CREW_TEAMS = 'samu_crew_teams_v1';
+  const LS_SHARED_FICHAS = 'samu_shared_fichas_v1';
+  const LS_VIATURA_AVARIAS = 'samu_viatura_avarias_v1';
+  const LS_MEDICOS_REGULADORES = 'samu_medicos_reguladores_v1';
+  const LS_SEED_V2_DONE = 'samu_seed_crew_demo_v1';
 
   const DEFAULT_USERS = [
     {
@@ -23,6 +28,7 @@
       password: 'samu192',
       name: 'Coordenação SAMU Orlândia',
       role: 'admin',
+      subRole: 'admin',
       cpf: '',
       coren: '',
       councilId: 'ADM-192',
@@ -35,7 +41,21 @@
       password: '1234',
       name: 'Condutor Socorrista 01',
       role: 'condutor',
+      subRole: 'condutor',
       cpf: '111.222.333-44',
+      coren: '',
+      councilId: '',
+      status: 'approved',
+      active: true,
+      updatedAt: '2026-01-01T00:00:00.000Z'
+    },
+    {
+      username: 'condutor2',
+      password: '1234',
+      name: 'Condutor Socorrista 02',
+      role: 'condutor',
+      subRole: 'condutor',
+      cpf: '333.444.555-66',
       coren: '',
       councilId: '',
       status: 'approved',
@@ -47,9 +67,23 @@
       password: '1234',
       name: 'Técnico de Enfermagem 01',
       role: 'enfermagem',
+      subRole: 'tecnico',
       cpf: '222.333.444-55',
       coren: 'COREN-SP 542.810-TE',
       councilId: 'COREN-SP 542.810-TE',
+      status: 'approved',
+      active: true,
+      updatedAt: '2026-01-01T00:00:00.000Z'
+    },
+    {
+      username: 'enfermeiro',
+      password: '1234',
+      name: 'Enfermeiro(a) 01',
+      role: 'enfermagem',
+      subRole: 'enfermeiro',
+      cpf: '444.555.666-77',
+      coren: 'COREN-SP 318.420-ENF',
+      councilId: 'COREN-SP 318.420-ENF',
       status: 'approved',
       active: true,
       updatedAt: '2026-01-01T00:00:00.000Z'
@@ -181,7 +215,7 @@
     try {
       const db = await openDB();
       if (!db || !db.objectStoreNames.contains('internal_kv')) return;
-      const keys = [LS_USERS, LS_DELETED_USERS, LS_HOSP_RECEIVERS, LS_PATIENTS_DB, LS_SETTINGS, LS_LAST_KM];
+      const keys = [LS_USERS, LS_DELETED_USERS, LS_HOSP_RECEIVERS, LS_MEDICOS_REGULADORES, LS_PATIENTS_DB, LS_SETTINGS, LS_LAST_KM, LS_CREW_TEAMS, LS_SHARED_FICHAS, LS_VIATURA_AVARIAS];
       await Promise.all(keys.map(k => new Promise((resolve) => {
         try {
           const cur = safeLS.getItem(k);
@@ -295,12 +329,40 @@
   }
 
   /* ===================== USUÁRIOS, AUTO-CADASTRO E APROVAÇÃO ===================== */
+  function getUserSubRole(u) {
+    if (!u) return 'condutor';
+    const role = String(u.role || 'condutor').trim().toLowerCase();
+    if (role === 'admin') return 'admin';
+    if (role === 'condutor') return 'condutor';
+    const rawSub = String(u.subRole || '').trim().toLowerCase();
+    if (rawSub === 'enfermeiro' || rawSub === 'enfermeira') return 'enfermeiro';
+    if (rawSub === 'tecnico') return 'tecnico';
+    const coren = String(u.coren || u.councilId || '');
+    const name = String(u.name || '');
+    if (String(u.username || '').toLowerCase() === 'enfermeiro' || /-\s*ENF\b/i.test(coren) || /\benfermeir[oa]\b/i.test(name)) {
+      return 'enfermeiro';
+    }
+    return 'tecnico';
+  }
+
+  function getUserRoleLabel(u) {
+    const sub = getUserSubRole(u);
+    if (sub === 'admin') return 'Coordenação / ADM';
+    if (sub === 'condutor') return 'Condutor Socorrista';
+    if (sub === 'enfermeiro') return 'Enfermeiro(a)';
+    return 'Téc. de Enfermagem';
+  }
+
   function normalizeUserObj(u) {
     const uname = String((u && u.username) || '').trim().toLowerCase();
-    const role = String((u && u.role) || 'condutor').trim().toLowerCase();
+    const rawRole = String((u && u.role) || 'condutor').trim().toLowerCase();
+    const role = rawRole === 'enfermeiro' ? 'enfermagem' : rawRole;
     let corenVal = String((u && (u.coren || (role === 'enfermagem' ? u.councilId : ''))) || '').trim();
     if (uname === 'enfermagem' && (!corenVal || corenVal === 'COREN-SP')) {
       corenVal = 'COREN-SP 542.810-TE';
+    }
+    if (uname === 'enfermeiro' && !corenVal) {
+      corenVal = 'COREN-SP 318.420-ENF';
     }
     const councilVal = role === 'enfermagem'
       ? (corenVal || String((u && u.councilId) || '').trim())
@@ -312,15 +374,18 @@
     }
     const isApproved = status === 'approved' && (u ? u.active !== false : true);
     const rawCpf = String((u && u.cpf) || '').replace(/\D+/g, '');
+    const subRole = getUserSubRole(Object.assign({}, u, { username: uname, role, coren: corenVal, councilId: councilVal }));
 
     return {
       username: uname,
       password: String((u && u.password) || '1234'),
       name: String((u && u.name) || uname),
       role: role,
+      subRole: subRole,
       cpf: rawCpf.length === 11 ? formatCpf(rawCpf) : String((u && u.cpf) || '').trim(),
       coren: role === 'enfermagem' ? corenVal : '',
       councilId: councilVal,
+      savedSignature: String((u && u.savedSignature) || '').trim(),
       status: status,
       active: isApproved,
       requestedAt: (u && u.requestedAt) || '',
@@ -349,15 +414,31 @@
       if (!raw) {
         const seeded = DEFAULT_USERS.map(normalizeUserObj);
         saveInternalJson(LS_USERS, seeded);
+        safeLS.setItem(LS_SEED_V2_DONE, '1');
         return seeded;
       }
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed) || !parsed.length) {
         const seeded = DEFAULT_USERS.map(normalizeUserObj);
         saveInternalJson(LS_USERS, seeded);
+        safeLS.setItem(LS_SEED_V2_DONE, '1');
         return seeded;
       }
-      return parsed.map(normalizeUserObj);
+      const list = parsed.map(normalizeUserObj);
+      if (!safeLS.getItem(LS_SEED_V2_DONE)) {
+        const delMap = getDeletedUsersMap();
+        let addedAny = false;
+        DEFAULT_USERS.forEach(defU => {
+          const uname = defU.username.toLowerCase();
+          if (!delMap[uname] && !list.some(x => x.username === uname)) {
+            list.push(normalizeUserObj(defU));
+            addedAny = true;
+          }
+        });
+        safeLS.setItem(LS_SEED_V2_DONE, '1');
+        if (addedAny) saveInternalJson(LS_USERS, list);
+      }
+      return list;
     } catch (e) {
       return DEFAULT_USERS.map(normalizeUserObj);
     }
@@ -418,7 +499,12 @@
   }
 
   async function registerUserRequest(form) {
-    const role = String(form.role || 'condutor').trim().toLowerCase() === 'enfermagem' ? 'enfermagem' : 'condutor';
+    const rawRole = String(form.role || 'condutor').trim().toLowerCase();
+    const role = (rawRole === 'enfermagem' || rawRole === 'enfermeiro') ? 'enfermagem' : 'condutor';
+    const rawSubRole = String(form.subRole || '').trim().toLowerCase();
+    const subRole = role === 'condutor'
+      ? 'condutor'
+      : ((rawSubRole === 'enfermeiro' || rawRole === 'enfermeiro') ? 'enfermeiro' : 'tecnico');
     const name = String(form.name || '').trim();
     const username = String(form.username || '').trim().toLowerCase().replace(/\s+/g, '');
     const password = String(form.password || '').trim();
@@ -461,6 +547,7 @@
       password,
       name,
       role,
+      subRole,
       cpf: formatCpf(cpfDigits),
       coren,
       councilId: coren,
@@ -621,6 +708,148 @@
       syncInternalDbWithGitHub({ pushChanges: true }).catch(() => {});
     }
     return list;
+  }
+
+  /* ===================== MÉDICOS REGULADORES SALVOS AUTOMATICAMENTE ===================== */
+  function extractCleanMedicoName(rawText) {
+    const raw = String(rawText || '').trim();
+    if (!raw) return '';
+    // Se a equipe digitou "Dr. João / Senha 1234", salva apenas o nome/CRM do médico ("Dr. João") sem a senha única da ocorrência
+    const cleaned = raw.replace(/\s*(?:[\/\-–|]\s*)?\bsenha\b[\s:#\-]*[a-z0-9.\-/]*$/i, '').trim();
+    if (!cleaned || cleaned.length < 2) return '';
+    return cleaned;
+  }
+
+  function getMedicosReguladores() {
+    try {
+      const raw = safeLS.getItem(LS_MEDICOS_REGULADORES);
+      const list = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(list)) return [];
+      list.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+      return list;
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function setMedicosReguladores(list) {
+    const clean = Array.isArray(list) ? list : [];
+    saveInternalJson(LS_MEDICOS_REGULADORES, clean);
+    return clean;
+  }
+
+  function upsertMedicoRegulador(info, skipDirty) {
+    const rawNome = typeof info === 'string' ? info : ((info && info.nome) || '');
+    const nome = extractCleanMedicoName(rawNome);
+    if (!nome) return getMedicosReguladores();
+
+    const id = normKey(nome);
+    if (!id) return getMedicosReguladores();
+
+    const list = getMedicosReguladores();
+    const now = new Date().toISOString();
+    const idx = list.findIndex(item => (item.id || normKey(item.nome)) === id);
+
+    if (idx >= 0) {
+      list[idx] = {
+        id,
+        nome,
+        useCount: (Number(list[idx].useCount) || 1) + 1,
+        updatedAt: (info && typeof info === 'object' && info.updatedAt) || now
+      };
+    } else {
+      list.unshift({
+        id,
+        nome,
+        useCount: 1,
+        updatedAt: (info && typeof info === 'object' && info.updatedAt) || now
+      });
+    }
+
+    setMedicosReguladores(list);
+    if (!skipDirty) {
+      markGitHubDirty();
+      if (navigator.onLine && hasGitHubConfigured() && getSettings().githubToken) {
+        syncInternalDbWithGitHub({ pushChanges: true }).catch(() => {});
+      }
+    }
+    return getMedicosReguladores();
+  }
+
+  function deleteMedicoRegulador(id) {
+    const list = getMedicosReguladores().filter(item => item.id !== id);
+    setMedicosReguladores(list);
+    markGitHubDirty();
+    if (navigator.onLine && hasGitHubConfigured() && getSettings().githubToken) {
+      syncInternalDbWithGitHub({ pushChanges: true }).catch(() => {});
+    }
+    return list;
+  }
+
+  /* ===================== AVARIAS SALVAS POR VIATURA (AMASSADOS / RISCADOS PERSISTENTES) ===================== */
+  function getViaturaStorageKey(viaturaId, outraPlaca) {
+    const vid = String(viaturaId || 'master_29').trim().toLowerCase() || 'master_29';
+    if (vid === 'outra') {
+      const nk = normKey(outraPlaca);
+      return nk ? ('outra__' + nk) : 'outra';
+    }
+    return vid;
+  }
+
+  function sanitizeAvariasList(marks) {
+    if (!Array.isArray(marks)) return [];
+    return marks
+      .filter(m => m && typeof m === 'object')
+      .map(m => ({
+        x: Math.max(0.01, Math.min(0.99, Number(m.x) || 0.5)),
+        y: Math.max(0.01, Math.min(0.99, Number(m.y) || 0.5)),
+        code: String(m.code || 'D').trim().toUpperCase() || 'D'
+      }));
+  }
+
+  function getViaturaAvariasMap() {
+    try {
+      const raw = safeLS.getItem(LS_VIATURA_AVARIAS);
+      const map = raw ? JSON.parse(raw) : {};
+      return (map && typeof map === 'object' && !Array.isArray(map)) ? map : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function setViaturaAvariasMap(mapObj) {
+    saveInternalJson(LS_VIATURA_AVARIAS, mapObj || {});
+    return mapObj;
+  }
+
+  function getViaturaAvarias(viaturaId, outraPlaca) {
+    const map = getViaturaAvariasMap();
+    const key = getViaturaStorageKey(viaturaId, outraPlaca);
+    const entry = map[key];
+    if (!entry || !Array.isArray(entry.marks)) return [];
+    return sanitizeAvariasList(entry.marks);
+  }
+
+  function saveViaturaAvarias(viaturaId, outraPlaca, marks, updatedBy, skipDirty) {
+    const map = getViaturaAvariasMap();
+    const key = getViaturaStorageKey(viaturaId, outraPlaca);
+    const cleanMarks = sanitizeAvariasList(marks);
+    map[key] = {
+      key,
+      viaturaId: String(viaturaId || 'master_29').trim(),
+      outraPlaca: String(outraPlaca || '').trim(),
+      marks: cleanMarks,
+      updatedAt: new Date().toISOString(),
+      updatedBy: String(updatedBy || '').trim()
+    };
+    setViaturaAvariasMap(map);
+    if (!skipDirty) {
+      markGitHubDirty();
+      if (navigator.onLine && hasGitHubConfigured() && getSettings().githubToken) {
+        syncInternalDbWithGitHub({ pushChanges: true }).catch(() => {});
+      }
+    }
+    return cleanMarks;
   }
 
   /* ===================== BASE INTERNA DE PACIENTES (OFFLINE + GITHUB) ===================== */
@@ -822,10 +1051,648 @@
     return Boolean(parseGitHubConfig());
   }
 
+  /* ===================== EQUIPES DO PLANTÃO (ATÉ 3 MEMBROS) E FICHAS COMPARTILHADAS ===================== */
+  function getCrewTeamsMap() {
+    try {
+      const raw = safeLS.getItem(LS_CREW_TEAMS);
+      const map = raw ? JSON.parse(raw) : {};
+      return (map && typeof map === 'object' && !Array.isArray(map)) ? map : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function setCrewTeamsMap(mapObj) {
+    saveInternalJson(LS_CREW_TEAMS, mapObj || {});
+    return mapObj;
+  }
+
+  function computeCrewId(usernames) {
+    const clean = Array.from(new Set(
+      (Array.isArray(usernames) ? usernames : [])
+        .map(u => String(u || '').trim().toLowerCase())
+        .filter(Boolean)
+    )).sort();
+    return 'crew__' + clean.join('__');
+  }
+
+  function validateCrewSelection(memberUsers) {
+    const list = (Array.isArray(memberUsers) ? memberUsers : []).filter(Boolean);
+    const total = list.length;
+    let drivers = 0;
+    let tecnicos = 0;
+    let enfermeiros = 0;
+
+    list.forEach(u => {
+      const sub = getUserSubRole(u);
+      if (sub === 'condutor') drivers++;
+      else if (sub === 'enfermeiro') enfermeiros++;
+      else if (sub === 'tecnico') tecnicos++;
+    });
+    const nursingTotal = tecnicos + enfermeiros;
+
+    if (total < 2) {
+      return {
+        valid: false,
+        drivers,
+        tecnicos,
+        enfermeiros,
+        message: 'Selecione com quem você está trabalhando no plantão (2 ou até 3 integrantes).'
+      };
+    }
+    if (total > 3) {
+      return {
+        valid: false,
+        drivers,
+        tecnicos,
+        enfermeiros,
+        message: 'A equipe pode ter no máximo 3 integrantes no plantão.'
+      };
+    }
+    if (drivers < 1) {
+      return {
+        valid: false,
+        drivers,
+        tecnicos,
+        enfermeiros,
+        message: 'A equipe precisa ter pelo menos 1 Condutor Socorrista.'
+      };
+    }
+    if (nursingTotal < 1) {
+      return {
+        valid: false,
+        drivers,
+        tecnicos,
+        enfermeiros,
+        message: 'A equipe precisa ter pelo menos 1 Téc. de Enfermagem ou Enfermeiro(a).'
+      };
+    }
+
+    if (total === 2) {
+      if (drivers === 1 && nursingTotal === 1) {
+        const nurLabel = enfermeiros === 1 ? '1 Enfermeiro(a)' : '1 Téc. Enfermagem';
+        return {
+          valid: true,
+          drivers,
+          tecnicos,
+          enfermeiros,
+          message: `✅ Equipe válida (2 integrantes): 1 Condutor + ${nurLabel}.`
+        };
+      }
+      return {
+        valid: false,
+        drivers,
+        tecnicos,
+        enfermeiros,
+        message: 'Em dupla, selecione 1 Condutor Socorrista + 1 profissional de Enfermagem.'
+      };
+    }
+
+    // total === 3
+    if (drivers === 2 && nursingTotal === 1) {
+      const nurLabel = enfermeiros === 1 ? '1 Enfermeiro(a)' : '1 Téc. Enfermagem';
+      return {
+        valid: true,
+        drivers,
+        tecnicos,
+        enfermeiros,
+        message: `✅ Equipe válida (3 integrantes): 2 Condutores + ${nurLabel}.`
+      };
+    }
+    if (drivers === 1 && tecnicos === 1 && enfermeiros === 1) {
+      return {
+        valid: true,
+        drivers,
+        tecnicos,
+        enfermeiros,
+        message: '✅ Equipe válida (3 integrantes): 1 Téc. Enfermagem + 1 Enfermeiro(a) + 1 Condutor.'
+      };
+    }
+
+    return {
+      valid: false,
+      drivers,
+      tecnicos,
+      enfermeiros,
+      message: 'Em 3 integrantes, a equipe deve ser: (2 Condutores + 1 Téc./Enfermeiro) OU (1 Téc. Enfermagem + 1 Enfermeiro(a) + 1 Condutor).'
+    };
+  }
+
+  function hydrateCrewRecord(rawCrew, perspectiveUsername) {
+    if (!rawCrew || !Array.isArray(rawCrew.members) || rawCrew.members.length < 2) return null;
+    const allUsers = getLocalUsers();
+    const byUname = new Map();
+    allUsers.forEach(u => byUname.set(u.username.toLowerCase(), u));
+
+    const membersDetailed = rawCrew.members.map(uname => {
+      const key = String(uname || '').trim().toLowerCase();
+      const found = byUname.get(key);
+      const uObj = found || normalizeUserObj({ username: key, name: key, role: 'condutor' });
+      const subRole = getUserSubRole(uObj);
+      return {
+        username: uObj.username,
+        name: uObj.name,
+        role: uObj.role,
+        subRole,
+        roleLabel: getUserRoleLabel(uObj),
+        coren: uObj.role === 'enfermagem' ? (uObj.coren || uObj.councilId || '') : '',
+        savedSignature: getSavedSignature(uObj.username) || uObj.savedSignature || ''
+      };
+    });
+
+    // Ordem determinística para que todos os celulares preencham exatamente o mesmo Slot 1 e Slot 2
+    const nursingSlots = membersDetailed
+      .filter(m => m.role === 'enfermagem')
+      .sort((a, b) => {
+        const rankA = a.subRole === 'enfermeiro' ? 0 : 1;
+        const rankB = b.subRole === 'enfermeiro' ? 0 : 1;
+        if (rankA !== rankB) return rankA - rankB;
+        return a.username.localeCompare(b.username);
+      });
+
+    const driverSlots = membersDetailed
+      .filter(m => m.role === 'condutor')
+      .sort((a, b) => a.username.localeCompare(b.username));
+
+    const meLower = String(perspectiveUsername || '').trim().toLowerCase();
+    const teammates = meLower
+      ? membersDetailed.filter(m => m.username !== meLower)
+      : membersDetailed.slice();
+
+    return {
+      crewId: rawCrew.crewId || computeCrewId(rawCrew.members),
+      members: membersDetailed.map(m => m.username),
+      membersDetailed,
+      teammates,
+      nursingSlots,
+      driverSlots,
+      active: rawCrew.active !== false,
+      createdBy: rawCrew.createdBy || '',
+      updatedBy: rawCrew.updatedBy || '',
+      updatedAt: rawCrew.updatedAt || ''
+    };
+  }
+
+  function getActiveCrewForUser(username) {
+    const uname = String(username || '').trim().toLowerCase();
+    if (!uname) return null;
+    const map = getCrewTeamsMap();
+    let best = null;
+    Object.keys(map).forEach(cid => {
+      const c = map[cid];
+      if (!c || c.active === false || !Array.isArray(c.members)) return;
+      if (!c.members.map(x => String(x).toLowerCase()).includes(uname)) return;
+      if (!best || String(c.updatedAt || '') >= String(best.updatedAt || '')) {
+        best = c;
+      }
+    });
+    return best ? hydrateCrewRecord(best, uname) : null;
+  }
+
+  function getSharedFichasMap() {
+    try {
+      const raw = safeLS.getItem(LS_SHARED_FICHAS);
+      const map = raw ? JSON.parse(raw) : {};
+      return (map && typeof map === 'object' && !Array.isArray(map)) ? map : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function setSharedFichasMap(mapObj) {
+    saveInternalJson(LS_SHARED_FICHAS, mapObj || {});
+    return mapObj;
+  }
+
+  function ensureCrewWorkspaceShape(crewId, rawWs) {
+    const ws = (rawWs && typeof rawWs === 'object') ? rawWs : {};
+    return {
+      crewId: String(crewId || ws.crewId || ''),
+      updatedAt: ws.updatedAt || new Date().toISOString(),
+      lastKmFinal: String(ws.lastKmFinal || ''),
+      lastKmUpdatedAt: String(ws.lastKmUpdatedAt || ''),
+      currentFicha: (ws.currentFicha && typeof ws.currentFicha === 'object' && ws.currentFicha.data)
+        ? ws.currentFicha
+        : null,
+      closedSessions: (ws.closedSessions && typeof ws.closedSessions === 'object') ? ws.closedSessions : {},
+      draftRecords: (ws.draftRecords && typeof ws.draftRecords === 'object') ? ws.draftRecords : {},
+      closedDraftIds: (ws.closedDraftIds && typeof ws.closedDraftIds === 'object') ? ws.closedDraftIds : {}
+    };
+  }
+
+  function getCrewWorkspace(crewId) {
+    if (!crewId) return null;
+    const map = getSharedFichasMap();
+    return ensureCrewWorkspaceShape(crewId, map[crewId]);
+  }
+
+  function isNonEmptyFichaValue(val) {
+    if (val === null || val === undefined) return false;
+    if (Array.isArray(val)) return val.length > 0;
+    if (typeof val === 'object') return Object.values(val).some(v => isNonEmptyFichaValue(v));
+    if (typeof val === 'boolean') return val;
+    return String(val).trim() !== '';
+  }
+
+  function hasMeaningfulFichaProgress(fichaData) {
+    if (!fichaData || typeof fichaData !== 'object') return false;
+    const checkKeys = [
+      'numOcorrencia', 'motivoQueixa', 'vitimaNome', 'vitimaCpf', 'vitimaEndereco',
+      'svPa', 'svFc', 'svSpo2', 'svDxt', 'relatorioEnfermagem', 'procedimentosTexto',
+      'recebidoPorNome', 'sigHospital', 'sigPacienteRecusa'
+    ];
+    if (checkKeys.some(k => String(fichaData[k] || '').trim() !== '')) return true;
+    if (Array.isArray(fichaData.tipoOcorrencia) && fichaData.tipoOcorrencia.length > 0) return true;
+    if (fichaData.horarios && typeof fichaData.horarios === 'object') {
+      const hKeys = ['horaChamado', 'saidaBase', 'chegadaLocal', 'saidaLocal', 'chegadaDestino', 'retornoBase'];
+      if (hKeys.some(hk => String(fichaData.horarios[hk] || '').trim() !== '')) return true;
+    }
+    return false;
+  }
+
+  function mergeSharedFichaDocs(docA, docB, closedSessionsMap) {
+    const closed = closedSessionsMap || {};
+    const validA = (docA && docA.data && docA.sessionId && !closed[docA.sessionId]) ? docA : null;
+    const validB = (docB && docB.data && docB.sessionId && !closed[docB.sessionId]) ? docB : null;
+
+    if (!validA && !validB) return null;
+    if (validA && !validB) return JSON.parse(JSON.stringify(validA));
+    if (!validA && validB) return JSON.parse(JSON.stringify(validB));
+
+    const aIsNewer = String(validA.updatedAt || '') >= String(validB.updatedAt || '');
+    const newerDoc = aIsNewer ? validA : validB;
+    const olderDoc = aIsNewer ? validB : validA;
+
+    // Se um integrante abriu explicitamente um rascunho/registro salvo distinto, respeita o mais recente sem misturar registros diferentes
+    if (
+      validA.sessionId !== validB.sessionId &&
+      (validA.isLoadedRecord || validB.isLoadedRecord) &&
+      validA.recordId && validB.recordId && validA.recordId !== validB.recordId
+    ) {
+      return JSON.parse(JSON.stringify(newerDoc));
+    }
+
+    const tsMapA = (validA.fieldTs && typeof validA.fieldTs === 'object') ? validA.fieldTs : {};
+    const tsMapB = (validB.fieldTs && typeof validB.fieldTs === 'object') ? validB.fieldTs : {};
+    const mergedFieldTs = {};
+    const mergedData = {};
+
+    const allKeys = new Set([
+      ...Object.keys(validA.data || {}),
+      ...Object.keys(validB.data || {})
+    ]);
+
+    allKeys.forEach(k => {
+      if (k === 'horarios') return;
+      const tA = Number(tsMapA[k] || 0);
+      const tB = Number(tsMapB[k] || 0);
+      const valA = validA.data[k];
+      const valB = validB.data[k];
+
+      if (tB > tA) {
+        mergedData[k] = valB !== undefined ? JSON.parse(JSON.stringify(valB)) : '';
+        mergedFieldTs[k] = tB;
+      } else if (tA > tB) {
+        mergedData[k] = valA !== undefined ? JSON.parse(JSON.stringify(valA)) : '';
+        mergedFieldTs[k] = tA;
+      } else {
+        if (tA > 0) mergedFieldTs[k] = tA;
+        if (isNonEmptyFichaValue(valA) && !isNonEmptyFichaValue(valB)) {
+          mergedData[k] = JSON.parse(JSON.stringify(valA));
+        } else if (isNonEmptyFichaValue(valB) && !isNonEmptyFichaValue(valA)) {
+          mergedData[k] = JSON.parse(JSON.stringify(valB));
+        } else {
+          const pick = aIsNewer ? valA : valB;
+          mergedData[k] = pick !== undefined ? JSON.parse(JSON.stringify(pick)) : '';
+        }
+      }
+    });
+
+    // Mescla subcampos de horários individualmente (ex: Condutor preenche KM/Saída enquanto Téc. preenche outros campos)
+    const horA = (validA.data && validA.data.horarios && typeof validA.data.horarios === 'object') ? validA.data.horarios : {};
+    const horB = (validB.data && validB.data.horarios && typeof validB.data.horarios === 'object') ? validB.data.horarios : {};
+    const mergedHor = {};
+    const horKeys = new Set([...Object.keys(horA), ...Object.keys(horB)]);
+    horKeys.forEach(hk => {
+      const fk = 'horarios.' + hk;
+      const tA = Number(tsMapA[fk] || 0);
+      const tB = Number(tsMapB[fk] || 0);
+      const vA = horA[hk];
+      const vB = horB[hk];
+      if (tB > tA) {
+        mergedHor[hk] = vB !== undefined ? vB : '';
+        mergedFieldTs[fk] = tB;
+      } else if (tA > tB) {
+        mergedHor[hk] = vA !== undefined ? vA : '';
+        mergedFieldTs[fk] = tA;
+      } else {
+        if (tA > 0) mergedFieldTs[fk] = tA;
+        if (isNonEmptyFichaValue(vA) && !isNonEmptyFichaValue(vB)) mergedHor[hk] = vA;
+        else if (isNonEmptyFichaValue(vB) && !isNonEmptyFichaValue(vA)) mergedHor[hk] = vB;
+        else mergedHor[hk] = (aIsNewer ? vA : vB) || '';
+      }
+    });
+    mergedData.horarios = mergedHor;
+
+    return {
+      sessionId: newerDoc.sessionId || olderDoc.sessionId,
+      recordId: newerDoc.recordId || olderDoc.recordId || '',
+      isLoadedRecord: Boolean(newerDoc.isLoadedRecord || olderDoc.isLoadedRecord),
+      updatedAt: newerDoc.updatedAt || new Date().toISOString(),
+      updatedBy: newerDoc.updatedBy || olderDoc.updatedBy || '',
+      updatedByName: newerDoc.updatedByName || olderDoc.updatedByName || '',
+      fieldTs: mergedFieldTs,
+      data: mergedData
+    };
+  }
+
+  function pruneMapByTimestamp(mapObj, maxEntries, getTsFn) {
+    const obj = (mapObj && typeof mapObj === 'object') ? mapObj : {};
+    const entries = Object.entries(obj);
+    if (entries.length <= maxEntries) return obj;
+    entries.sort((a, b) => String(getTsFn(b[1]) || '').localeCompare(String(getTsFn(a[1]) || '')));
+    const trimmed = {};
+    entries.slice(0, maxEntries).forEach(([k, v]) => { trimmed[k] = v; });
+    return trimmed;
+  }
+
+  function mergeCrewWorkspaces(wsA, wsB) {
+    const a = ensureCrewWorkspaceShape((wsA && wsA.crewId) || (wsB && wsB.crewId) || '', wsA);
+    const b = ensureCrewWorkspaceShape(a.crewId, wsB);
+
+    const closedSessions = Object.assign({}, a.closedSessions);
+    Object.keys(b.closedSessions).forEach(sid => {
+      const ca = closedSessions[sid];
+      const cb = b.closedSessions[sid];
+      if (!ca || String((cb && cb.closedAt) || '') >= String((ca && ca.closedAt) || '')) {
+        closedSessions[sid] = cb;
+      }
+    });
+
+    const closedDraftIds = Object.assign({}, a.closedDraftIds);
+    Object.keys(b.closedDraftIds).forEach(rid => {
+      if (!closedDraftIds[rid] || String(b.closedDraftIds[rid]) > String(closedDraftIds[rid])) {
+        closedDraftIds[rid] = b.closedDraftIds[rid];
+      }
+    });
+
+    const draftRecords = {};
+    const allDraftIds = new Set([...Object.keys(a.draftRecords), ...Object.keys(b.draftRecords)]);
+    allDraftIds.forEach(rid => {
+      const da = a.draftRecords[rid];
+      const db = b.draftRecords[rid];
+      const pick = (!da) ? db : ((!db) ? da : (String(db.updatedAt || db.createdAt || '') >= String(da.updatedAt || da.createdAt || '') ? db : da));
+      if (!pick) return;
+      const closedTs = closedDraftIds[rid];
+      const pickTs = String(pick.updatedAt || pick.createdAt || '');
+      if (closedTs && String(closedTs) >= pickTs) return;
+      draftRecords[rid] = pick;
+    });
+
+    let lastKmFinal = a.lastKmFinal;
+    let lastKmUpdatedAt = a.lastKmUpdatedAt;
+    if (b.lastKmFinal && (!lastKmFinal || String(b.lastKmUpdatedAt || '') >= String(lastKmUpdatedAt || ''))) {
+      lastKmFinal = b.lastKmFinal;
+      lastKmUpdatedAt = b.lastKmUpdatedAt;
+    }
+
+    const mergedCurrent = mergeSharedFichaDocs(a.currentFicha, b.currentFicha, closedSessions);
+    const updatedAt = String(b.updatedAt || '') > String(a.updatedAt || '') ? b.updatedAt : a.updatedAt;
+
+    return {
+      crewId: a.crewId,
+      updatedAt: updatedAt || new Date().toISOString(),
+      lastKmFinal,
+      lastKmUpdatedAt,
+      currentFicha: mergedCurrent,
+      closedSessions: pruneMapByTimestamp(closedSessions, 40, v => v && v.closedAt),
+      draftRecords: pruneMapByTimestamp(draftRecords, 25, v => v && (v.updatedAt || v.createdAt)),
+      closedDraftIds: pruneMapByTimestamp(closedDraftIds, 50, v => v)
+    };
+  }
+
+  function setActiveCrewForUsers(usernames, initiatorUsername) {
+    const cleanNames = Array.from(new Set(
+      (Array.isArray(usernames) ? usernames : [])
+        .map(u => String(u || '').trim().toLowerCase())
+        .filter(Boolean)
+    )).sort();
+
+    const allUsers = getLocalUsers();
+    const memberUsers = cleanNames.map(un => allUsers.find(u => u.username.toLowerCase() === un)).filter(Boolean);
+    if (memberUsers.length !== cleanNames.length) {
+      throw new Error('Um ou mais integrantes selecionados não foram encontrados na base de usuários.');
+    }
+
+    const check = validateCrewSelection(memberUsers);
+    if (!check.valid) {
+      throw new Error(check.message);
+    }
+
+    const newCrewId = computeCrewId(cleanNames);
+    const crewsMap = getCrewTeamsMap();
+    const sharedMap = getSharedFichasMap();
+
+    // Se algum integrante já estava com uma ficha em andamento em dupla e adicionou o 3º integrante, leva a ficha em andamento junto!
+    let carryOverWs = null;
+    cleanNames.forEach(un => {
+      const prevCrew = getActiveCrewForUser(un);
+      if (prevCrew && prevCrew.crewId !== newCrewId) {
+        const pWs = sharedMap[prevCrew.crewId];
+        if (pWs && pWs.currentFicha && hasMeaningfulFichaProgress(pWs.currentFicha.data)) {
+          if (!carryOverWs || String(pWs.updatedAt || '') > String(carryOverWs.updatedAt || '')) {
+            carryOverWs = pWs;
+          }
+        }
+      }
+    });
+
+    const closeTs = new Date(Date.now() - 5).toISOString();
+    const activeTs = new Date().toISOString();
+
+    Object.keys(crewsMap).forEach(cid => {
+      if (cid === newCrewId) return;
+      const c = crewsMap[cid];
+      if (!c || c.active === false || !Array.isArray(c.members)) return;
+      const overlaps = c.members.some(m => cleanNames.includes(String(m).toLowerCase()));
+      if (overlaps) {
+        crewsMap[cid] = Object.assign({}, c, {
+          active: false,
+          endedBy: initiatorUsername || '',
+          updatedAt: closeTs
+        });
+      }
+    });
+
+    const prevEntry = crewsMap[newCrewId];
+    crewsMap[newCrewId] = {
+      crewId: newCrewId,
+      members: cleanNames,
+      active: true,
+      createdBy: (prevEntry && prevEntry.createdBy) || initiatorUsername || cleanNames[0],
+      updatedBy: initiatorUsername || cleanNames[0],
+      updatedAt: activeTs
+    };
+    setCrewTeamsMap(crewsMap);
+
+    const targetWs = ensureCrewWorkspaceShape(newCrewId, sharedMap[newCrewId]);
+    if (carryOverWs && (!targetWs.currentFicha || !hasMeaningfulFichaProgress(targetWs.currentFicha.data))) {
+      targetWs.currentFicha = JSON.parse(JSON.stringify(carryOverWs.currentFicha));
+      targetWs.updatedAt = activeTs;
+      sharedMap[newCrewId] = targetWs;
+      setSharedFichasMap(sharedMap);
+    }
+
+    markGitHubDirty();
+    return hydrateCrewRecord(crewsMap[newCrewId], initiatorUsername);
+  }
+
+  function clearActiveCrewForUser(username) {
+    const uname = String(username || '').trim().toLowerCase();
+    if (!uname) return false;
+    const crewsMap = getCrewTeamsMap();
+    const now = new Date().toISOString();
+    let changed = false;
+
+    Object.keys(crewsMap).forEach(cid => {
+      const c = crewsMap[cid];
+      if (!c || c.active === false || !Array.isArray(c.members)) return;
+      if (c.members.map(x => String(x).toLowerCase()).includes(uname)) {
+        crewsMap[cid] = Object.assign({}, c, {
+          active: false,
+          endedBy: uname,
+          updatedAt: now
+        });
+        changed = true;
+      }
+    });
+
+    if (changed) {
+      setCrewTeamsMap(crewsMap);
+      markGitHubDirty();
+    }
+    return changed;
+  }
+
+  function saveCrewCurrentFicha(crewId, doc, skipDirty) {
+    if (!crewId || !doc || !doc.data || !doc.sessionId) return null;
+    const map = getSharedFichasMap();
+    const ws = ensureCrewWorkspaceShape(crewId, map[crewId]);
+    const now = doc.updatedAt || new Date().toISOString();
+
+    ws.currentFicha = mergeSharedFichaDocs(ws.currentFicha, doc, ws.closedSessions);
+    ws.updatedAt = now;
+    map[crewId] = ws;
+    setSharedFichasMap(map);
+    if (!skipDirty) markGitHubDirty();
+    return ws.currentFicha;
+  }
+
+  function closeCrewCurrentSession(crewId, sessionId, reason, recordId, newKmFinal, skipDirty) {
+    if (!crewId) return null;
+    const map = getSharedFichasMap();
+    const ws = ensureCrewWorkspaceShape(crewId, map[crewId]);
+    const now = new Date().toISOString();
+    const sid = sessionId || (ws.currentFicha && ws.currentFicha.sessionId) || '';
+    if (sid) {
+      ws.closedSessions[sid] = {
+        closedAt: now,
+        reason: reason || 'closed',
+        recordId: recordId || ''
+      };
+    }
+    if (ws.currentFicha && (!sid || ws.currentFicha.sessionId === sid)) {
+      ws.currentFicha = null;
+    }
+    if (newKmFinal !== undefined && String(newKmFinal || '').trim() !== '') {
+      ws.lastKmFinal = String(newKmFinal).trim();
+      ws.lastKmUpdatedAt = now;
+    }
+    ws.closedSessions = pruneMapByTimestamp(ws.closedSessions, 40, v => v && v.closedAt);
+    ws.updatedAt = now;
+    map[crewId] = ws;
+    setSharedFichasMap(map);
+    if (!skipDirty) markGitHubDirty();
+    return ws;
+  }
+
+  async function syncAllCrewDraftsToLocalRecords() {
+    const sess = getSession();
+    if (!sess || !sess.username) return false;
+    const activeCrew = getActiveCrewForUser(sess.username);
+    if (!activeCrew) return false;
+    const ws = getCrewWorkspace(activeCrew.crewId);
+    if (!ws) return false;
+
+    let changed = false;
+    const draftEntries = Object.values(ws.draftRecords || {});
+    for (const remoteDraft of draftEntries) {
+      if (!remoteDraft || !remoteDraft.id) continue;
+      const existing = await getRecordById(remoteDraft.id);
+      if (!existing) {
+        await saveRecordLocal(remoteDraft, { fromRemoteMerge: true });
+        changed = true;
+      } else if (existing.syncStatus === 'draft') {
+        const remTs = String(remoteDraft.updatedAt || remoteDraft.createdAt || '');
+        const locTs = String(existing.updatedAt || existing.createdAt || '');
+        if (remTs > locTs) {
+          await saveRecordLocal(remoteDraft, { fromRemoteMerge: true });
+          changed = true;
+        }
+      }
+    }
+
+    const closedIds = Object.keys(ws.closedDraftIds || {});
+    for (const cid of closedIds) {
+      const closedTs = String(ws.closedDraftIds[cid] || '');
+      const existing = await getRecordById(cid);
+      if (existing && existing.syncStatus === 'draft') {
+        const locTs = String(existing.updatedAt || existing.createdAt || '');
+        if (!locTs || closedTs >= locTs) {
+          await deleteRecordLocal(cid, { fromRemoteMerge: true });
+          changed = true;
+        }
+      }
+    }
+    return changed;
+  }
+
   function buildInternalDbExportObject() {
     const delMap = getDeletedUsersMap();
+    const cutoff14d = new Date(Date.now() - 14 * 24 * 3600 * 1000).toISOString();
+    const cutoff7d = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
+
+    const rawCrews = getCrewTeamsMap();
+    const exportCrews = {};
+    Object.keys(rawCrews).forEach(cid => {
+      const c = rawCrews[cid];
+      if (!c) return;
+      if (c.active !== false || String(c.updatedAt || '') >= cutoff14d) {
+        exportCrews[cid] = c;
+      }
+    });
+
+    const rawShared = getSharedFichasMap();
+    const exportShared = {};
+    Object.keys(rawShared).forEach(cid => {
+      const ws = ensureCrewWorkspaceShape(cid, rawShared[cid]);
+      const isCrewActive = Boolean(exportCrews[cid] && exportCrews[cid].active !== false);
+      if (isCrewActive || String(ws.updatedAt || '') >= cutoff7d) {
+        exportShared[cid] = {
+          crewId: cid,
+          updatedAt: ws.updatedAt,
+          lastKmFinal: ws.lastKmFinal,
+          lastKmUpdatedAt: ws.lastKmUpdatedAt,
+          currentFicha: ws.currentFicha,
+          closedSessions: pruneMapByTimestamp(ws.closedSessions, 40, v => v && v.closedAt),
+          draftRecords: pruneMapByTimestamp(ws.draftRecords, 25, v => v && (v.updatedAt || v.createdAt)),
+          closedDraftIds: pruneMapByTimestamp(ws.closedDraftIds, 50, v => v)
+        };
+      }
+    });
+
     return {
-      schemaVersion: 2,
+      schemaVersion: 3,
       system: 'SAMU 192 - Orlandia-SP',
       defaultHospital: getSettings().defaultHospital || 'HBSA',
       updatedAt: new Date().toISOString(),
@@ -833,7 +1700,11 @@
       deletedUsernames: Object.keys(delMap),
       users: getLocalUsers(),
       hospitalReceivers: getHospitalReceivers(),
-      patients: getInternalPatientsMap()
+      medicosReguladores: getMedicosReguladores(),
+      patients: getInternalPatientsMap(),
+      viaturaAvarias: getViaturaAvariasMap(),
+      activeCrews: exportCrews,
+      sharedFichas: exportShared
     };
   }
 
@@ -858,10 +1729,14 @@
     });
     setDeletedUsersMap(mergedDel);
 
-    // 2. Mescla usuários (aprovados + pendentes)
+    // 2. Mescla usuários (aprovados + pendentes + assinatura pessoal sincronizada)
     if (Array.isArray(remote.users)) {
       const byUname = new Map();
       getLocalUsers().forEach(u => byUname.set(u.username.toLowerCase(), normalizeUserObj(u)));
+
+      let sigMap = {};
+      try { sigMap = JSON.parse(safeLS.getItem(LS_USER_SIGS) || '{}') || {}; } catch (e) { sigMap = {}; }
+      let sigMapChanged = false;
 
       remote.users.forEach(ruRaw => {
         const ru = normalizeUserObj(ruRaw);
@@ -871,16 +1746,39 @@
           const delTs = mergedDel[ru.username];
           if (!delTs || String(ru.updatedAt) > String(delTs)) {
             byUname.set(ru.username, ru);
+            if (ru.savedSignature && !sigMap[ru.username]) {
+              sigMap[ru.username] = ru.savedSignature;
+              sigMapChanged = true;
+            }
             changedLocal = true;
           }
         } else {
-          // Mantém o registro mais recente (ex: quando Adm aprovou no GitHub)
+          // Mantém o registro mais recente (ex: quando Adm aprovou no GitHub ou colega salvou assinatura)
           if (String(ru.updatedAt || '') >= String(cur.updatedAt || '')) {
+            if (!ru.savedSignature && cur.savedSignature) {
+              ru.savedSignature = cur.savedSignature;
+            }
             byUname.set(ru.username, ru);
+            if (ru.savedSignature && sigMap[ru.username] !== ru.savedSignature) {
+              sigMap[ru.username] = ru.savedSignature;
+              sigMapChanged = true;
+            }
+            changedLocal = true;
+          } else if (!cur.savedSignature && ru.savedSignature) {
+            cur.savedSignature = ru.savedSignature;
+            byUname.set(ru.username, cur);
+            if (!sigMap[ru.username]) {
+              sigMap[ru.username] = ru.savedSignature;
+              sigMapChanged = true;
+            }
             changedLocal = true;
           }
         }
       });
+
+      if (sigMapChanged) {
+        try { safeLS.setItem(LS_USER_SIGS, JSON.stringify(sigMap)); } catch (e) {}
+      }
 
       // Remove quem foi excluído mais recentemente
       Array.from(byUname.keys()).forEach(uname => {
@@ -919,6 +1817,29 @@
       setHospitalReceivers(Array.from(recMap.values()));
     }
 
+    // 3b. Mescla médicos reguladores salvos nas fichas
+    if (Array.isArray(remote.medicosReguladores)) {
+      const medMap = new Map();
+      getMedicosReguladores().forEach(m => medMap.set(m.id || normKey(m.nome), m));
+      remote.medicosReguladores.forEach(rm => {
+        if (!rm || !rm.nome) return;
+        const cleanNome = extractCleanMedicoName(rm.nome);
+        if (!cleanNome) return;
+        const id = rm.id || normKey(cleanNome);
+        const cur = medMap.get(id);
+        if (!cur || String(rm.updatedAt || '') >= String(cur.updatedAt || '')) {
+          medMap.set(id, {
+            id,
+            nome: cleanNome,
+            useCount: Math.max(Number(rm.useCount) || 1, Number(cur && cur.useCount) || 1),
+            updatedAt: rm.updatedAt || (cur && cur.updatedAt) || new Date().toISOString()
+          });
+          changedLocal = true;
+        }
+      });
+      setMedicosReguladores(Array.from(medMap.values()));
+    }
+
     // 4. Mescla base interna de pacientes por CPF
     if (remote.patients && typeof remote.patients === 'object') {
       const patMap = getInternalPatientsMap();
@@ -935,7 +1856,85 @@
       setInternalPatientsMap(patMap);
     }
 
-    // Se o usuário logado atualmente teve seu COREN ou perfil atualizado, atualiza a sessão ativa
+    // 5. Mescla equipes ativas do plantão (activeCrews)
+    if (remote.activeCrews && typeof remote.activeCrews === 'object') {
+      const crewsMap = getCrewTeamsMap();
+      let crewsChanged = false;
+      Object.keys(remote.activeCrews).forEach(cid => {
+        const rc = remote.activeCrews[cid];
+        if (!rc || !Array.isArray(rc.members)) return;
+        const lc = crewsMap[cid];
+        if (!lc || String(rc.updatedAt || '') > String(lc.updatedAt || '')) {
+          crewsMap[cid] = rc;
+          crewsChanged = true;
+        }
+      });
+
+      // Se um integrante entrou em uma equipe mais recente, desativa vínculos antigos conflitantes
+      const activeEntries = Object.values(crewsMap)
+        .filter(c => c && c.active !== false && Array.isArray(c.members))
+        .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+      const claimedMembers = new Set();
+      activeEntries.forEach(c => {
+        const hasClaimed = c.members.some(m => claimedMembers.has(String(m).toLowerCase()));
+        if (hasClaimed) {
+          crewsMap[c.crewId] = Object.assign({}, c, { active: false });
+          crewsChanged = true;
+        } else {
+          c.members.forEach(m => claimedMembers.add(String(m).toLowerCase()));
+        }
+      });
+
+      if (crewsChanged) {
+        setCrewTeamsMap(crewsMap);
+        changedLocal = true;
+      }
+    }
+
+    // 6. Mescla fichas compartilhadas da equipe (campo a campo via fieldTs)
+    if (remote.sharedFichas && typeof remote.sharedFichas === 'object') {
+      const sharedMap = getSharedFichasMap();
+      let sharedChanged = false;
+      Object.keys(remote.sharedFichas).forEach(cid => {
+        const rWs = remote.sharedFichas[cid];
+        if (!rWs || typeof rWs !== 'object') return;
+        const mergedWs = mergeCrewWorkspaces(sharedMap[cid], rWs);
+        sharedMap[cid] = mergedWs;
+        sharedChanged = true;
+      });
+      if (sharedChanged) {
+        setSharedFichasMap(sharedMap);
+        changedLocal = true;
+      }
+    }
+
+    // 7. Mescla avarias salvas de cada viatura (amassados, riscados, danificados)
+    if (remote.viaturaAvarias && typeof remote.viaturaAvarias === 'object') {
+      const localAv = getViaturaAvariasMap();
+      let avChanged = false;
+      Object.keys(remote.viaturaAvarias).forEach(vKey => {
+        const rEntry = remote.viaturaAvarias[vKey];
+        if (!rEntry || typeof rEntry !== 'object') return;
+        const lEntry = localAv[vKey];
+        if (!lEntry || String(rEntry.updatedAt || '') > String(lEntry.updatedAt || '')) {
+          localAv[vKey] = {
+            key: vKey,
+            viaturaId: String(rEntry.viaturaId || vKey),
+            outraPlaca: String(rEntry.outraPlaca || ''),
+            marks: sanitizeAvariasList(rEntry.marks),
+            updatedAt: rEntry.updatedAt || new Date().toISOString(),
+            updatedBy: String(rEntry.updatedBy || '')
+          };
+          avChanged = true;
+        }
+      });
+      if (avChanged) {
+        setViaturaAvariasMap(localAv);
+        changedLocal = true;
+      }
+    }
+
+    // Se o usuário logado atualmente teve seu COREN, perfil ou KM da equipe atualizado, atualiza a sessão ativa
     const sess = getSession();
     if (sess && sess.username) {
       const freshMe = getLocalUsers().find(u => u.username.toLowerCase() === sess.username.toLowerCase());
@@ -943,11 +1942,24 @@
         setSession(Object.assign({}, sess, {
           name: freshMe.name,
           role: freshMe.role,
+          subRole: getUserSubRole(freshMe),
           coren: freshMe.coren || freshMe.councilId || '',
           councilId: freshMe.coren || freshMe.councilId || '',
           cpf: freshMe.cpf || ''
         }));
       }
+      const myCrew = getActiveCrewForUser(sess.username);
+      if (myCrew) {
+        const myWs = getCrewWorkspace(myCrew.crewId);
+        if (myWs && myWs.lastKmFinal) {
+          const curKmNum = Number(getLastKmFinal() || 0);
+          const wsKmNum = Number(myWs.lastKmFinal || 0);
+          if (!curKmNum || wsKmNum >= curKmNum) {
+            setLastKmFinal(myWs.lastKmFinal);
+          }
+        }
+      }
+      syncAllCrewDraftsToLocalRecords().catch(() => {});
     }
 
     return changedLocal;
@@ -966,10 +1978,6 @@
     }
 
     const runSync = async () => {
-      let remoteJson = null;
-      let fileSha = '';
-      let fileMissingOnRepo = false;
-
       const apiHeaders = {
         'Accept': 'application/vnd.github+json'
       };
@@ -977,43 +1985,57 @@
         apiHeaders['Authorization'] = `Bearer ${cfg.token}`;
       }
 
-      // 1. Consulta (PULL) no GitHub
-      if (cfg.owner && cfg.repo && cfg.token) {
-        const apiUrl = `https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/contents/${cfg.path.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(cfg.branch)}&_=${Date.now()}`;
-        try {
-          const meta = await genericHttpJson('GET', apiUrl, apiHeaders);
-          if (meta && meta.content) {
-            fileSha = meta.sha || '';
-            remoteJson = JSON.parse(b64ToUtf8(meta.content));
-          }
-        } catch (err) {
-          if (String(err.message || '').includes('404')) {
-            fileMissingOnRepo = true;
-          } else {
-            throw err;
-          }
-        }
-      } else if (cfg.rawUrl) {
-        const sep = cfg.rawUrl.includes('?') ? '&' : '?';
-        try {
-          remoteJson = await genericHttpJson('GET', `${cfg.rawUrl}${sep}_=${Date.now()}`, {});
-        } catch (errRaw) {
-          if (String(errRaw.message || '').includes('404')) {
-            fileMissingOnRepo = true;
-          } else {
-            throw errRaw;
-          }
-        }
-      }
-
-      if (remoteJson) {
-        mergeRemoteDatabaseIntoInternal(remoteJson);
-      }
-
-      // 2. Gravação (PUSH) no GitHub se tiver Token e mudanças locais pendentes (ou arquivo novo)
+      let remoteJson = null;
+      let fileSha = '';
+      let fileMissingOnRepo = false;
       let pushed = false;
-      const shouldPush = Boolean(cfg.owner && cfg.repo && cfg.token && (opts.pushChanges || getGitHubMeta().dirty || fileMissingOnRepo));
-      if (shouldPush) {
+      const maxAttempts = 3;
+
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        remoteJson = null;
+        fileSha = '';
+        fileMissingOnRepo = false;
+
+        // 1. Consulta (PULL) no GitHub
+        if (cfg.owner && cfg.repo && cfg.token) {
+          const apiUrl = `https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/contents/${cfg.path.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(cfg.branch)}&_=${Date.now()}_${attempt}`;
+          try {
+            const meta = await genericHttpJson('GET', apiUrl, apiHeaders);
+            if (meta && meta.content) {
+              fileSha = meta.sha || '';
+              remoteJson = JSON.parse(b64ToUtf8(meta.content));
+            }
+          } catch (err) {
+            if (String(err.message || '').includes('404')) {
+              fileMissingOnRepo = true;
+            } else {
+              throw err;
+            }
+          }
+        } else if (cfg.rawUrl) {
+          const sep = cfg.rawUrl.includes('?') ? '&' : '?';
+          try {
+            remoteJson = await genericHttpJson('GET', `${cfg.rawUrl}${sep}_=${Date.now()}_${attempt}`, {});
+          } catch (errRaw) {
+            if (String(errRaw.message || '').includes('404')) {
+              fileMissingOnRepo = true;
+            } else {
+              throw errRaw;
+            }
+          }
+        }
+
+        if (remoteJson) {
+          mergeRemoteDatabaseIntoInternal(remoteJson);
+          await syncAllCrewDraftsToLocalRecords();
+        }
+
+        // 2. Gravação (PUSH) no GitHub se tiver Token e mudanças locais pendentes (ou arquivo novo)
+        const shouldPush = Boolean(cfg.owner && cfg.repo && cfg.token && (opts.pushChanges || getGitHubMeta().dirty || fileMissingOnRepo));
+        if (!shouldPush) {
+          break;
+        }
+
         const putUrl = `https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/contents/${cfg.path.split('/').map(encodeURIComponent).join('/')}`;
         const exportPayload = buildInternalDbExportObject();
         const bodyObj = {
@@ -1023,17 +2045,28 @@
         };
         if (fileSha) bodyObj.sha = fileSha;
 
-        await genericHttpJson(
-          'PUT',
-          putUrl,
-          Object.assign({}, apiHeaders, { 'Content-Type': 'application/json; charset=utf-8' }),
-          JSON.stringify(bodyObj)
-        );
-        pushed = true;
+        try {
+          await genericHttpJson(
+            'PUT',
+            putUrl,
+            Object.assign({}, apiHeaders, { 'Content-Type': 'application/json; charset=utf-8' }),
+            JSON.stringify(bodyObj)
+          );
+          pushed = true;
+          break;
+        } catch (putErr) {
+          const msg = String((putErr && putErr.message) || '');
+          const isShaConflict = msg.includes('409') || (fileSha && msg.includes('422'));
+          if (isShaConflict && attempt < maxAttempts - 1) {
+            await new Promise(res => setTimeout(res, 250 * (attempt + 1)));
+            continue;
+          }
+          throw putErr;
+        }
       }
 
       const now = new Date().toISOString();
-      setGitHubMeta({ dirty: shouldPush ? false : getGitHubMeta().dirty, lastSyncAt: now, lastError: '' });
+      setGitHubMeta({ dirty: pushed ? false : (opts.pushChanges ? false : getGitHubMeta().dirty), lastSyncAt: now, lastError: '' });
       return {
         ok: true,
         pulled: Boolean(remoteJson),
@@ -1241,20 +2274,37 @@
   }
 
   function getSavedSignature(username) {
+    const uname = String(username || '').trim().toLowerCase();
+    if (!uname) return '';
     try {
       const map = JSON.parse(safeLS.getItem(LS_USER_SIGS) || '{}');
-      return map[String(username || '').toLowerCase()] || '';
-    } catch (e) {
-      return '';
-    }
+      if (map && map[uname]) return map[uname];
+    } catch (e) {}
+    try {
+      const found = getLocalUsers().find(u => u.username.toLowerCase() === uname);
+      if (found && found.savedSignature) return found.savedSignature;
+    } catch (e2) {}
+    return '';
   }
 
   function savePersonalSignature(username, dataUrl) {
+    const uname = String(username || '').trim().toLowerCase();
+    if (!uname) return;
+    const cleanSig = dataUrl || '';
     try {
       const map = JSON.parse(safeLS.getItem(LS_USER_SIGS) || '{}');
-      map[String(username || '').toLowerCase()] = dataUrl || '';
+      map[uname] = cleanSig;
       safeLS.setItem(LS_USER_SIGS, JSON.stringify(map));
     } catch (e) {}
+    try {
+      const found = getLocalUsers().find(u => u.username.toLowerCase() === uname);
+      if (found && String(found.savedSignature || '') !== cleanSig) {
+        upsertLocalUser(Object.assign({}, found, {
+          savedSignature: cleanSig,
+          updatedAt: new Date().toISOString()
+        }), false);
+      }
+    } catch (e2) {}
   }
 
   /* ===================== API GOOGLE APPS SCRIPT (DRIVE PDFs) ===================== */
@@ -1321,6 +2371,7 @@
         password: byUser.password,
         name: byUser.name,
         role: byUser.role,
+        subRole: getUserSubRole(byUser),
         cpf: byUser.cpf || '',
         coren: byUser.coren || byUser.councilId || '',
         councilId: byUser.coren || byUser.councilId || '',
@@ -1353,19 +2404,47 @@
   }
 
   /* ===================== REGISTROS DE FICHAS E CHECK LISTS (SQLite Nativo APK + IndexedDB) ===================== */
-  async function saveRecordLocal(record) {
-    // Alimenta automaticamente a Base Interna Offline com o Recebedor do Hospital e o Paciente (CPF)
+  async function saveRecordLocal(record, opts) {
+    const isRemoteMerge = Boolean(opts && opts.fromRemoteMerge);
+    // Alimenta automaticamente a Base Interna Offline com o Recebedor do Hospital, Médico Regulador e o Paciente (CPF)
     if (record && record.type === 'ficha' && record.data) {
       if (record.data.recebidoPorNome && String(record.data.recebidoPorNome).trim()) {
         upsertHospitalReceiver({
           nome: record.data.recebidoPorNome,
           corenCrm: record.data.recebidoCorenCrm || '',
           hospital: record.data.destino || 'HBSA'
-        });
+        }, isRemoteMerge);
+      }
+      if (record.data.medicoRegulador && String(record.data.medicoRegulador).trim()) {
+        upsertMedicoRegulador({
+          nome: record.data.medicoRegulador
+        }, isRemoteMerge);
       }
       if (record.data.vitimaCpf && record.data.vitimaNome) {
-        upsertPatientInInternalDb(record.data);
+        upsertPatientInInternalDb(record.data, isRemoteMerge);
       }
+    }
+
+    // Sincroniza rascunhos de fichas compartilhadas da equipe (📂 Rascunhos) entre os integrantes do plantão
+    if (!isRemoteMerge && record && record.type === 'ficha' && record.crewId && record.id) {
+      const sharedMap = getSharedFichasMap();
+      const ws = ensureCrewWorkspaceShape(record.crewId, sharedMap[record.crewId]);
+      const nowIso = record.updatedAt || new Date().toISOString();
+      if (record.syncStatus === 'draft') {
+        const cleanDraft = JSON.parse(JSON.stringify(record));
+        delete cleanDraft.pendingPdfBase64;
+        ws.draftRecords[record.id] = cleanDraft;
+        delete ws.closedDraftIds[record.id];
+      } else {
+        delete ws.draftRecords[record.id];
+        ws.closedDraftIds[record.id] = nowIso;
+      }
+      ws.draftRecords = pruneMapByTimestamp(ws.draftRecords, 25, v => v && (v.updatedAt || v.createdAt));
+      ws.closedDraftIds = pruneMapByTimestamp(ws.closedDraftIds, 50, v => v);
+      ws.updatedAt = nowIso;
+      sharedMap[record.crewId] = ws;
+      setSharedFichasMap(sharedMap);
+      markGitHubDirty();
     }
 
     if (isNativeSqliteActive()) {
@@ -1417,7 +2496,28 @@
     });
   }
 
-  async function deleteRecordLocal(id) {
+  async function deleteRecordLocal(id, opts) {
+    const isRemoteMerge = Boolean(opts && opts.fromRemoteMerge);
+    if (!isRemoteMerge && id) {
+      const sharedMap = getSharedFichasMap();
+      let sharedTouched = false;
+      const nowIso = new Date().toISOString();
+      Object.keys(sharedMap).forEach(cid => {
+        const ws = ensureCrewWorkspaceShape(cid, sharedMap[cid]);
+        if (ws.draftRecords && ws.draftRecords[id]) {
+          delete ws.draftRecords[id];
+          ws.closedDraftIds[id] = nowIso;
+          ws.updatedAt = nowIso;
+          sharedMap[cid] = ws;
+          sharedTouched = true;
+        }
+      });
+      if (sharedTouched) {
+        setSharedFichasMap(sharedMap);
+        markGitHubDirty();
+      }
+    }
+
     if (isNativeSqliteActive()) {
       try {
         window.AndroidBridge.dbDeleteRecord(String(id || ''));
@@ -1475,7 +2575,10 @@
     }
     const uname = user.username.toLowerCase();
     return all.filter(rec => {
-      if (String(rec.createdBy || '').toLowerCase() !== uname) return false;
+      const isCreator = String(rec.createdBy || '').toLowerCase() === uname;
+      const isCrewMate = rec.type === 'ficha' && Array.isArray(rec.crewMembers) &&
+        rec.crewMembers.some(m => String(m || '').toLowerCase() === uname);
+      if (!isCreator && !isCrewMate) return false;
       if (user.role === 'condutor' && rec.type === 'checklist_enfermagem') return false;
       if (user.role === 'enfermagem' && rec.type === 'checklist_condutor') return false;
       return true;
@@ -1810,6 +2913,8 @@
     reloadForOtaUpdate,
     buildInternalDbExportObject,
     importInternalDbJson,
+    getUserSubRole,
+    getUserRoleLabel,
     getLocalUsers,
     setLocalUsers,
     upsertLocalUser,
@@ -1818,9 +2923,26 @@
     registerUserRequest,
     approveUser,
     rejectUser,
+    validateCrewSelection,
+    getActiveCrewForUser,
+    setActiveCrewForUsers,
+    clearActiveCrewForUser,
+    getCrewWorkspace,
+    hasMeaningfulFichaProgress,
+    mergeSharedFichaDocs,
+    saveCrewCurrentFicha,
+    closeCrewCurrentSession,
+    syncAllCrewDraftsToLocalRecords,
     getHospitalReceivers,
     upsertHospitalReceiver,
     deleteHospitalReceiver,
+    getMedicosReguladores,
+    upsertMedicoRegulador,
+    deleteMedicoRegulador,
+    getViaturaStorageKey,
+    getViaturaAvariasMap,
+    getViaturaAvarias,
+    saveViaturaAvarias,
     getInternalPatientsMap,
     upsertPatientInInternalDb,
     getSession,

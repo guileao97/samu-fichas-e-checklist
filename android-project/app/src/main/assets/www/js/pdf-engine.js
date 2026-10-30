@@ -121,7 +121,7 @@
     const [
       samuLogo, orlandiaLogo, burnImg, watermarkImg,
       pupilL, pupilM, pupilS,
-      sigTermoImg, sigRecebidoImg, sigEnfImg, sigCondImg
+      sigTermoImg, sigRecebidoImg, sigEnfImg, sigEnf2Img, sigCondImg, sigCond2Img
     ] = await Promise.all([
       loadImg(assets.samu_logo),
       loadImg(assets.orlandia_logo),
@@ -133,7 +133,9 @@
       loadImg(d.sigTermo),
       loadImg(d.sigRecebido),
       loadImg(d.sigEnfermagem),
-      loadImg(d.sigCondutor)
+      loadImg(d.sigEnfermagem2),
+      loadImg(d.sigCondutor),
+      loadImg(d.sigCondutor2)
     ]);
 
     const W = 1654, H = 2339;
@@ -918,27 +920,107 @@
     g2.font = 'bold 19px Arial, sans-serif';
     fitText(g2, d.recebidoCorenCrm || '', M + fc[1] + 224, corenY + 28, (fc[2] - fc[1]) - 232);
 
-    // Coluna Enfermagem SAMU
-    if (sigEnfImg) {
-      drawSignatureFit(g2, sigEnfImg, M + fc[2] + 16, y2 + 48, (fc[3] - fc[2]) - 32, footH - 115);
-    }
-    g2.font = 'bold 18px Arial, sans-serif';
-    g2.textAlign = 'center';
-    if (d.enfermagemNome) {
-      fitText(g2, d.enfermagemNome, M + (fc[2] + fc[3]) / 2, y2 + footH - 38, (fc[3] - fc[2]) - 16);
-    }
-    if (d.enfermagemCoren) {
-      g2.font = '17px Arial, sans-serif';
-      fitText(g2, d.enfermagemCoren, M + (fc[2] + fc[3]) / 2, y2 + footH - 14, (fc[3] - fc[2]) - 16);
+    // Coluna Enfermagem SAMU (suporta 1 profissional ou 2 profissionais: Enfermeiro(a) + Téc. Enfermagem)
+    const enfBodyTop = y2 + 38;
+    const enfBodyBottom = y2 + footH;
+    const enfColW = fc[3] - fc[2];
+    const enfCenterX = M + (fc[2] + fc[3]) / 2;
+    const hasEnf2 = Boolean(
+      String(d.enfermagem2Nome || '').trim() ||
+      String(d.enfermagem2Coren || '').trim() ||
+      sigEnf2Img
+    );
+
+    if (hasEnf2) {
+      const midEnfY = enfBodyTop + (enfBodyBottom - enfBodyTop) / 2;
+      const halfH = midEnfY - enfBodyTop;
+      g2.beginPath();
+      g2.moveTo(M + fc[2], midEnfY);
+      g2.lineTo(M + fc[3], midEnfY);
+      g2.stroke();
+
+      if (sigEnfImg) {
+        drawSignatureFit(g2, sigEnfImg, M + fc[2] + 14, enfBodyTop + 4, enfColW - 28, Math.max(34, halfH - 42));
+      }
+      g2.textAlign = 'center';
+      if (d.enfermagemNome) {
+        g2.font = 'bold 15px Arial, sans-serif';
+        fitText(g2, d.enfermagemNome, enfCenterX, midEnfY - 21, enfColW - 14);
+      }
+      if (d.enfermagemCoren) {
+        g2.font = '14px Arial, sans-serif';
+        fitText(g2, d.enfermagemCoren, enfCenterX, midEnfY - 5, enfColW - 14);
+      }
+
+      if (sigEnf2Img) {
+        drawSignatureFit(g2, sigEnf2Img, M + fc[2] + 14, midEnfY + 4, enfColW - 28, Math.max(34, halfH - 42));
+      }
+      if (d.enfermagem2Nome) {
+        g2.font = 'bold 15px Arial, sans-serif';
+        fitText(g2, d.enfermagem2Nome, enfCenterX, enfBodyBottom - 21, enfColW - 14);
+      }
+      if (d.enfermagem2Coren) {
+        g2.font = '14px Arial, sans-serif';
+        fitText(g2, d.enfermagem2Coren, enfCenterX, enfBodyBottom - 5, enfColW - 14);
+      }
+    } else {
+      if (sigEnfImg) {
+        drawSignatureFit(g2, sigEnfImg, M + fc[2] + 16, y2 + 48, enfColW - 32, footH - 115);
+      }
+      g2.font = 'bold 18px Arial, sans-serif';
+      g2.textAlign = 'center';
+      if (d.enfermagemNome) {
+        fitText(g2, d.enfermagemNome, enfCenterX, y2 + footH - 38, enfColW - 16);
+      }
+      if (d.enfermagemCoren) {
+        g2.font = '17px Arial, sans-serif';
+        fitText(g2, d.enfermagemCoren, enfCenterX, y2 + footH - 14, enfColW - 16);
+      }
     }
 
-    // Coluna Condutor Socorrista SAMU
-    if (sigCondImg) {
-      drawSignatureFit(g2, sigCondImg, M + fc[3] + 16, y2 + 48, (fc[4] - fc[3]) - 32, footH - 110);
-    }
-    g2.font = 'bold 18px Arial, sans-serif';
-    if (d.condutorNome) {
-      fitText(g2, d.condutorNome, M + (fc[3] + fc[4]) / 2, y2 + footH - 22, (fc[4] - fc[3]) - 16);
+    // Coluna Condutor Socorrista SAMU (suporta 1 Condutor ou 2 Condutores no plantão)
+    const condBodyTop = y2 + 38;
+    const condBodyBottom = y2 + footH;
+    const condColW = fc[4] - fc[3];
+    const condCenterX = M + (fc[3] + fc[4]) / 2;
+    const hasCond2 = Boolean(
+      String(d.condutor2Nome || '').trim() ||
+      sigCond2Img
+    );
+
+    if (hasCond2) {
+      const midCondY = condBodyTop + (condBodyBottom - condBodyTop) / 2;
+      const halfCondH = midCondY - condBodyTop;
+      g2.beginPath();
+      g2.moveTo(M + fc[3], midCondY);
+      g2.lineTo(M + fc[4], midCondY);
+      g2.stroke();
+
+      if (sigCondImg) {
+        drawSignatureFit(g2, sigCondImg, M + fc[3] + 14, condBodyTop + 4, condColW - 28, Math.max(38, halfCondH - 28));
+      }
+      g2.textAlign = 'center';
+      if (d.condutorNome) {
+        g2.font = 'bold 16px Arial, sans-serif';
+        fitText(g2, d.condutorNome, condCenterX, midCondY - 9, condColW - 14);
+      }
+
+      if (sigCond2Img) {
+        drawSignatureFit(g2, sigCond2Img, M + fc[3] + 14, midCondY + 4, condColW - 28, Math.max(38, halfCondH - 28));
+      }
+      if (d.condutor2Nome) {
+        g2.font = 'bold 16px Arial, sans-serif';
+        fitText(g2, d.condutor2Nome, condCenterX, condBodyBottom - 9, condColW - 14);
+      }
+    } else {
+      if (sigCondImg) {
+        drawSignatureFit(g2, sigCondImg, M + fc[3] + 16, y2 + 48, condColW - 32, footH - 110);
+      }
+      g2.textAlign = 'center';
+      g2.font = 'bold 18px Arial, sans-serif';
+      if (d.condutorNome) {
+        fitText(g2, d.condutorNome, condCenterX, y2 + footH - 22, condColW - 16);
+      }
     }
     g2.textAlign = 'left';
 
@@ -950,12 +1032,13 @@
    * ========================================================================== */
   async function renderCondutorCanvases(d) {
     const assets = window.SAMU_ASSETS || {};
-    const [samuLogo, orlandiaLogo, ambImg, sigDiurnoImg, sigNoturnoImg] = await Promise.all([
+    const [samuLogo, orlandiaLogo, ambImg, sigDiurnoImg, sigNoturnoImg, sigAbastImg] = await Promise.all([
       loadImg(assets.samu_logo),
       loadImg(assets.orlandia_logo),
       loadImg(assets.ambulance_diagram),
       loadImg(d.sigCondutorDiurno),
-      loadImg(d.sigCondutorNoturno)
+      loadImg(d.sigCondutorNoturno),
+      loadImg(d.sigAbastecimento)
     ]);
 
     const W = 1654, H = 2339, M = 48, CW = W - M * 2;
@@ -1004,12 +1087,43 @@
     fitText(g, d.condutorNoturno || '', M + CW / 2 + 195, y + 29, CW / 2 - 210);
 
     y += 44;
-    // Abastecimento
-    g.strokeRect(M, y, CW, 44);
+    // Abastecimento (com suporte a Assinatura desenhada com o dedo na tela)
+    const abastBoxH = 64;
+    g.strokeRect(M, y, CW, abastBoxH);
     g.font = '20px Arial, sans-serif';
-    g.fillText(`Abastecimento (litros): ${d.abastLitros || '______'}      Hora: ${d.abastHora || '_____'}      KM: ${d.abastKm || '_________'}      ASS: ${d.abastAss || '____________________'}`, M + 14, y + 29);
+    if (d.abastRealizado === 'NAO' && !d.abastLitros && !d.abastHora && !d.abastKm && !d.abastAss && !sigAbastImg) {
+      g.fillText('Abastecimento (litros): NÃO REALIZADO      Hora: ---      KM: ---      ASS: ---', M + 14, y + 39);
+    } else {
+      g.fillText('Abastecimento (litros):', M + 14, y + 39);
+      g.font = 'bold 20px Arial, sans-serif';
+      fitText(g, d.abastLitros || '______', M + 235, y + 39, 200);
 
-    y += 54;
+      g.font = '20px Arial, sans-serif';
+      g.fillText('Hora:', M + 455, y + 39);
+      g.font = 'bold 20px Arial, sans-serif';
+      fitText(g, d.abastHora || '_____', M + 515, y + 39, 165);
+
+      g.font = '20px Arial, sans-serif';
+      g.fillText('KM:', M + 700, y + 39);
+      g.font = 'bold 20px Arial, sans-serif';
+      fitText(g, d.abastKm || '_________', M + 748, y + 39, 250);
+
+      g.font = '20px Arial, sans-serif';
+      g.fillText('ASS:', M + 1020, y + 39);
+      g.beginPath();
+      g.moveTo(M + 1076, y + 48);
+      g.lineTo(M + CW - 18, y + 48);
+      g.stroke();
+
+      if (sigAbastImg) {
+        drawSignatureFit(g, sigAbastImg, M + 1082, y + 4, CW - 1106, 54);
+      } else if (d.abastAss) {
+        g.font = 'bold 19px Arial, sans-serif';
+        fitText(g, d.abastAss, M + 1084, y + 39, CW - 1108);
+      }
+    }
+
+    y += abastBoxH + 10;
     // Tabela de 29 linhas (Esquerda: 29 itens | Direita: 20 itens + Assinaturas Diurno/Noturno)
     const rowH = 62;
     const halfW = CW / 2;

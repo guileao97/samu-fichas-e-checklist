@@ -11,19 +11,33 @@
   let fichaState = null;
   let editingFichaId = null;
 
+  // Estado da Equipe do Plantão (2 ou até 3 integrantes) e sincronização em tempo real da Ficha
+  let activeCrew = null;
+  let currentCrewSessionId = '';
+  let currentCrewIsLoadedRecord = false;
+  let currentFichaFieldTs = {};
+  let lastSyncedFichaSnapshot = null;
+  let crewPushTimer = null;
+  let manualShowSecondEnf = false;
+  let manualShowSecondCond = false;
+
   let condutorState = null;
   let editingCondutorId = null;
   let activeDamageCode = 'A';
+  let condutorValidationActive = false;
 
   let enfermagemState = null;
   let editingEnfermagemId = null;
   let activeEnfSectionIdx = 0;
+  let enfermagemValidationActive = false;
 
   // Estado do filtro de histórico e listas rápidas
   let historySearch = '';
   let historyTypeFilter = 'all';
   let historyUserFilter = 'all';
   let medFilterQuery = '';
+  let alergiaFilterQuery = '';
+  let openSelectBoxKey = '';
   let cachedDraftCount = 0;
 
   // Estado do modal de visualização de PDF e Foto p/ Regulação Médica
@@ -81,10 +95,11 @@
         dlg.style.zIndex = '150';
         document.body.appendChild(dlg);
       }
+      const hasNewlines = String(message || '').includes('\n');
       dlg.innerHTML = `
-        <div class="card" style="width:100%; max-width:380px; margin:0; padding:20px; text-align:center;">
+        <div class="card" style="width:100%; max-width:400px; margin:0; padding:20px; text-align:center;">
           <div style="font-size:1.5rem; margin-bottom:6px;">${isAlertOnly ? 'ℹ️' : '⚠️'}</div>
-          <p style="margin:0 0 16px; font-weight:700; font-size:0.96rem; color:var(--text);">${escapeHtml(message)}</p>
+          <p style="margin:0 0 16px; font-weight:700; font-size:0.93rem; color:var(--text); white-space:pre-line; text-align:${hasNewlines ? 'left' : 'center'}; line-height:1.45;">${escapeHtml(message)}</p>
           <div style="display:flex; gap:8px; justify-content:center;">
             ${isAlertOnly ? '' : '<button type="button" class="btn btn-secondary" id="dlg-btn-no" style="flex:1;">Cancelar</button>'}
             <button type="button" class="btn btn-primary" id="dlg-btn-yes" style="flex:1;">${isAlertOnly ? 'Entendi' : 'Confirmar'}</button>
@@ -123,13 +138,105 @@
     return `${d.slice(0, 5)}-${d.slice(5)}`;
   }
 
+  function applyCrewToFichaState(targetFicha, crew, forceReplaceSlots) {
+    if (!targetFicha || !crew) return targetFicha;
+
+    const n1 = (crew.nursingSlots && crew.nursingSlots[0]) || null;
+    const n2 = (crew.nursingSlots && crew.nursingSlots[1]) || null;
+    const c1 = (crew.driverSlots && crew.driverSlots[0]) || null;
+    const c2 = (crew.driverSlots && crew.driverSlots[1]) || null;
+
+    const prevEnf1User = String(targetFicha.enfermagemSlot1User || '').toLowerCase();
+    const prevEnf2User = String(targetFicha.enfermagemSlot2User || '').toLowerCase();
+    const prevEnf1Sig = targetFicha.sigEnfermagem || '';
+    const prevEnf2Sig = targetFicha.sigEnfermagem2 || '';
+
+    if (n1) {
+      if (forceReplaceSlots || !targetFicha.enfermagemNome) {
+        targetFicha.enfermagemNome = n1.name;
+      }
+      if (forceReplaceSlots || !targetFicha.enfermagemCoren) {
+        targetFicha.enfermagemCoren = n1.coren || '';
+      }
+      targetFicha.enfermagemSlot1User = n1.username;
+      if (prevEnf1User === n1.username && prevEnf1Sig) {
+        targetFicha.sigEnfermagem = prevEnf1Sig;
+      } else if (prevEnf2User === n1.username && prevEnf2Sig) {
+        targetFicha.sigEnfermagem = prevEnf2Sig;
+      } else if (forceReplaceSlots || !targetFicha.sigEnfermagem) {
+        targetFicha.sigEnfermagem = n1.savedSignature || '';
+      }
+    }
+
+    if (n2) {
+      if (forceReplaceSlots || !targetFicha.enfermagem2Nome) {
+        targetFicha.enfermagem2Nome = n2.name;
+      }
+      if (forceReplaceSlots || !targetFicha.enfermagem2Coren) {
+        targetFicha.enfermagem2Coren = n2.coren || '';
+      }
+      targetFicha.enfermagemSlot2User = n2.username;
+      if (prevEnf2User === n2.username && prevEnf2Sig) {
+        targetFicha.sigEnfermagem2 = prevEnf2Sig;
+      } else if (prevEnf1User === n2.username && prevEnf1Sig) {
+        targetFicha.sigEnfermagem2 = prevEnf1Sig;
+      } else if (forceReplaceSlots || !targetFicha.sigEnfermagem2) {
+        targetFicha.sigEnfermagem2 = n2.savedSignature || '';
+      }
+    } else if (forceReplaceSlots) {
+      targetFicha.enfermagem2Nome = '';
+      targetFicha.enfermagem2Coren = '';
+      targetFicha.sigEnfermagem2 = '';
+      targetFicha.enfermagemSlot2User = '';
+    }
+
+    const prevCond1User = String(targetFicha.condutorSlot1User || '').toLowerCase();
+    const prevCond2User = String(targetFicha.condutorSlot2User || '').toLowerCase();
+    const prevCond1Sig = targetFicha.sigCondutor || '';
+    const prevCond2Sig = targetFicha.sigCondutor2 || '';
+
+    if (c1) {
+      if (forceReplaceSlots || !targetFicha.condutorNome) {
+        targetFicha.condutorNome = c1.name;
+      }
+      targetFicha.condutorSlot1User = c1.username;
+      if (prevCond1User === c1.username && prevCond1Sig) {
+        targetFicha.sigCondutor = prevCond1Sig;
+      } else if (prevCond2User === c1.username && prevCond2Sig) {
+        targetFicha.sigCondutor = prevCond2Sig;
+      } else if (forceReplaceSlots || !targetFicha.sigCondutor) {
+        targetFicha.sigCondutor = c1.savedSignature || '';
+      }
+    }
+
+    if (c2) {
+      if (forceReplaceSlots || !targetFicha.condutor2Nome) {
+        targetFicha.condutor2Nome = c2.name;
+      }
+      targetFicha.condutorSlot2User = c2.username;
+      if (prevCond2User === c2.username && prevCond2Sig) {
+        targetFicha.sigCondutor2 = prevCond2Sig;
+      } else if (prevCond1User === c2.username && prevCond1Sig) {
+        targetFicha.sigCondutor2 = prevCond1Sig;
+      } else if (forceReplaceSlots || !targetFicha.sigCondutor2) {
+        targetFicha.sigCondutor2 = c2.savedSignature || '';
+      }
+    } else if (forceReplaceSlots) {
+      targetFicha.condutor2Nome = '';
+      targetFicha.sigCondutor2 = '';
+      targetFicha.condutorSlot2User = '';
+    }
+
+    return targetFicha;
+  }
+
   function createEmptyFicha() {
     const isEnf = currentUser && currentUser.role === 'enfermagem';
     const isCond = currentUser && currentUser.role === 'condutor';
     const savedSig = currentUser ? window.SamuStorage.getSavedSignature(currentUser.username) : '';
     const lastKm = window.SamuStorage.getLastKmFinal() || '';
 
-    return {
+    const blank = {
       data: todayISO(),
       kmInicial: lastKm,
       kmFinal: '',
@@ -233,10 +340,27 @@
       enfermagemNome: isEnf ? currentUser.name : '',
       enfermagemCoren: isEnf ? (currentUser.coren || currentUser.councilId || '') : '',
       sigEnfermagem: isEnf ? savedSig : '',
+      enfermagemSlot1User: isEnf ? currentUser.username : '',
+
+      enfermagem2Nome: '',
+      enfermagem2Coren: '',
+      sigEnfermagem2: '',
+      enfermagemSlot2User: '',
 
       condutorNome: isCond ? currentUser.name : '',
-      sigCondutor: isCond ? savedSig : ''
+      sigCondutor: isCond ? savedSig : '',
+      condutorSlot1User: isCond ? currentUser.username : '',
+
+      condutor2Nome: '',
+      sigCondutor2: '',
+      condutorSlot2User: ''
     };
+
+    const crew = currentUser ? window.SamuStorage.getActiveCrewForUser(currentUser.username) : null;
+    if (crew) {
+      applyCrewToFichaState(blank, crew, true);
+    }
+    return blank;
   }
 
   function normalizeFichaData(raw) {
@@ -283,23 +407,54 @@
     return Object.keys(h).some(k => Boolean(h[k]));
   }
 
+  function applySavedAvariasToCondutorState(state, forceOverwrite) {
+    const d = state || condutorState;
+    if (!d) return d;
+    const vid = d.viaturaId || 'master_29';
+    const oPlaca = d.outraPlaca || '';
+    const isDiurno = d.turnoAtivo !== 'NOTURNO';
+    const activeKey = isDiurno ? 'avariasDiurno' : 'avariasNoturno';
+    const inactiveKey = isDiurno ? 'avariasNoturno' : 'avariasDiurno';
+    const inactiveItems = isDiurno ? d.itensNoturno : d.itensDiurno;
+
+    const avMap = window.SamuStorage.getViaturaAvariasMap ? window.SamuStorage.getViaturaAvariasMap() : {};
+    const vKey = window.SamuStorage.getViaturaStorageKey ? window.SamuStorage.getViaturaStorageKey(vid, oPlaca) : vid;
+    const hasSavedEntry = Object.prototype.hasOwnProperty.call(avMap, vKey);
+    const savedMarks = window.SamuStorage.getViaturaAvarias ? window.SamuStorage.getViaturaAvarias(vid, oPlaca) : [];
+
+    if (forceOverwrite || hasSavedEntry) {
+      d[activeKey] = savedMarks;
+      if (forceOverwrite && (!inactiveItems || Object.keys(inactiveItems).length === 0)) {
+        d[inactiveKey] = [];
+      }
+    } else if (!Array.isArray(d[activeKey]) || d[activeKey].length === 0) {
+      d[activeKey] = savedMarks;
+    } else if (Array.isArray(d[activeKey]) && d[activeKey].length > 0 && window.SamuStorage.saveViaturaAvarias) {
+      // Migra marcações de rascunho anterior para a memória permanente desta viatura
+      window.SamuStorage.saveViaturaAvarias(vid, oPlaca, d[activeKey], currentUser ? currentUser.username : '');
+    }
+    return d;
+  }
+
   function createEmptyCondutor() {
     const h = new Date().getHours();
     const isDiurno = (h >= 6 && h < 18);
     const uname = currentUser ? currentUser.name : '';
     const savedSig = currentUser ? window.SamuStorage.getSavedSignature(currentUser.username) : '';
 
-    return {
+    const blankCond = {
       data: todayISO(),
       turnoAtivo: isDiurno ? 'DIURNO' : 'NOTURNO',
       viaturaId: 'master_29',
       outraPlaca: '',
       condutorDiurno: isDiurno ? uname : '',
       condutorNoturno: !isDiurno ? uname : '',
+      abastRealizado: '',
       abastLitros: '',
       abastHora: '',
       abastKm: '',
       abastAss: '',
+      sigAbastecimento: '',
       itensDiurno: {},
       itensNoturno: {},
       avariasDiurno: [],
@@ -309,6 +464,7 @@
       sigCondutorDiurno: isDiurno ? savedSig : '',
       sigCondutorNoturno: !isDiurno ? savedSig : ''
     };
+    return applySavedAvariasToCondutorState(blankCond, true);
   }
 
   function createEmptyEnfermagem() {
@@ -327,6 +483,245 @@
       obsPagina2: '',
       sigEnfermagem: savedSig
     };
+  }
+
+  /* ===================== VALIDAÇÃO OBRIGATÓRIA 100% DOS CHECK LISTS ===================== */
+  function getCondutorAbastStatus(d) {
+    if (!d) return '';
+    if (d.abastRealizado === 'NAO' || d.abastRealizado === 'SIM') return d.abastRealizado;
+    if ([d.abastLitros, d.abastHora, d.abastKm, d.abastAss, d.sigAbastecimento].some(v => String(v || '').trim() !== '')) {
+      return 'SIM';
+    }
+    return '';
+  }
+
+  function validateCondutorChecklist(d) {
+    const data = d || {};
+    const errors = [];
+    const invalidFields = new Set();
+    const missingItemIds = new Set();
+    let firstMissingDomId = '';
+
+    const markField = (fieldKey, domId, msg) => {
+      invalidFields.add(fieldKey);
+      errors.push(msg);
+      if (!firstMissingDomId && domId) firstMissingDomId = domId;
+    };
+
+    const isDiurno = data.turnoAtivo !== 'NOTURNO';
+    if (!String(data.data || '').trim()) {
+      markField('data', 'cond-field-data', 'Data do plantão');
+    }
+    if (data.turnoAtivo !== 'DIURNO' && data.turnoAtivo !== 'NOTURNO') {
+      markField('turnoAtivo', 'cond-field-turno', 'Turno sendo preenchido');
+    }
+    if (!String(data.viaturaId || '').trim()) {
+      markField('viaturaId', 'cond-field-viatura', 'Seleção da Viatura');
+    } else if (data.viaturaId === 'outra' && !String(data.outraPlaca || '').trim()) {
+      markField('outraPlaca', 'cond-field-outra-placa', 'Modelo / Placa da Outra Viatura');
+    }
+
+    if (isDiurno) {
+      if (!String(data.condutorDiurno || '').trim()) {
+        markField('condutorDiurno', 'cond-field-nome-diurno', 'Nome do Condutor Diurno');
+      }
+    } else {
+      if (!String(data.condutorNoturno || '').trim()) {
+        markField('condutorNoturno', 'cond-field-nome-noturno', 'Nome do Condutor Noturno');
+      }
+    }
+
+    const abastStatus = getCondutorAbastStatus(data);
+    if (!abastStatus) {
+      markField('abastRealizado', 'cond-field-abast-status', 'Abastecimento: informe se houve abastecimento (Não ou Sim)');
+    } else if (abastStatus === 'SIM') {
+      if (!String(data.abastLitros || '').trim()) markField('abastLitros', 'cond-field-abast-l', 'Abastecimento: Litros');
+      if (!String(data.abastHora || '').trim()) markField('abastHora', 'cond-field-abast-h', 'Abastecimento: Hora');
+      if (!String(data.abastKm || '').trim()) markField('abastKm', 'cond-field-abast-km', 'Abastecimento: KM');
+      if (!String(data.sigAbastecimento || data.abastAss || '').trim()) {
+        markField('sigAbastecimento', 'cond-field-abast-sig', 'Abastecimento: Assinatura na tela (com o dedo)');
+      }
+    }
+
+    const itensMap = (isDiurno ? data.itensDiurno : data.itensNoturno) || {};
+    const allItems = window.SAMU_SCHEMA.condutorLeftItems.concat(window.SAMU_SCHEMA.condutorRightItems);
+    const missingNames = [];
+    allItems.forEach(it => {
+      if (!String(itensMap[it.id] || '').trim()) {
+        missingItemIds.add(it.id);
+        missingNames.push(it.name);
+        if (!firstMissingDomId) firstMissingDomId = `cond-item-row-${it.id}`;
+      }
+    });
+    if (missingNames.length > 0) {
+      const sample = missingNames.slice(0, 3).join(', ');
+      errors.push(`${missingNames.length} item(ns) da viatura sem conferência (${sample}${missingNames.length > 3 ? '...' : ''})`);
+    }
+
+    const obsTurno = isDiurno ? data.obsDiurno : data.obsNoturno;
+    if (!String(obsTurno || '').trim()) {
+      markField('obsTurno', 'cond-field-obs', `Observações ${isDiurno ? 'Diurno' : 'Noturna'}`);
+    }
+
+    const sigTurno = isDiurno ? data.sigCondutorDiurno : data.sigCondutorNoturno;
+    if (!String(sigTurno || '').trim()) {
+      markField('sigTurno', 'cond-sig-box', `Assinatura na Tela – Condutor ${isDiurno ? 'Diurno' : 'Noturno'}`);
+    }
+
+    return {
+      valid: errors.length === 0,
+      errors,
+      invalidFields,
+      missingItemIds,
+      firstMissingDomId
+    };
+  }
+
+  function validateEnfermagemChecklist(d) {
+    const data = d || {};
+    const errors = [];
+    const invalidFields = new Set();
+    const missingItemIds = new Set();
+    const incompleteSecIdxs = new Set();
+    let firstMissingSecIdx = -1;
+    let firstMissingDomId = '';
+
+    const markField = (fieldKey, domId, msg) => {
+      invalidFields.add(fieldKey);
+      errors.push(msg);
+      if (!firstMissingDomId && domId) firstMissingDomId = domId;
+    };
+
+    const isDia = data.turno !== 'NOITE';
+    if (!String(data.data || '').trim()) {
+      markField('data', 'enf-field-data', 'Data da checagem');
+    }
+    if (data.turno !== 'DIA' && data.turno !== 'NOITE') {
+      markField('turno', 'enf-field-turno', 'Turno (CK DIA ou CK NOITE)');
+    }
+    if (!String(data.responsavelNome || '').trim()) {
+      markField('responsavelNome', 'enf-field-nome', 'Profissional Enfermagem');
+    }
+    if (!String(data.responsavelCoren || '').trim()) {
+      markField('responsavelCoren', 'enf-field-coren', 'COREN do Profissional');
+    }
+
+    const targetMap = (isDia ? data.itensDia : data.itensNoite) || {};
+    const sections = window.SAMU_SCHEMA.enfermagemSections;
+    let totalMissingItems = 0;
+    const secSummaries = [];
+
+    sections.forEach((sec, secIdx) => {
+      let secMissing = 0;
+      sec.items.forEach(it => {
+        if (!String(targetMap[it.id] || '').trim()) {
+          missingItemIds.add(it.id);
+          incompleteSecIdxs.add(secIdx);
+          secMissing++;
+          totalMissingItems++;
+          if (firstMissingSecIdx === -1) firstMissingSecIdx = secIdx;
+          if (!firstMissingDomId) firstMissingDomId = `enf-item-row-${it.id}`;
+        }
+      });
+      if (secMissing > 0) {
+        secSummaries.push(`${sec.title} (${secMissing} pendente${secMissing > 1 ? 's' : ''})`);
+      }
+    });
+
+    if (totalMissingItems > 0) {
+      const sampleSecs = secSummaries.slice(0, 3).join(', ');
+      errors.push(`${totalMissingItems} material(is) sem conferência em: ${sampleSecs}${secSummaries.length > 3 ? '...' : ''}`);
+    }
+
+    if (!String(data.obsPagina1 || '').trim()) {
+      markField('obsPagina1', 'enf-field-obs-1', 'OBS – Mochilas (Página 1)');
+    }
+    if (!String(data.obsPagina2 || '').trim()) {
+      markField('obsPagina2', 'enf-field-obs-2', 'OBS – Viatura / Gavetas / Armário (Página 2)');
+    }
+    if (!String(data.sigEnfermagem || '').trim()) {
+      markField('sigEnfermagem', 'enf-sig-box', 'Assinatura e Carimbo Digital na Tela');
+    }
+
+    return {
+      valid: errors.length === 0,
+      errors,
+      invalidFields,
+      missingItemIds,
+      incompleteSecIdxs,
+      firstMissingSecIdx,
+      firstMissingDomId
+    };
+  }
+
+  function renderChecklistValidationBannerHtml(val) {
+    if (!val || val.valid) return '';
+    return `
+      <div class="checklist-validation-banner">
+        <strong>⚠️ Envio bloqueado: preencha todos os campos do Check List antes de enviar:</strong>
+        <ul>
+          ${val.errors.map(err => `<li>${escapeHtml(err)}</li>`).join('')}
+        </ul>
+      </div>
+    `;
+  }
+
+  function scrollToMissingChecklistField(domId) {
+    if (!domId) return;
+    setTimeout(() => {
+      const el = document.getElementById(domId);
+      if (el && typeof el.scrollIntoView === 'function') {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 60);
+  }
+
+  async function ensureChecklistCompleteBeforeAction(record, actionLabel) {
+    if (!record) return false;
+    if (record.type === 'checklist_condutor') {
+      const val = validateCondutorChecklist(record.data);
+      if (val.valid) return true;
+      const modal = document.getElementById('pdf-preview-modal');
+      if (modal) modal.classList.add('hidden');
+      const existing = record.id ? await window.SamuStorage.getRecordById(record.id) : null;
+      condutorState = Object.assign(createEmptyCondutor(), JSON.parse(JSON.stringify(record.data || {})));
+      if (existing) editingCondutorId = record.id;
+      condutorValidationActive = true;
+      activeTab = 'condutor';
+      renderBottomNav();
+      renderCondutorView();
+      scrollToMissingChecklistField(val.firstMissingDomId);
+      await samuAlert(
+        `⚠️ Não é possível ${actionLabel || 'enviar'} o Check List com campos em branco.\n\nFalta preencher:\n• ` +
+        val.errors.join('\n• ')
+      );
+      return false;
+    }
+
+    if (record.type === 'checklist_enfermagem') {
+      const val = validateEnfermagemChecklist(record.data);
+      if (val.valid) return true;
+      const modal = document.getElementById('pdf-preview-modal');
+      if (modal) modal.classList.add('hidden');
+      const existing = record.id ? await window.SamuStorage.getRecordById(record.id) : null;
+      enfermagemState = Object.assign(createEmptyEnfermagem(), JSON.parse(JSON.stringify(record.data || {})));
+      if (existing) editingEnfermagemId = record.id;
+      enfermagemValidationActive = true;
+      if (val.firstMissingSecIdx >= 0) {
+        activeEnfSectionIdx = val.firstMissingSecIdx;
+      }
+      activeTab = 'enfermagem';
+      renderBottomNav();
+      renderEnfermagemView();
+      scrollToMissingChecklistField(val.firstMissingDomId);
+      await samuAlert(
+        `⚠️ Não é possível ${actionLabel || 'enviar'} o Check List de Enfermagem com campos em branco.\n\nFalta preencher:\n• ` +
+        val.errors.join('\n• ')
+      );
+      return false;
+    }
+
+    return true;
   }
 
   /* ===================== INICIALIZAÇÃO, AUTO-CADASTRO E LOGIN ===================== */
@@ -365,14 +760,17 @@
     if (tabRegister) tabRegister.addEventListener('click', () => switchAuthMode('register'));
 
     // Seleção de Função no Auto-Cadastro:
-    // - Técnico / Enfermeiro -> Login, Senha, COREN e CPF (+ Nome)
+    // - Téc. Enfermagem / Enfermeiro(a) -> Login, Senha, COREN e CPF (+ Nome)
     // - Condutor Socorrista -> Login, Senha e CPF (+ Nome, oculta COREN)
     document.querySelectorAll('[data-reg-role]').forEach(btn => {
       btn.addEventListener('click', () => {
         const role = btn.dataset.regRole;
+        const subRole = btn.dataset.regSubrole || (role === 'condutor' ? 'condutor' : 'tecnico');
         document.querySelectorAll('[data-reg-role]').forEach(b => b.classList.toggle('active', b === btn));
         const roleHidden = document.getElementById('reg-role');
         if (roleHidden) roleHidden.value = role;
+        const subRoleHidden = document.getElementById('reg-subrole');
+        if (subRoleHidden) subRoleHidden.value = subRole;
         const corenWrap = document.getElementById('reg-coren-wrap');
         const corenInp = document.getElementById('reg-coren');
         if (role === 'condutor') {
@@ -380,7 +778,10 @@
           if (corenInp) { corenInp.required = false; corenInp.value = ''; }
         } else {
           if (corenWrap) corenWrap.classList.remove('hidden');
-          if (corenInp) corenInp.required = true;
+          if (corenInp) {
+            corenInp.required = true;
+            corenInp.placeholder = subRole === 'enfermeiro' ? 'Ex: COREN-SP 318.420-ENF' : 'Ex: COREN-SP 542.810-TE';
+          }
         }
       });
     });
@@ -400,8 +801,10 @@
         btn.textContent = 'Enviando Cadastro...';
         try {
           const role = (document.getElementById('reg-role') && document.getElementById('reg-role').value) || 'enfermagem';
+          const subRole = (document.getElementById('reg-subrole') && document.getElementById('reg-subrole').value) || (role === 'condutor' ? 'condutor' : 'tecnico');
           const res = await window.SamuStorage.registerUserRequest({
             role,
+            subRole,
             name: document.getElementById('reg-name').value.trim(),
             username: document.getElementById('reg-user').value.trim(),
             password: document.getElementById('reg-pass').value,
@@ -410,6 +813,8 @@
           });
           const createdUser = res.user.username;
           registerForm.reset();
+          const firstRoleBtn = document.querySelector('[data-reg-subrole="tecnico"]');
+          if (firstRoleBtn) firstRoleBtn.click();
           switchAuthMode('login');
           document.getElementById('login-user').value = createdUser;
           await samuAlert(
@@ -459,7 +864,7 @@
       btn.textContent = 'Autenticando...';
       try {
         const res = await window.SamuStorage.login(u, p);
-        await enterSession(res.user);
+        await enterSession(res.user, { promptCrew: true });
         showToast(`Bem-vindo(a), ${res.user.name}!`);
       } catch (err) {
         samuAlert(err.message || 'Erro ao fazer login.');
@@ -471,18 +876,35 @@
 
     document.getElementById('btn-logout').addEventListener('click', async () => {
       if (!(await samuConfirm('Deseja sair da sua conta neste aparelho?'))) return;
+      clearTimeout(crewPushTimer);
       window.SamuStorage.setSession(null);
       currentUser = null;
+      activeCrew = null;
+      const crewModal = document.getElementById('crew-modal');
+      if (crewModal) crewModal.classList.add('hidden');
+      const topCrewBtn = document.getElementById('btn-top-crew');
+      if (topCrewBtn) topCrewBtn.classList.add('hidden');
       document.getElementById('app-shell').classList.add('hidden');
       document.getElementById('login-screen').classList.remove('hidden');
       document.getElementById('login-pass').value = '';
     });
 
+    const btnTopCrew = document.getElementById('btn-top-crew');
+    if (btnTopCrew) {
+      btnTopCrew.addEventListener('click', () => {
+        openCrewSelectionModal({ isLoginPrompt: false });
+      });
+    }
+
     // Atalho para o Simulador trocar de perfil em 1 clique
     window.__samuQuickSwitch = async function(target) {
       if (target === 'logout' || target === 'register') {
+        clearTimeout(crewPushTimer);
         window.SamuStorage.setSession(null);
         currentUser = null;
+        activeCrew = null;
+        const crewModal = document.getElementById('crew-modal');
+        if (crewModal) crewModal.classList.add('hidden');
         document.getElementById('app-shell').classList.add('hidden');
         document.getElementById('login-screen').classList.remove('hidden');
         const tabBtn = document.getElementById(target === 'register' ? 'tab-auth-register' : 'tab-auth-login');
@@ -492,21 +914,23 @@
       const map = {
         admin: ['admin', 'samu192'],
         condutor: ['condutor', '1234'],
-        enfermagem: ['enfermagem', '1234']
+        condutor2: ['condutor2', '1234'],
+        enfermagem: ['enfermagem', '1234'],
+        enfermeiro: ['enfermeiro', '1234']
       };
       const creds = map[target];
       if (!creds) return;
       try {
         const res = await window.SamuStorage.login(creds[0], creds[1]);
-        await enterSession(res.user);
+        await enterSession(res.user, { promptCrew: true });
         showToast(`Simulando visão: ${res.user.name}`);
       } catch (e) {
         const users = window.SamuStorage.getLocalUsers();
-        const byRole = users.find(u => u.role === target);
-        if (byRole) {
-          window.SamuStorage.setSession(byRole);
-          await enterSession(byRole);
-          showToast(`Simulando visão: ${byRole.name}`);
+        const byUserOrRole = users.find(u => u.username === creds[0]) || users.find(u => u.role === target);
+        if (byUserOrRole) {
+          window.SamuStorage.setSession(byUserOrRole);
+          await enterSession(byUserOrRole, { promptCrew: true });
+          showToast(`Simulando visão: ${byUserOrRole.name}`);
         }
       }
     };
@@ -534,6 +958,7 @@
     }
     document.getElementById('btn-preview-share').addEventListener('click', async () => {
       if (!previewCurrentRecord) return;
+      if (!(await ensureChecklistCompleteBeforeAction(previewCurrentRecord, 'compartilhar / salvar'))) return;
       await window.SamuPDF.downloadOrSharePdf(previewCurrentRecord, previewGeneratedPdf);
     });
 
@@ -589,10 +1014,12 @@
     }
     document.getElementById('btn-preview-print').addEventListener('click', async () => {
       if (!previewCurrentRecord) return;
+      if (!(await ensureChecklistCompleteBeforeAction(previewCurrentRecord, 'imprimir'))) return;
       await window.SamuPDF.printRecord(previewCurrentRecord, previewGeneratedPdf);
     });
     document.getElementById('btn-preview-drive').addEventListener('click', async () => {
       if (!previewCurrentRecord || !previewGeneratedPdf) return;
+      if (!(await ensureChecklistCompleteBeforeAction(previewCurrentRecord, 'enviar ao Google Drive'))) return;
       const settings = window.SamuStorage.getSettings();
       if (!settings.scriptUrl) {
         samuAlert('Configure primeiro a URL do Google Apps Script (em Base/GitHub ou na tela inicial) para enviar direto ao Google Drive.');
@@ -602,8 +1029,14 @@
       btn.disabled = true;
       btn.textContent = 'Enviando...';
       try {
+        if (previewCurrentRecord.isDraft || previewCurrentRecord.syncStatus === 'draft') {
+          previewCurrentRecord.isDraft = false;
+          previewCurrentRecord.syncStatus = 'pending';
+        }
         const res = await window.SamuStorage.uploadRecordToDrive(previewCurrentRecord, previewGeneratedPdf.base64);
+        await refreshDraftCount();
         await refreshSyncBadge();
+        if (activeTab === 'historico') renderHistoricoView();
         if (res.synced) {
           document.getElementById('preview-drive-status').textContent = '✅ PDF salvo no Google Drive com sucesso!';
           showToast('PDF enviado ao Google Drive!');
@@ -724,6 +1157,16 @@
       try {
         await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: window.SamuStorage.getGitHubMeta().dirty });
         if (currentUser) {
+          await pullAndApplyCrewFichaChanges({ fromNetwork: true });
+          if (!editingCondutorId && condutorState) {
+            applySavedAvariasToCondutorState(condutorState, false);
+            if (activeTab === 'condutor') {
+              const activeEl = document.activeElement;
+              const isTyping = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA');
+              if (!isTyping) renderCondutorView();
+            }
+          }
+          await refreshDraftCount();
           renderBottomNav();
           await refreshSyncBadge();
           if (activeTab === 'aprovacoes') renderAprovacoesView(true);
@@ -738,6 +1181,27 @@
       triggerBackgroundSync(false);
     });
     window.addEventListener('offline', refreshSyncBadge);
+
+    // Sincronização instantânea entre abas abertas no mesmo aparelho / Simulador
+    window.addEventListener('storage', (ev) => {
+      if (!currentUser || !ev || !ev.key) return;
+      if (
+        ev.key === 'samu_crew_teams_v1' ||
+        ev.key === 'samu_shared_fichas_v1' ||
+        ev.key === 'samu_users_cache_v1' ||
+        ev.key === 'samu_saved_sigs_v1'
+      ) {
+        pullAndApplyCrewFichaChanges({ fromStorageEvent: true });
+        refreshDraftCount();
+      } else if (ev.key === 'samu_viatura_avarias_v1' && !editingCondutorId && condutorState) {
+        applySavedAvariasToCondutorState(condutorState, true);
+        if (activeTab === 'condutor') {
+          const activeEl = document.activeElement;
+          const isTyping = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA');
+          if (!isTyping) renderCondutorView();
+        }
+      }
+    });
 
     // Callback nativo do Android ConnectivityManager assim que o celular pega Wi-Fi ou 4G
     window.__onAndroidNetworkOnline = () => {
@@ -754,18 +1218,459 @@
       }
     }, 60000);
 
+    // Sincronização rápida a cada 8s entre os celulares da equipe durante o preenchimento da Ficha
+    let crewTickCounter = 0;
+    setInterval(async () => {
+      if (!currentUser || currentUser.role === 'admin' || document.hidden || !navigator.onLine) return;
+      if (!window.SamuStorage.hasGitHubConfigured()) return;
+      crewTickCounter++;
+      // Quando vinculado em equipe na aba Ficha sincroniza a cada 8s; se ainda sem vínculo, checa a cada 24s para detectar vínculo feito pelo colega
+      if (!activeCrew && (crewTickCounter % 3 !== 0)) return;
+      try {
+        await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: window.SamuStorage.getGitHubMeta().dirty });
+        await pullAndApplyCrewFichaChanges({ fromNetwork: true });
+        await refreshDraftCount();
+        await refreshSyncBadge();
+      } catch (e) {}
+    }, 8000);
+
     const existingSession = window.SamuStorage.getSession();
     if (existingSession) {
-      enterSession(existingSession);
+      enterSession(existingSession, { promptCrew: false });
     }
   }
 
-  async function enterSession(user) {
-    // Recarrega dados mais frescos do usuário na base interna (ex: COREN atualizado)
+  /* ===================== EQUIPE DO PLANTÃO (ATÉ 3 MEMBROS) & FICHA COMPARTILHADA ===================== */
+  function updateTopbarCrewButton() {
+    const btn = document.getElementById('btn-top-crew');
+    const txt = document.getElementById('top-crew-text');
+    if (!btn || !txt) return;
+    if (!currentUser || currentUser.role === 'admin') {
+      btn.classList.add('hidden');
+      return;
+    }
+    btn.classList.remove('hidden');
+    activeCrew = window.SamuStorage.getActiveCrewForUser(currentUser.username);
+    if (activeCrew && activeCrew.members && activeCrew.members.length >= 2) {
+      btn.classList.add('synced');
+      btn.classList.remove('pending');
+      txt.textContent = `👥 Equipe (${activeCrew.members.length})`;
+    } else {
+      btn.classList.remove('synced');
+      btn.classList.add('pending');
+      txt.textContent = '👥 Equipe';
+    }
+  }
+
+  function resetFichaSyncTracking(stateObj, sessionId, existingFieldTs, isLoadedRecord) {
+    currentCrewSessionId = sessionId || (editingFichaId ? ('sf_rec_' + editingFichaId) : uid('sf'));
+    currentCrewIsLoadedRecord = Boolean(isLoadedRecord);
+    currentFichaFieldTs = Object.assign({}, (existingFieldTs && typeof existingFieldTs === 'object') ? existingFieldTs : {});
+    lastSyncedFichaSnapshot = JSON.parse(JSON.stringify(stateObj || {}));
+  }
+
+  function stampChangedFichaFields(nowMs) {
+    if (!fichaState) return;
+    const ts = nowMs || Date.now();
+    const prev = lastSyncedFichaSnapshot || {};
+
+    Object.keys(fichaState).forEach(k => {
+      if (k === 'horarios') return;
+      if (JSON.stringify(fichaState[k]) !== JSON.stringify(prev[k])) {
+        currentFichaFieldTs[k] = ts;
+      }
+    });
+
+    const curH = (fichaState.horarios && typeof fichaState.horarios === 'object') ? fichaState.horarios : {};
+    const prevH = (prev.horarios && typeof prev.horarios === 'object') ? prev.horarios : {};
+    Object.keys(curH).forEach(hk => {
+      if (String(curH[hk] || '') !== String(prevH[hk] || '')) {
+        currentFichaFieldTs['horarios.' + hk] = ts;
+      }
+    });
+
+    lastSyncedFichaSnapshot = JSON.parse(JSON.stringify(fichaState));
+  }
+
+  function scheduleCrewCloudPush() {
+    clearTimeout(crewPushTimer);
+    if (!navigator.onLine || !window.SamuStorage.hasGitHubConfigured()) return;
+    const settings = window.SamuStorage.getSettings();
+    if (!settings.githubToken) return;
+    crewPushTimer = setTimeout(async () => {
+      try {
+        await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true });
+        await pullAndApplyCrewFichaChanges({ fromNetwork: true });
+        await refreshDraftCount();
+        await refreshSyncBadge();
+      } catch (e) {}
+    }, 2000);
+  }
+
+  function applyFichaValuesToDomWithoutStealingFocus(activeEl) {
+    const container = document.getElementById('main-view');
+    if (!container || activeTab !== 'ficha' || !fichaState) return;
+    container.querySelectorAll('[data-f]').forEach(inp => {
+      if (inp === activeEl) return;
+      const k = inp.dataset.f;
+      if (fichaState[k] !== undefined && String(inp.value || '') !== String(fichaState[k] || '')) {
+        inp.value = fichaState[k] || '';
+      }
+    });
+    container.querySelectorAll('[data-horario]').forEach(inp => {
+      if (inp === activeEl) return;
+      const hk = inp.dataset.horario;
+      const hv = (fichaState.horarios && fichaState.horarios[hk]) || '';
+      if (String(inp.value || '') !== String(hv)) {
+        inp.value = hv;
+      }
+    });
+  }
+
+  async function pullAndApplyCrewFichaChanges(opts) {
+    if (!currentUser || currentUser.role === 'admin' || !fichaState) return false;
+    const prevCrewId = activeCrew ? activeCrew.crewId : '';
+    activeCrew = window.SamuStorage.getActiveCrewForUser(currentUser.username);
+    updateTopbarCrewButton();
+
+    if (!activeCrew) {
+      if (prevCrewId && activeTab === 'ficha') {
+        const ae = document.activeElement;
+        const isTyping = ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA');
+        if (!isTyping) renderFichaView();
+      }
+      return false;
+    }
+
+    const ws = window.SamuStorage.getCrewWorkspace(activeCrew.crewId);
+    if (!ws) return false;
+
+    // Se o colega já finalizou / limpou / salvou+nova esta sessão de ficha, abre uma nova ficha limpa aqui também!
+    if (currentCrewSessionId && ws.closedSessions && ws.closedSessions[currentCrewSessionId] && !ws.currentFicha) {
+      editingFichaId = null;
+      manualShowSecondEnf = false;
+      manualShowSecondCond = false;
+      fichaState = createEmptyFicha();
+      fichaStep = 1;
+      resetFichaSyncTracking(fichaState, uid('sf'), {}, false);
+      await window.SamuStorage.clearDraft(currentUser.username, 'ficha');
+      await refreshDraftCount();
+      if (activeTab === 'ficha') renderFichaView();
+      showToast('🔄 Ficha anterior salva/finalizada pela equipe! Nova ficha pronta.');
+      return true;
+    }
+
+    let changed = (prevCrewId !== activeCrew.crewId);
+
+    if (ws.currentFicha && ws.currentFicha.data) {
+      const localHasProgress = hasMeaningfulFichaData(fichaState) || Object.keys(currentFichaFieldTs || {}).length > 0;
+      const localDoc = localHasProgress
+        ? {
+            sessionId: currentCrewSessionId || ws.currentFicha.sessionId,
+            recordId: editingFichaId || '',
+            isLoadedRecord: currentCrewIsLoadedRecord,
+            updatedAt: new Date(0).toISOString(),
+            updatedBy: currentUser.username,
+            updatedByName: currentUser.name,
+            fieldTs: currentFichaFieldTs,
+            data: fichaState
+          }
+        : null;
+
+      const mergedDoc = window.SamuStorage.mergeSharedFichaDocs(localDoc, ws.currentFicha, ws.closedSessions);
+      if (mergedDoc && mergedDoc.data) {
+        applyCrewToFichaState(mergedDoc.data, activeCrew, prevCrewId !== activeCrew.crewId);
+        const normalizedMerged = normalizeFichaData(mergedDoc.data);
+        const nextEditId = mergedDoc.recordId || null;
+
+        if (
+          JSON.stringify(normalizedMerged) !== JSON.stringify(fichaState) ||
+          nextEditId !== (editingFichaId || null) ||
+          mergedDoc.sessionId !== currentCrewSessionId
+        ) {
+          fichaState = normalizedMerged;
+          editingFichaId = nextEditId;
+          resetFichaSyncTracking(fichaState, mergedDoc.sessionId, mergedDoc.fieldTs, mergedDoc.isLoadedRecord);
+          if (editingFichaId) {
+            window.SamuStorage.saveDraft(currentUser.username, 'ficha', { __editingId: editingFichaId, state: fichaState });
+          } else {
+            window.SamuStorage.saveDraft(currentUser.username, 'ficha', fichaState);
+          }
+          changed = true;
+        }
+      }
+    } else if (prevCrewId !== activeCrew.crewId) {
+      applyCrewToFichaState(fichaState, activeCrew, true);
+      stampChangedFichaFields(Date.now());
+      changed = true;
+    }
+
+    if (changed && activeTab === 'ficha') {
+      const ae = document.activeElement;
+      const mainView = document.getElementById('main-view');
+      const isTypingInMain = Boolean(
+        ae && mainView && mainView.contains(ae) &&
+        (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA') &&
+        ae.type !== 'checkbox' && ae.type !== 'radio'
+      );
+      if (isTypingInMain) {
+        applyFichaValuesToDomWithoutStealingFocus(ae);
+      } else {
+        const y = window.scrollY;
+        renderFichaView();
+        window.scrollTo(0, y);
+      }
+    }
+    return changed;
+  }
+
+  function openCrewSelectionModal(options) {
+    if (!currentUser || currentUser.role === 'admin') return;
+    const opts = options || {};
+    const modal = document.getElementById('crew-modal');
+    const body = document.getElementById('crew-modal-body');
+    if (!modal || !body) return;
+
+    activeCrew = window.SamuStorage.getActiveCrewForUser(currentUser.username);
+    const allApproved = window.SamuStorage.getLocalUsers().filter(u =>
+      u.active !== false && u.status === 'approved' && u.role !== 'admin'
+    );
+    const meLower = currentUser.username.toLowerCase();
+    const mySubRole = window.SamuStorage.getUserSubRole(currentUser);
+    const myRoleLabel = window.SamuStorage.getUserRoleLabel(currentUser);
+    const myCoren = currentUser.coren || currentUser.councilId || '';
+
+    const others = allApproved.filter(u => u.username.toLowerCase() !== meLower);
+    const condutoresList = others.filter(u => window.SamuStorage.getUserSubRole(u) === 'condutor');
+    const enfermagemList = others.filter(u => u.role === 'enfermagem');
+
+    const selectedSet = new Set();
+    if (activeCrew && Array.isArray(activeCrew.members)) {
+      activeCrew.members.forEach(m => {
+        const ml = String(m || '').toLowerCase();
+        if (ml && ml !== meLower && others.some(o => o.username.toLowerCase() === ml)) {
+          selectedSet.add(ml);
+        }
+      });
+    }
+
+    const renderMemberCard = (u) => {
+      const uname = u.username.toLowerCase();
+      const isSel = selectedSet.has(uname);
+      const sub = window.SamuStorage.getUserSubRole(u);
+      const roleLbl = window.SamuStorage.getUserRoleLabel(u);
+      const corenTxt = u.role === 'enfermagem' ? (u.coren || u.councilId || '') : '';
+      const hasSig = Boolean(window.SamuStorage.getSavedSignature(uname) || u.savedSignature);
+      const icon = sub === 'condutor' ? '🚑' : (sub === 'enfermeiro' ? '👩‍⚕️' : '🩺');
+      return `
+        <button type="button" class="crew-member-option ${isSel ? 'selected' : ''}" data-pick-crew-user="${escapeHtml(uname)}">
+          <div class="crew-member-check">${isSel ? '✓' : ''}</div>
+          <div class="crew-member-info">
+            <strong>${icon} ${escapeHtml(u.name)}</strong>
+            <small>
+              ${escapeHtml(roleLbl)}${corenTxt ? ` • ${escapeHtml(corenTxt)}` : ''}
+              ${hasSig ? ' • <span style="color:#15803d;font-weight:800;">✍️ Assinatura salva</span>' : ''}
+            </small>
+          </div>
+        </button>
+      `;
+    };
+
+    const drawModalContent = () => {
+      const chosenMembers = [currentUser].concat(
+        others.filter(u => selectedSet.has(u.username.toLowerCase()))
+      );
+      const validation = window.SamuStorage.validateCrewSelection(chosenMembers);
+
+      const firstGroupTitle = mySubRole === 'condutor'
+        ? '🩺 Com qual Téc. de Enfermagem / Enfermeiro(a) você está trabalhando?'
+        : '🚑 Com qual Condutor Socorrista você está trabalhando hoje?';
+      const firstGroupItems = mySubRole === 'condutor' ? enfermagemList : condutoresList;
+
+      const secondGroupTitle = mySubRole === 'condutor'
+        ? '🚑 2º Condutor Socorrista (opcional — se estiverem em 3 no plantão)'
+        : '👩‍⚕️ Outro Profissional de Enfermagem (opcional — p/ equipe em 3: Téc. + Enfermeiro + Condutor)';
+      const secondGroupItems = mySubRole === 'condutor' ? condutoresList : enfermagemList;
+
+      body.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:10px;">
+          <div>
+            <h3 style="margin:0; font-size:1.05rem; color:var(--samu-red-dark);">👥 Equipe do Plantão (${chosenMembers.length}/3)</h3>
+            <p style="margin:3px 0 0; font-size:0.79rem; color:var(--muted); line-height:1.35;">
+              Selecione com quem você está trabalhando. A <strong>Ficha em preenchimento fica sincronizada</strong> entre vocês e os <strong>nomes, COREN e assinaturas</strong> já entram preenchidos no final da ficha!
+            </p>
+          </div>
+        </div>
+
+        <div class="crew-self-badge">
+          <span style="font-size:1.15rem;">${mySubRole === 'condutor' ? '🚑' : (mySubRole === 'enfermeiro' ? '👩‍⚕️' : '🩺')}</span>
+          <div>
+            <div style="font-size:0.74rem; color:#9a3412; font-weight:800;">LOGADO NESTE APARELHO (VOCÊ):</div>
+            <strong>${escapeHtml(currentUser.name)}</strong>
+            <span style="font-size:0.77rem; color:#7c2d12;"> • ${escapeHtml(myRoleLabel)}${myCoren ? ` (${escapeHtml(myCoren)})` : ''}</span>
+          </div>
+        </div>
+
+        ${(activeCrew && activeCrew.teammates && activeCrew.teammates.length > 0) ? `
+          <div style="background:#f0fdf4; border:1.5px solid #86efac; border-radius:10px; padding:8px 10px; margin-bottom:10px; font-size:0.79rem; color:#14532d; font-weight:700;">
+            🔗 Vinculado atualmente com: <strong>${escapeHtml(activeCrew.teammates.map(t => t.name).join(' + '))}</strong>.
+            ${opts.isLoginPrompt ? 'Confirme abaixo para manter ou altere os colegas do plantão.' : ''}
+          </div>
+        ` : ''}
+
+        <div style="font-size:0.8rem; font-weight:800; color:#1e293b; margin-bottom:6px;">${firstGroupTitle}</div>
+        <div class="crew-option-list" style="margin-bottom:10px;">
+          ${firstGroupItems.length > 0
+            ? firstGroupItems.map(renderMemberCard).join('')
+            : `<div style="font-size:0.8rem; color:var(--muted); padding:8px;">Nenhum profissional cadastrado nesta categoria ainda.</div>`}
+        </div>
+
+        ${secondGroupItems.length > 0 ? `
+          <div style="font-size:0.79rem; font-weight:800; color:#475569; margin-bottom:6px;">${secondGroupTitle}</div>
+          <div class="crew-option-list" style="margin-bottom:10px;">
+            ${secondGroupItems.map(renderMemberCard).join('')}
+          </div>
+        ` : ''}
+
+        <div class="crew-composition-box ${validation.valid ? 'valid' : 'invalid'}">
+          ${escapeHtml(validation.message)}
+          <div style="font-size:0.73rem; font-weight:600; opacity:0.9; margin-top:3px;">
+            Formações aceitas: <strong>1 Condutor + 1 Téc./Enfermeiro</strong> (2) • <strong>2 Condutores + 1 Téc./Enfermeiro</strong> (3) • <strong>1 Téc. + 1 Enfermeiro + 1 Condutor</strong> (3).
+          </div>
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:8px; margin-top:12px;">
+          <button type="button" class="btn btn-success" id="btn-confirm-crew" ${validation.valid ? '' : 'disabled style="opacity:0.5;cursor:not-allowed;"'}>
+            ✅ Confirmar Equipe e Sincronizar Ficha
+          </button>
+          <div style="display:flex; gap:8px;">
+            ${activeCrew ? `
+              <button type="button" class="btn btn-outline btn-sm" id="btn-clear-crew" style="flex:1;">🔓 Trabalhar Individual</button>
+            ` : ''}
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-skip-crew" style="flex:1;">
+              ${activeCrew ? 'Fechar' : 'Agora não (Individual)'}
+            </button>
+          </div>
+        </div>
+      `;
+
+      body.querySelectorAll('[data-pick-crew-user]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const uname = btn.dataset.pickCrewUser;
+          if (selectedSet.has(uname)) {
+            selectedSet.delete(uname);
+          } else {
+            if (selectedSet.size >= 2) {
+              showToast('⚠️ A equipe pode ter no máximo 3 integrantes (você + 2 colegas). Desmarque um antes de trocar.');
+              return;
+            }
+            selectedSet.add(uname);
+          }
+          drawModalContent();
+        });
+      });
+
+      const skipBtn = document.getElementById('btn-skip-crew');
+      if (skipBtn) {
+        skipBtn.addEventListener('click', () => {
+          modal.classList.add('hidden');
+        });
+      }
+
+      const clearBtn = document.getElementById('btn-clear-crew');
+      if (clearBtn) {
+        clearBtn.addEventListener('click', async () => {
+          window.SamuStorage.clearActiveCrewForUser(currentUser.username);
+          activeCrew = null;
+          updateTopbarCrewButton();
+          modal.classList.add('hidden');
+          if (activeTab === 'ficha') renderFichaView();
+          if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
+            window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true }).catch(() => {});
+          }
+          showToast('🔓 Vínculo de equipe encerrado (modo individual).');
+        });
+      }
+
+      const confirmBtn = document.getElementById('btn-confirm-crew');
+      if (confirmBtn) {
+        confirmBtn.addEventListener('click', async () => {
+          if (!validation.valid) return;
+          confirmBtn.disabled = true;
+          confirmBtn.textContent = 'Sincronizando Equipe...';
+          try {
+            if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
+              try {
+                await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: false });
+              } catch (ePull) {}
+            }
+
+            const memberUsernames = [currentUser.username].concat(Array.from(selectedSet));
+            activeCrew = window.SamuStorage.setActiveCrewForUsers(memberUsernames, currentUser.username);
+            updateTopbarCrewButton();
+
+            // Mescla eventual ficha que o colega já esteja preenchendo com os campos locais e já preenche as assinaturas de toda a equipe!
+            const ws = window.SamuStorage.getCrewWorkspace(activeCrew.crewId);
+            if (ws && ws.currentFicha && ws.currentFicha.data) {
+              const localHasProgress = hasMeaningfulFichaData(fichaState);
+              const localDoc = localHasProgress
+                ? {
+                    sessionId: currentCrewSessionId || ws.currentFicha.sessionId,
+                    recordId: editingFichaId || '',
+                    isLoadedRecord: currentCrewIsLoadedRecord,
+                    updatedAt: new Date().toISOString(),
+                    updatedBy: currentUser.username,
+                    updatedByName: currentUser.name,
+                    fieldTs: currentFichaFieldTs,
+                    data: fichaState
+                  }
+                : null;
+              const merged = window.SamuStorage.mergeSharedFichaDocs(localDoc, ws.currentFicha, ws.closedSessions);
+              if (merged && merged.data) {
+                fichaState = normalizeFichaData(merged.data);
+                editingFichaId = merged.recordId || null;
+                resetFichaSyncTracking(fichaState, merged.sessionId, merged.fieldTs, merged.isLoadedRecord);
+              }
+            }
+
+            applyCrewToFichaState(fichaState, activeCrew, true);
+            persistFichaDraft();
+            await window.SamuStorage.syncAllCrewDraftsToLocalRecords();
+            await refreshDraftCount();
+
+            modal.classList.add('hidden');
+            renderActiveView();
+
+            if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
+              window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true })
+                .then(() => refreshSyncBadge())
+                .catch(() => {});
+            }
+
+            const partnerNames = (activeCrew.teammates || []).map(t => t.name).join(' + ');
+            showToast(`✅ Equipe vinculada com ${partnerNames}! Assinaturas preenchidas e ficha sincronizada.`);
+          } catch (err) {
+            samuAlert(err.message || 'Erro ao vincular equipe.');
+            confirmBtn.disabled = false;
+            confirmBtn.textContent = '✅ Confirmar Equipe e Sincronizar Ficha';
+          }
+        });
+      }
+    };
+
+    drawModalContent();
+    modal.classList.remove('hidden');
+  }
+
+  async function enterSession(user, options) {
+    const opts = options || {};
+    // Recarrega dados mais frescos do usuário na base interna (ex: COREN e subRole atualizados)
     const freshLocal = window.SamuStorage.getLocalUsers().find(u => u.username.toLowerCase() === String(user.username || '').toLowerCase());
     if (freshLocal && freshLocal.active) {
       user = Object.assign({}, user, {
         name: freshLocal.name || user.name,
+        role: freshLocal.role || user.role,
+        subRole: window.SamuStorage.getUserSubRole(freshLocal),
         coren: freshLocal.coren || freshLocal.councilId || user.coren || user.councilId || '',
         councilId: freshLocal.coren || freshLocal.councilId || user.councilId || '',
         cpf: freshLocal.cpf || user.cpf || ''
@@ -774,20 +1679,27 @@
     }
 
     currentUser = user;
+    activeCrew = user.role !== 'admin' ? window.SamuStorage.getActiveCrewForUser(user.username) : null;
+    manualShowSecondEnf = false;
+    manualShowSecondCond = false;
+
     document.getElementById('login-screen').classList.add('hidden');
     document.getElementById('app-shell').classList.remove('hidden');
 
     document.getElementById('top-user-name').textContent = user.name;
-    const roleLabels = {
+    const subRole = window.SamuStorage.getUserSubRole(user);
+    const shortRoleMap = {
       admin: 'ADM / COORDENAÇÃO',
       condutor: 'CONDUTOR SOCORRISTA',
-      enfermagem: 'TÉC. ENFERMAGEM'
+      enfermeiro: 'ENFERMEIRO(A)',
+      tecnico: 'TÉC. ENFERM.'
     };
     const userCoren = user.coren || user.councilId || '';
     const roleBadgeText = (user.role === 'enfermagem' && userCoren)
-      ? `TÉC. ENFERM. • ${userCoren}`
-      : (roleLabels[user.role] || user.role);
+      ? `${shortRoleMap[subRole] || 'ENFERMAGEM'} • ${userCoren}`
+      : (shortRoleMap[subRole] || user.role);
     document.getElementById('top-user-role').textContent = roleBadgeText;
+    updateTopbarCrewButton();
 
     // Carrega rascunhos em andamento salvos deste usuário
     const draftFicha = await window.SamuStorage.getDraft(user.username, 'ficha');
@@ -804,12 +1716,45 @@
       editingFichaId = null;
     }
 
-    // Garante que o COREN e Nome do Técnico (ou Nome do Condutor) e o Hospital padrão HBSA já venham pré-preenchidos!
-    if (user.role === 'enfermagem') {
-      if (!fichaState.enfermagemNome) fichaState.enfermagemNome = user.name;
-      if (!fichaState.enfermagemCoren && userCoren) fichaState.enfermagemCoren = userCoren;
-    } else if (user.role === 'condutor') {
-      if (!fichaState.condutorNome) fichaState.condutorNome = user.name;
+    // Se já faz parte de uma equipe ativa no plantão, sincroniza imediatamente a ficha compartilhada e as assinaturas da equipe!
+    if (activeCrew) {
+      await window.SamuStorage.syncAllCrewDraftsToLocalRecords();
+      const ws = window.SamuStorage.getCrewWorkspace(activeCrew.crewId);
+      if (ws && ws.currentFicha && ws.currentFicha.data) {
+        const localDoc = hasMeaningfulFichaData(fichaState)
+          ? {
+              sessionId: ws.currentFicha.sessionId,
+              recordId: editingFichaId || '',
+              isLoadedRecord: Boolean(editingFichaId),
+              updatedAt: (draftFicha && draftFicha.updatedAt) || new Date(0).toISOString(),
+              updatedBy: user.username,
+              updatedByName: user.name,
+              fieldTs: {},
+              data: fichaState
+            }
+          : null;
+        const merged = window.SamuStorage.mergeSharedFichaDocs(localDoc, ws.currentFicha, ws.closedSessions);
+        if (merged && merged.data) {
+          fichaState = normalizeFichaData(merged.data);
+          editingFichaId = merged.recordId || null;
+          applyCrewToFichaState(fichaState, activeCrew, false);
+          resetFichaSyncTracking(fichaState, merged.sessionId, merged.fieldTs, merged.isLoadedRecord);
+        } else {
+          applyCrewToFichaState(fichaState, activeCrew, true);
+          resetFichaSyncTracking(fichaState, uid('sf'), {}, Boolean(editingFichaId));
+        }
+      } else {
+        applyCrewToFichaState(fichaState, activeCrew, true);
+        resetFichaSyncTracking(fichaState, uid('sf'), {}, Boolean(editingFichaId));
+      }
+    } else {
+      resetFichaSyncTracking(fichaState, uid('sf'), {}, Boolean(editingFichaId));
+      if (user.role === 'enfermagem') {
+        if (!fichaState.enfermagemNome) fichaState.enfermagemNome = user.name;
+        if (!fichaState.enfermagemCoren && userCoren) fichaState.enfermagemCoren = userCoren;
+      } else if (user.role === 'condutor') {
+        if (!fichaState.condutorNome) fichaState.condutorNome = user.name;
+      }
     }
     if (!fichaState.destino) {
       fichaState.destino = window.SamuStorage.getSettings().defaultHospital || 'HBSA';
@@ -817,7 +1762,9 @@
 
     const draftCond = await window.SamuStorage.getDraft(user.username, 'checklist_condutor');
     condutorState = (draftCond && draftCond.data) ? Object.assign(createEmptyCondutor(), draftCond.data) : createEmptyCondutor();
+    applySavedAvariasToCondutorState(condutorState, false);
     editingCondutorId = null;
+    condutorValidationActive = false;
 
     const draftEnf = await window.SamuStorage.getDraft(user.username, 'checklist_enfermagem');
     enfermagemState = (draftEnf && draftEnf.data) ? Object.assign(createEmptyEnfermagem(), draftEnf.data) : createEmptyEnfermagem();
@@ -826,6 +1773,7 @@
       if (!enfermagemState.responsavelCoren && userCoren) enfermagemState.responsavelCoren = userCoren;
     }
     editingEnfermagemId = null;
+    enfermagemValidationActive = false;
 
     await refreshDraftCount();
     const pendingCount = window.SamuStorage.getPendingUsers().length;
@@ -838,6 +1786,11 @@
     renderActiveView();
     await refreshSyncBadge();
     triggerBackgroundSync(false);
+
+    // Toda vez que o Téc. de Enfermagem, Enfermeiro(a) ou Condutor logar, pergunta com quem está trabalhando no plantão!
+    if (opts.promptCrew && user.role !== 'admin') {
+      openCrewSelectionModal({ isLoginPrompt: true });
+    }
   }
 
   async function refreshSyncBadge() {
@@ -970,11 +1923,32 @@
   }
 
   function persistFichaDraft() {
-    if (!currentUser) return;
+    if (!currentUser || !fichaState) return;
     if (editingFichaId) {
       window.SamuStorage.saveDraft(currentUser.username, 'ficha', { __editingId: editingFichaId, state: fichaState });
     } else {
       window.SamuStorage.saveDraft(currentUser.username, 'ficha', fichaState);
+    }
+
+    stampChangedFichaFields(Date.now());
+    if (currentUser.role !== 'admin') {
+      activeCrew = window.SamuStorage.getActiveCrewForUser(currentUser.username);
+      if (activeCrew) {
+        if (!currentCrewSessionId) {
+          currentCrewSessionId = editingFichaId ? ('sf_rec_' + editingFichaId) : uid('sf');
+        }
+        window.SamuStorage.saveCrewCurrentFicha(activeCrew.crewId, {
+          sessionId: currentCrewSessionId,
+          recordId: editingFichaId || '',
+          isLoadedRecord: currentCrewIsLoadedRecord,
+          updatedAt: new Date().toISOString(),
+          updatedBy: currentUser.username,
+          updatedByName: currentUser.name,
+          fieldTs: currentFichaFieldTs,
+          data: fichaState
+        }, false);
+        scheduleCrewCloudPush();
+      }
     }
   }
 
@@ -1071,16 +2045,21 @@
     if (!currentUser) return;
     if (kind === 'ficha') {
       if (startNewAfter && !editingFichaId && !hasMeaningfulFichaData(fichaState)) {
+        if (activeCrew) {
+          window.SamuStorage.closeCrewCurrentSession(activeCrew.crewId, currentCrewSessionId, 'reset', '', '', false);
+        }
         fichaState = createEmptyFicha();
         fichaStep = 1;
+        resetFichaSyncTracking(fichaState, uid('sf'), {}, false);
         await window.SamuStorage.clearDraft(currentUser.username, 'ficha');
         renderFichaView();
         showToast('Nova ficha em branco pronta!');
         return;
       }
 
-      if (fichaState.kmFinal && String(fichaState.kmFinal).trim() !== '') {
-        window.SamuStorage.setLastKmFinal(fichaState.kmFinal);
+      const prevKmFinal = fichaState.kmFinal ? String(fichaState.kmFinal).trim() : '';
+      if (prevKmFinal !== '') {
+        window.SamuStorage.setLastKmFinal(prevKmFinal);
       }
 
       const recId = editingFichaId || uid('ficha');
@@ -1101,9 +2080,16 @@
       await window.SamuStorage.saveRecordLocal(record);
 
       if (startNewAfter) {
+        if (activeCrew) {
+          window.SamuStorage.closeCrewCurrentSession(activeCrew.crewId, currentCrewSessionId, 'draft_saved', recId, prevKmFinal, false);
+          scheduleCrewCloudPush();
+        }
         editingFichaId = null;
+        manualShowSecondEnf = false;
+        manualShowSecondCond = false;
         fichaState = createEmptyFicha();
         fichaStep = 1;
+        resetFichaSyncTracking(fichaState, uid('sf'), {}, false);
         await window.SamuStorage.clearDraft(currentUser.username, 'ficha');
         await refreshDraftCount();
         renderFichaView();
@@ -1235,8 +2221,12 @@
 
         if (rec.type === 'ficha') {
           fichaState = normalizeFichaData(rec.data);
+          if (activeCrew) {
+            applyCrewToFichaState(fichaState, activeCrew, false);
+          }
           editingFichaId = rec.id;
           fichaStep = 1;
+          resetFichaSyncTracking(fichaState, 'sf_rec_' + rec.id, {}, true);
           persistFichaDraft();
           activeTab = 'ficha';
         } else if (rec.type === 'checklist_condutor') {
@@ -1299,6 +2289,256 @@
     });
   }
 
+  /* ===================== ROLAGEM HORIZONTAL DAS ETAPAS (1. OCORRÊNCIA ... 6. ASSINATURAS) ===================== */
+  function renderStepPillsBarHtml(barId, pillsInnerHtml) {
+    return `
+      <div class="step-pills-bar" data-step-bar="${escapeHtml(barId)}">
+        <button type="button" class="step-scroll-btn" data-step-scroll="-1" aria-label="Rolar etapas para a esquerda" title="Ver etapas anteriores">‹</button>
+        <div class="step-pills" data-pills-id="${escapeHtml(barId)}">
+          ${pillsInnerHtml}
+        </div>
+        <button type="button" class="step-scroll-btn" data-step-scroll="1" aria-label="Rolar etapas para a direita" title="Ver próximas etapas">›</button>
+      </div>
+    `;
+  }
+
+  function bindStepPillsHorizontalScroll(container) {
+    container.querySelectorAll('.step-pills-bar').forEach(bar => {
+      if (bar.dataset.scrollBound === '1') return;
+      bar.dataset.scrollBound = '1';
+      const pills = bar.querySelector('.step-pills');
+      const btnLeft = bar.querySelector('[data-step-scroll="-1"]');
+      const btnRight = bar.querySelector('[data-step-scroll="1"]');
+      if (!pills) return;
+
+      const syncArrows = () => {
+        const maxScroll = Math.max(0, pills.scrollWidth - pills.clientWidth);
+        const hasOverflow = maxScroll > 4;
+        if (btnLeft) {
+          btnLeft.classList.toggle('hidden-arrow', !hasOverflow);
+          btnLeft.disabled = pills.scrollLeft <= 2;
+        }
+        if (btnRight) {
+          btnRight.classList.toggle('hidden-arrow', !hasOverflow);
+          btnRight.disabled = pills.scrollLeft >= maxScroll - 2;
+        }
+      };
+
+      const centerActivePill = () => {
+        const activeBtn = pills.querySelector('.step-pill.active');
+        if (activeBtn && pills.scrollWidth > pills.clientWidth) {
+          const targetLeft = activeBtn.offsetLeft - (pills.clientWidth / 2) + (activeBtn.offsetWidth / 2);
+          pills.scrollLeft = Math.max(0, targetLeft);
+        }
+        syncArrows();
+      };
+
+      // Centraliza a etapa ativa logo na montagem e após layout
+      centerActivePill();
+      requestAnimationFrame(centerActivePill);
+
+      pills.addEventListener('scroll', syncArrows, { passive: true });
+      if (typeof ResizeObserver === 'function') {
+        const ro = new ResizeObserver(() => syncArrows());
+        ro.observe(pills);
+      }
+
+      if (btnLeft) {
+        btnLeft.addEventListener('click', () => {
+          pills.scrollBy({ left: -180, behavior: 'smooth' });
+        });
+      }
+      if (btnRight) {
+        btnRight.addEventListener('click', () => {
+          pills.scrollBy({ left: 180, behavior: 'smooth' });
+        });
+      }
+
+      // Rolagem com roda do mouse no PC / Simulador
+      pills.addEventListener('wheel', (e) => {
+        if (pills.scrollWidth <= pills.clientWidth) return;
+        if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+          e.preventDefault();
+          pills.scrollLeft += e.deltaY;
+        }
+      }, { passive: false });
+
+      // Arrastar com mouse no PC / Simulador (toque nativo já funciona via touch-action: pan-x)
+      let isMouseDown = false;
+      let startX = 0;
+      let startScrollLeft = 0;
+      let draggedDistance = 0;
+
+      pills.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        isMouseDown = true;
+        draggedDistance = 0;
+        startX = e.pageX;
+        startScrollLeft = pills.scrollLeft;
+        pills.classList.add('dragging');
+      });
+
+      const stopDrag = () => {
+        if (!isMouseDown) return;
+        isMouseDown = false;
+        pills.classList.remove('dragging');
+      };
+
+      pills.addEventListener('mousemove', (e) => {
+        if (!isMouseDown) return;
+        const dx = e.pageX - startX;
+        draggedDistance = Math.max(draggedDistance, Math.abs(dx));
+        if (draggedDistance > 4) {
+          e.preventDefault();
+          pills.scrollLeft = startScrollLeft - dx;
+        }
+      });
+
+      pills.addEventListener('mouseup', stopDrag);
+      pills.addEventListener('mouseleave', stopDrag);
+
+      // Evita clique acidental em etapa ao arrastar a barra com o mouse
+      pills.addEventListener('click', (e) => {
+        if (draggedDistance > 7) {
+          e.preventDefault();
+          e.stopPropagation();
+          draggedDistance = 0;
+        }
+      }, true);
+    });
+  }
+
+  /* ===================== CAIXA DE SELEÇÃO COMPACTA (MEDICAMENTOS E ALERGIAS) ===================== */
+  function buildSelectBoxSummary(selectedArr, placeholder, pluralWord) {
+    const list = Array.isArray(selectedArr) ? selectedArr.filter(Boolean) : [];
+    if (list.length === 0) {
+      return {
+        text: placeholder,
+        cls: 'is-placeholder',
+        chevronClosed: 'Selecionar ▼'
+      };
+    }
+    if (list.length === 1 && list[0] === 'Nega') {
+      return {
+        text: '✅ Nega',
+        cls: 'is-nega',
+        chevronClosed: 'Alterar ▼'
+      };
+    }
+    if (list.length === 1) {
+      return {
+        text: `✅ ${list[0]}`,
+        cls: 'is-has-items',
+        chevronClosed: 'Alterar ▼'
+      };
+    }
+    return {
+      text: `✅ ${list.length} ${pluralWord}: ${list.join(', ')}`,
+      cls: 'is-has-items',
+      chevronClosed: `Alterar (${list.length}) ▼`
+    };
+  }
+
+  function buildSelectBoxTagsHtml(boxKey, selectedArr) {
+    const list = (Array.isArray(selectedArr) ? selectedArr : []).filter(x => x && x !== 'Nega');
+    if (list.length === 0) return '';
+    return list.map(item => `
+      <span class="select-box-tag">
+        <span>${escapeHtml(item)}</span>
+        <button type="button" data-sbox-remove="${escapeHtml(boxKey)}" data-sbox-val="${escapeHtml(item)}" title="Remover">×</button>
+      </span>
+    `).join('');
+  }
+
+  function renderSelectBoxHtml(cfg) {
+    const isOpen = openSelectBoxKey === cfg.boxKey;
+    const selected = Array.isArray(cfg.selected) ? cfg.selected : [];
+    const summary = buildSelectBoxSummary(selected, cfg.placeholder, cfg.pluralWord);
+    const q = String(cfg.filterQuery || '').trim();
+    const qNorm = normStr(q);
+
+    const optionsHtml = (cfg.options || []).map(op => {
+      const matches = !qNorm || normStr(op).includes(qNorm);
+      const isSel = selected.includes(op);
+      const isNega = op === 'Nega';
+      return `
+        <button type="button"
+          class="select-box-option ${isNega ? 'is-nega-opt' : ''} ${isSel ? 'is-selected' : ''} ${matches ? '' : 'hidden'}"
+          data-sbox-opt="${escapeHtml(cfg.boxKey)}"
+          data-sbox-val="${escapeHtml(op)}">
+          <span class="select-box-check">✓</span>
+          <span>${escapeHtml(op)}</span>
+        </button>
+      `;
+    }).join('');
+
+    return `
+      <div class="select-box-wrap ${isOpen ? 'is-open' : ''}" id="select-box-${escapeHtml(cfg.boxKey)}" data-sbox-key="${escapeHtml(cfg.boxKey)}">
+        <button type="button" class="select-box-trigger" data-sbox-toggle="${escapeHtml(cfg.boxKey)}">
+          <span class="select-box-summary ${summary.cls}">${escapeHtml(summary.text)}</span>
+          <span class="select-box-chevron">${isOpen ? 'Fechar ▲' : summary.chevronClosed}</span>
+        </button>
+        <div class="select-box-tags" data-sbox-tags="${escapeHtml(cfg.boxKey)}">${buildSelectBoxTagsHtml(cfg.boxKey, selected)}</div>
+        <div class="select-box-panel ${isOpen ? '' : 'hidden'}" data-sbox-panel="${escapeHtml(cfg.boxKey)}">
+          <div class="select-box-panel-top">
+            <input type="search" class="select-box-search" data-sbox-search="${escapeHtml(cfg.boxKey)}"
+              placeholder="${escapeHtml(cfg.searchPlaceholder)}" value="${escapeHtml(cfg.filterQuery || '')}" />
+            <button type="button" class="select-box-done-btn" data-sbox-done="${escapeHtml(cfg.boxKey)}">Concluir ▲</button>
+          </div>
+          <div class="select-box-list" data-sbox-list="${escapeHtml(cfg.boxKey)}">
+            ${optionsHtml}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function updateSelectBoxInPlace(boxKey) {
+    const wrap = document.getElementById(`select-box-${boxKey}`);
+    if (!wrap) return;
+    const isMed = boxKey === 'med';
+    const selected = isMed ? (fichaState.medicamentosSelecionados || []) : (fichaState.alergiasSelecionadas || []);
+    const placeholder = isMed ? 'Toque para selecionar medicamentos na lista...' : 'Toque para selecionar alergias na lista...';
+    const pluralWord = isMed ? 'selecionados' : 'selecionadas';
+    const isOpen = openSelectBoxKey === boxKey;
+
+    wrap.classList.toggle('is-open', isOpen);
+    const panel = wrap.querySelector(`[data-sbox-panel="${boxKey}"]`);
+    if (panel) panel.classList.toggle('hidden', !isOpen);
+
+    const summary = buildSelectBoxSummary(selected, placeholder, pluralWord);
+    const sumEl = wrap.querySelector('.select-box-summary');
+    if (sumEl) {
+      sumEl.className = `select-box-summary ${summary.cls}`;
+      sumEl.textContent = summary.text;
+    }
+    const chevEl = wrap.querySelector('.select-box-chevron');
+    if (chevEl) {
+      chevEl.textContent = isOpen ? 'Fechar ▲' : summary.chevronClosed;
+    }
+    const tagsEl = wrap.querySelector(`[data-sbox-tags="${boxKey}"]`);
+    if (tagsEl) {
+      tagsEl.innerHTML = buildSelectBoxTagsHtml(boxKey, selected);
+    }
+    wrap.querySelectorAll(`[data-sbox-opt="${boxKey}"]`).forEach(optBtn => {
+      const v = optBtn.dataset.sboxVal;
+      optBtn.classList.toggle('is-selected', selected.includes(v));
+    });
+  }
+
+  let outsideSelectBoxBound = false;
+  function ensureOutsideSelectBoxCloseListener() {
+    if (outsideSelectBoxBound) return;
+    outsideSelectBoxBound = true;
+    document.addEventListener('click', (e) => {
+      if (!openSelectBoxKey) return;
+      if (e.target && e.target.closest && e.target.closest('.select-box-wrap')) return;
+      const prevKey = openSelectBoxKey;
+      openSelectBoxKey = '';
+      updateSelectBoxInPlace(prevKey);
+    });
+  }
+
   /* ==========================================================================
    * ABA 1: FICHA DE ATENDIMENTO USB INTERATIVA (6 ETAPAS RÁPIDAS)
    * ========================================================================== */
@@ -1323,20 +2563,20 @@
           <div class="card-title">
             <span>📍 Dados da Solicitação e Ocorrência</span>
           </div>
-          <div class="grid-3">
-            <div class="field">
+          <div class="grid-date-kms">
+            <div class="field field-full-phone">
               <label>Data</label>
               <input type="date" data-f="data" value="${escapeHtml(d.data)}" />
             </div>
             <div class="field">
-              <label style="display:flex; justify-content:space-between; align-items:center; gap:4px;">
+              <label style="display:flex; justify-content:space-between; align-items:center; gap:4px; flex-wrap:wrap;">
                 <span>KM Inicial</span>
                 ${lastKmSaved ? `<button type="button" id="btn-use-last-km" style="background:none;border:none;padding:0;color:var(--success);font-size:0.72rem;font-weight:800;cursor:pointer;" title="Toque para usar o último KM Final salvo">↺ Último: ${escapeHtml(lastKmSaved)}</button>` : ''}
               </label>
               <input type="number" inputmode="numeric" id="inp-km-inicial" placeholder="Ex: 84520" data-f="kmInicial" value="${escapeHtml(d.kmInicial)}" />
             </div>
             <div class="field">
-              <label>KM Final <small style="color:var(--muted);font-weight:600;">(vira próximo inicial)</small></label>
+              <label>KM Final <small style="color:var(--muted);font-weight:600;">(próx. inicial)</small></label>
               <input type="number" inputmode="numeric" id="inp-km-final" placeholder="Ex: 84532" data-f="kmFinal" value="${escapeHtml(d.kmFinal)}" />
             </div>
           </div>
@@ -1368,8 +2608,8 @@
             <input type="text" placeholder="Se outro local, especifique aqui..." data-f="localOutroTexto" value="${escapeHtml(d.localOutroTexto)}" />
           </div>
 
-          <div class="grid-3">
-            <div class="field">
+          <div class="grid-cep-addr">
+            <div class="field field-full-phone">
               <label>CEP do Local (Wi-Fi/4G)</label>
               <div class="input-action-row">
                 <input type="text" inputmode="numeric" id="inp-occ-cep" placeholder="00000-000" data-f="ocorrenciaCep" value="${escapeHtml(d.ocorrenciaCep || '')}" />
@@ -1413,8 +2653,8 @@
             <button type="button" class="btn btn-outline btn-sm" id="btn-copy-occ-addr">📍 Usar Endereço da Ocorrência</button>
           </div>
 
-          <div class="grid-3">
-            <div class="field">
+          <div class="grid-cpf-docs">
+            <div class="field field-full-phone">
               <label>CPF (puxa cadastro salvo / Wi-Fi)</label>
               <div class="input-action-row">
                 <input type="text" inputmode="numeric" id="inp-vitima-cpf" placeholder="000.000.000-00" data-f="vitimaCpf" value="${escapeHtml(d.vitimaCpf)}" />
@@ -1436,7 +2676,7 @@
             <label>Nome Completo da Vítima (usado na busca do histórico)</label>
             <input type="text" id="inp-vitima-nome" placeholder="Digite o nome do paciente" data-f="vitimaNome" value="${escapeHtml(d.vitimaNome)}" />
           </div>
-          <div class="grid-2">
+          <div class="grid-dn-age">
             <div class="field">
               <label>Data de Nascimento (DN)</label>
               <input type="date" id="inp-vitima-dn" data-f="vitimaDn" value="${escapeHtml(d.vitimaDn)}" />
@@ -1447,8 +2687,8 @@
             </div>
           </div>
 
-          <div class="grid-3">
-            <div class="field">
+          <div class="grid-cep-city">
+            <div class="field field-full-phone">
               <label>CEP Residencial (puxa rua no Wi-Fi)</label>
               <div class="input-action-row">
                 <input type="text" inputmode="numeric" id="inp-vitima-cep" placeholder="00000-000" data-f="vitimaCep" value="${escapeHtml(d.vitimaCep)}" onfocus="this.select()" />
@@ -1466,8 +2706,8 @@
             </div>
           </div>
 
-          <div class="grid-3">
-            <div class="field" style="grid-column: span 2;">
+          <div class="grid-addr-num">
+            <div class="field">
               <label>Endereço Residencial</label>
               <input type="text" id="inp-vitima-end" placeholder="Rua / Av." data-f="vitimaEndereco" value="${escapeHtml(d.vitimaEndereco)}" />
             </div>
@@ -1570,7 +2810,7 @@
                   style="left:${z.cx * 100}%; top:${z.cy * 100}%; width:${z.rx * 200}%; height:${z.ry * 200}%;"></button>`;
               }).join('')}
             </div>
-            <div class="grid-3" style="width:100%; align-items:end;">
+            <div class="grid-burns-footer">
               <div class="field" style="margin:0;">
                 <label>Há Queimaduras?</label>
                 <select data-f="haQueimaduras" id="sel-ha-queimaduras">
@@ -1582,7 +2822,7 @@
                 <label>% Superfície Queimada</label>
                 <input type="text" id="inp-burn-pct" placeholder="Ex: 18%" data-f="queimadurasPorcentagem" value="${escapeHtml(d.queimadurasPorcentagem)}" />
               </div>
-              <button type="button" class="btn btn-secondary btn-sm" id="btn-clear-burns" style="height:42px;">Limpar Boneco</button>
+              <button type="button" class="btn btn-secondary btn-sm field-full-phone" id="btn-clear-burns" style="height:42px;">Limpar Boneco</button>
             </div>
           </div>
         </div>
@@ -1644,7 +2884,7 @@
           `).join('')}
 
           <div class="section-subtitle">Sinais Vitais</div>
-          <div class="grid-3">
+          <div class="grid-vitals">
             <div class="field"><label>PA (mmHg)</label><input type="text" placeholder="Ex: 120x80" data-f="svPa" value="${escapeHtml(d.svPa)}" /></div>
             <div class="field"><label>FC (bpm)</label><input type="text" inputmode="numeric" placeholder="Ex: 84" data-f="svFc" value="${escapeHtml(d.svFc)}" /></div>
             <div class="field"><label>FR (irpm)</label><input type="text" inputmode="numeric" placeholder="Ex: 18" data-f="svFr" value="${escapeHtml(d.svFr)}" /></div>
@@ -1668,32 +2908,32 @@
           </div>
 
           <div class="section-subtitle">Medicamentos em Uso</div>
-          <input type="search" id="inp-med-filter" class="med-filter-input" placeholder="🔎 Filtrar medicamento da lista (ex: Losartana, Rivotril, Glifage)..." value="${escapeHtml(medFilterQuery)}" />
-          <div class="chips-wrap" id="med-chips-container" style="margin-bottom:10px;">
-            ${(window.SAMU_SCHEMA.medicamentosOpcoes || []).filter(op => {
-              if (!medFilterQuery.trim()) return true;
-              return normStr(op).includes(normStr(medFilterQuery.trim()));
-            }).map(op => {
-              const sel = (d.medicamentosSelecionados || []).includes(op);
-              const isNega = op === 'Nega';
-              return `<button type="button" class="chip-btn ${isNega ? 'chip-nega' : ''} ${sel ? 'selected' : ''}" data-med-chip="${escapeHtml(op)}">${escapeHtml(op)}</button>`;
-            }).join('')}
-          </div>
+          ${renderSelectBoxHtml({
+            boxKey: 'med',
+            options: window.SAMU_SCHEMA.medicamentosOpcoes || [],
+            selected: d.medicamentosSelecionados || [],
+            placeholder: 'Toque para selecionar medicamentos na lista...',
+            searchPlaceholder: '🔎 Buscar medicamento na lista (ex: Losartana, Rivotril)...',
+            filterQuery: medFilterQuery,
+            pluralWord: 'selecionados'
+          })}
           <div class="field">
-            <label>Outro(s) Medicamento(s) que não estão na lista (separe por vírgula)</label>
+            <label>Outro(s) Medicamento(s) fora da lista (separe por vírgula)</label>
             <input type="text" id="inp-med-outro" placeholder="Digite aqui se o paciente usar outro medicamento..." data-f="medicamentosOutro" value="${escapeHtml(d.medicamentosOutro || '')}" />
           </div>
 
           <div class="section-subtitle">Alergias</div>
-          <div class="chips-wrap" style="margin-bottom:10px;">
-            ${(window.SAMU_SCHEMA.alergiasOpcoes || []).map(op => {
-              const sel = (d.alergiasSelecionadas || []).includes(op);
-              const isNega = op === 'Nega';
-              return `<button type="button" class="chip-btn ${isNega ? 'chip-nega' : ''} ${sel ? 'selected' : ''}" data-alergia-chip="${escapeHtml(op)}">${escapeHtml(op)}</button>`;
-            }).join('')}
-          </div>
+          ${renderSelectBoxHtml({
+            boxKey: 'alergia',
+            options: window.SAMU_SCHEMA.alergiasOpcoes || [],
+            selected: d.alergiasSelecionadas || [],
+            placeholder: 'Toque para selecionar alergias na lista...',
+            searchPlaceholder: '🔎 Buscar alergia na lista (ex: Dipirona, Amoxicilina)...',
+            filterQuery: alergiaFilterQuery,
+            pluralWord: 'selecionadas'
+          })}
           <div class="field" style="margin-bottom:0;">
-            <label>Outra(s) Alergia(s) não listada(s) (escrever)</label>
+            <label>Outra(s) Alergia(s) fora da lista (escrever)</label>
             <input type="text" id="inp-alergia-outro" placeholder="Escreva aqui se houver outra alergia..." data-f="alergiasOutro" value="${escapeHtml(d.alergiasOutro || '')}" />
           </div>
         </div>
@@ -1719,8 +2959,43 @@
             <textarea rows="2" placeholder="Conduta orientada / encaminhamento..." data-f="conduta">${escapeHtml(d.conduta)}</textarea>
           </div>
           <div class="field">
-            <label>Médico Regulador</label>
-            <input type="text" placeholder="Dr(a). Nome / Senha de regulação" data-f="medicoRegulador" value="${escapeHtml(d.medicoRegulador)}" />
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; flex-wrap:wrap;">
+              <label style="margin:0;">Médico Regulador</label>
+              <small style="color:var(--muted); font-size:0.72rem; font-weight:700;">Salva automático p/ próximas fichas</small>
+            </div>
+            ${(() => {
+              const savedMedicos = window.SamuStorage.getMedicosReguladores ? window.SamuStorage.getMedicosReguladores() : [];
+              const curValLower = String(d.medicoRegulador || '').trim().toLowerCase();
+              return `
+                <div class="receiver-saved-box" style="margin-top:4px; margin-bottom:6px;">
+                  <div style="font-size:0.76rem; font-weight:800; color:#334155;">
+                    ⚡ Médicos Reguladores salvos (${savedMedicos.length}) — toque no nome p/ preencher:
+                  </div>
+                  ${savedMedicos.length > 0 ? `
+                    <div class="receiver-chip-wrap">
+                      ${savedMedicos.map(m => {
+                        const mLow = String(m.nome || '').trim().toLowerCase();
+                        const isSel = Boolean(mLow && (curValLower === mLow || curValLower.startsWith(mLow + ' ') || curValLower.startsWith(mLow + '/') || curValLower.startsWith(mLow + '-')));
+                        return `
+                          <span class="receiver-chip ${isSel ? 'active' : ''}" data-pick-medico="${escapeHtml(m.id)}" title="Toque para preencher este Médico Regulador">
+                            <span>👨‍⚕️ ${escapeHtml(m.nome)}</span>
+                            <button type="button" class="receiver-chip-del" data-del-medico="${escapeHtml(m.id)}" title="Remover da lista">×</button>
+                          </span>
+                        `;
+                      }).join('')}
+                    </div>
+                  ` : `
+                    <div style="font-size:0.75rem; color:var(--muted); margin-top:4px;">
+                      Nenhum médico regulador salvo ainda. Ao preencher abaixo nas fichas, o nome já vai ficando salvo automaticamente para selecionar com 1 toque!
+                    </div>
+                  `}
+                </div>
+              `;
+            })()}
+            <div class="input-action-row">
+              <input type="text" id="inp-medico-regulador" placeholder="Dr(a). Nome / CRM (ou Senha de regulação)" data-f="medicoRegulador" value="${escapeHtml(d.medicoRegulador)}" />
+              <button type="button" class="btn-lookup" id="btn-save-medico-now" title="Salvar este Médico Regulador na lista rápida agora">💾 Salvar</button>
+            </div>
           </div>
           <div class="field">
             <label>Descrição dos Pertences do Paciente (Deixados no Destino)</label>
@@ -1857,41 +3132,157 @@
             </div>
 
             <div style="border:1px solid #e2e8f0; border-radius:12px; padding:12px;">
-              <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; flex-wrap:wrap;">
-                <strong style="font-size:0.86rem; color:var(--samu-red-dark);">ENFERMAGEM (SAMU)</strong>
-                ${(currentUser && currentUser.role === 'enfermagem' && d.enfermagemCoren)
-                  ? `<small style="color:#15803d; font-size:0.73rem; font-weight:800;">✅ COREN do login</small>`
-                  : ((currentUser && currentUser.role === 'enfermagem' && (currentUser.coren || currentUser.councilId))
-                      ? `<button type="button" class="btn btn-outline btn-sm" id="btn-fill-my-coren" style="padding:2px 8px; font-size:0.72rem;">🔄 Usar meu COREN</button>`
-                      : '')}
-              </div>
-              <div class="field" style="margin-top:8px;">
-                <label>Nome Enfermagem SAMU</label>
-                <input type="text" data-f="enfermagemNome" value="${escapeHtml(d.enfermagemNome)}" />
-              </div>
-              <div class="field">
-                <label>COREN</label>
-                <input type="text" data-f="enfermagemCoren" placeholder="Ex: COREN-SP 000000" value="${escapeHtml(d.enfermagemCoren)}" />
-              </div>
-              <div class="sig-preview-box ${d.sigEnfermagem ? 'signed' : ''}" data-sig-target="sigEnfermagem" data-sig-personal="1" data-sig-title="Assinatura – Enfermagem (SAMU)">
-                ${d.sigEnfermagem ? `<img src="${d.sigEnfermagem}" alt="Assinatura Enfermagem" />` : `<span>✍️ Assinar (Enfermagem)</span>`}
-              </div>
+              ${(() => {
+                const hasSecondEnf = Boolean(
+                  manualShowSecondEnf ||
+                  (activeCrew && activeCrew.nursingSlots && activeCrew.nursingSlots.length > 1) ||
+                  d.enfermagem2Nome || d.enfermagem2Coren || d.sigEnfermagem2
+                );
+                const enf1Owner = d.enfermagemSlot1User || (currentUser && currentUser.role === 'enfermagem' ? currentUser.username : '');
+                const enf2Owner = d.enfermagemSlot2User || '';
+                return `
+                  <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; flex-wrap:wrap;">
+                    <strong style="font-size:0.86rem; color:var(--samu-red-dark);">ENFERMAGEM (SAMU)</strong>
+                    <div style="display:flex; gap:5px; align-items:center; flex-wrap:wrap;">
+                      ${activeCrew
+                        ? `<small style="color:#15803d; font-size:0.72rem; font-weight:800;">✅ Preenchido pela Equipe</small>`
+                        : ((currentUser && currentUser.role === 'enfermagem' && d.enfermagemCoren)
+                            ? `<small style="color:#15803d; font-size:0.73rem; font-weight:800;">✅ COREN do login</small>`
+                            : ((currentUser && currentUser.role === 'enfermagem' && (currentUser.coren || currentUser.councilId))
+                                ? `<button type="button" class="btn btn-outline btn-sm" id="btn-fill-my-coren" style="padding:2px 8px; font-size:0.72rem;">🔄 Usar meu COREN</button>`
+                                : ''))}
+                      ${!hasSecondEnf ? `<button type="button" class="btn btn-outline btn-sm" id="btn-add-second-enf" style="padding:2px 8px; font-size:0.71rem;">+ 2º Enfermagem</button>` : ''}
+                    </div>
+                  </div>
+                  <div class="field" style="margin-top:8px;">
+                    <label>${hasSecondEnf ? '1º Profissional Enfermagem (Enfermeiro / Téc.)' : 'Nome Enfermagem SAMU'}</label>
+                    <input type="text" data-f="enfermagemNome" value="${escapeHtml(d.enfermagemNome)}" />
+                  </div>
+                  <div class="field">
+                    <label>COREN</label>
+                    <input type="text" data-f="enfermagemCoren" placeholder="Ex: COREN-SP 000000" value="${escapeHtml(d.enfermagemCoren)}" />
+                  </div>
+                  <div class="sig-preview-box ${d.sigEnfermagem ? 'signed' : ''}" data-sig-target="sigEnfermagem" data-sig-personal="1" data-sig-user="${escapeHtml(enf1Owner)}" data-sig-title="Assinatura – ${escapeHtml(d.enfermagemNome || 'Enfermagem (SAMU)')}">
+                    ${d.sigEnfermagem ? `<img src="${d.sigEnfermagem}" alt="Assinatura Enfermagem" />` : `<span>✍️ Assinar (${escapeHtml(d.enfermagemNome || 'Enfermagem')})</span>`}
+                  </div>
+
+                  ${hasSecondEnf ? `
+                    <div class="sub-slot-divider">
+                      <span>👩‍⚕️ 2º Profissional Enfermagem (Equipe em 3)</span>
+                    </div>
+                    <div class="field">
+                      <label>2º Nome Enfermagem SAMU</label>
+                      <input type="text" data-f="enfermagem2Nome" placeholder="Nome do 2º profissional de Enfermagem" value="${escapeHtml(d.enfermagem2Nome || '')}" />
+                    </div>
+                    <div class="field">
+                      <label>2º COREN</label>
+                      <input type="text" data-f="enfermagem2Coren" placeholder="Ex: COREN-SP 000000" value="${escapeHtml(d.enfermagem2Coren || '')}" />
+                    </div>
+                    <div class="sig-preview-box ${d.sigEnfermagem2 ? 'signed' : ''}" data-sig-target="sigEnfermagem2" data-sig-personal="1" data-sig-user="${escapeHtml(enf2Owner)}" data-sig-title="Assinatura – ${escapeHtml(d.enfermagem2Nome || '2º Enfermagem (SAMU)')}">
+                      ${d.sigEnfermagem2 ? `<img src="${d.sigEnfermagem2}" alt="Assinatura 2º Enfermagem" />` : `<span>✍️ Assinar (${escapeHtml(d.enfermagem2Nome || '2º Enfermagem')})</span>`}
+                    </div>
+                  ` : ''}
+                `;
+              })()}
             </div>
           </div>
 
           <div style="border:1px solid #e2e8f0; border-radius:12px; padding:12px; margin-top:12px;">
-            <strong style="font-size:0.86rem; color:var(--samu-red-dark);">CONDUTOR SOCORRISTA (SAMU)</strong>
-            <div class="field" style="margin-top:8px;">
-              <label>Nome do Condutor Socorrista</label>
-              <input type="text" data-f="condutorNome" value="${escapeHtml(d.condutorNome)}" />
-            </div>
-            <div class="sig-preview-box ${d.sigCondutor ? 'signed' : ''}" data-sig-target="sigCondutor" data-sig-personal="1" data-sig-title="Assinatura – Condutor Socorrista (SAMU)">
-              ${d.sigCondutor ? `<img src="${d.sigCondutor}" alt="Assinatura Condutor" />` : `<span>✍️ Assinar (Condutor Socorrista)</span>`}
-            </div>
+            ${(() => {
+              const hasSecondCond = Boolean(
+                manualShowSecondCond ||
+                (activeCrew && activeCrew.driverSlots && activeCrew.driverSlots.length > 1) ||
+                d.condutor2Nome || d.sigCondutor2
+              );
+              const cond1Owner = d.condutorSlot1User || (currentUser && currentUser.role === 'condutor' ? currentUser.username : '');
+              const cond2Owner = d.condutorSlot2User || '';
+              return `
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; flex-wrap:wrap;">
+                  <strong style="font-size:0.86rem; color:var(--samu-red-dark);">CONDUTOR SOCORRISTA (SAMU)</strong>
+                  <div style="display:flex; gap:5px; align-items:center; flex-wrap:wrap;">
+                    ${activeCrew ? `<button type="button" class="btn btn-outline btn-sm" id="btn-reapply-crew-sigs" style="padding:2px 8px; font-size:0.71rem;">🔄 Reaplicar Equipe</button>` : ''}
+                    ${!hasSecondCond ? `<button type="button" class="btn btn-outline btn-sm" id="btn-add-second-cond" style="padding:2px 8px; font-size:0.71rem;">+ 2º Condutor</button>` : ''}
+                  </div>
+                </div>
+                <div class="field" style="margin-top:8px;">
+                  <label>${hasSecondCond ? '1º Condutor Socorrista' : 'Nome do Condutor Socorrista'}</label>
+                  <input type="text" data-f="condutorNome" value="${escapeHtml(d.condutorNome)}" />
+                </div>
+                <div class="sig-preview-box ${d.sigCondutor ? 'signed' : ''}" data-sig-target="sigCondutor" data-sig-personal="1" data-sig-user="${escapeHtml(cond1Owner)}" data-sig-title="Assinatura – ${escapeHtml(d.condutorNome || 'Condutor Socorrista (SAMU)')}">
+                  ${d.sigCondutor ? `<img src="${d.sigCondutor}" alt="Assinatura Condutor" />` : `<span>✍️ Assinar (${escapeHtml(d.condutorNome || 'Condutor Socorrista')})</span>`}
+                </div>
+
+                ${hasSecondCond ? `
+                  <div class="sub-slot-divider">
+                    <span>🚑 2º Condutor Socorrista (Equipe em 3)</span>
+                  </div>
+                  <div class="field">
+                    <label>2º Condutor Socorrista</label>
+                    <input type="text" data-f="condutor2Nome" placeholder="Nome do 2º Condutor Socorrista" value="${escapeHtml(d.condutor2Nome || '')}" />
+                  </div>
+                  <div class="sig-preview-box ${d.sigCondutor2 ? 'signed' : ''}" data-sig-target="sigCondutor2" data-sig-personal="1" data-sig-user="${escapeHtml(cond2Owner)}" data-sig-title="Assinatura – ${escapeHtml(d.condutor2Nome || '2º Condutor Socorrista (SAMU)')}">
+                    ${d.sigCondutor2 ? `<img src="${d.sigCondutor2}" alt="Assinatura 2º Condutor" />` : `<span>✍️ Assinar (${escapeHtml(d.condutor2Nome || '2º Condutor Socorrista')})</span>`}
+                  </div>
+                ` : ''}
+              `;
+            })()}
           </div>
         </div>
       `;
     }
+
+    const crewBarHtml = (() => {
+      if (!currentUser || currentUser.role === 'admin') return '';
+      activeCrew = window.SamuStorage.getActiveCrewForUser(currentUser.username);
+      updateTopbarCrewButton();
+      if (activeCrew && activeCrew.membersDetailed && activeCrew.membersDetailed.length >= 2) {
+        const ws = window.SamuStorage.getCrewWorkspace(activeCrew.crewId);
+        const cf = ws && ws.currentFicha;
+        let syncInfo = '✅ Ficha sincronizada e assinaturas da equipe preenchidas';
+        if (cf && cf.updatedByName && cf.updatedAt) {
+          const dt = new Date(cf.updatedAt);
+          const hhmm = !isNaN(dt.getTime())
+            ? (String(dt.getHours()).padStart(2, '0') + ':' + String(dt.getMinutes()).padStart(2, '0'))
+            : '';
+          syncInfo = `🔄 Sincronizada • Última edição: ${cf.updatedByName}${hhmm ? ` às ${hhmm}` : ''}`;
+        }
+        const membersChips = activeCrew.membersDetailed.map(m => {
+          const ic = m.subRole === 'condutor' ? '🚑' : (m.subRole === 'enfermeiro' ? '👩‍⚕️' : '🩺');
+          return `${ic} ${m.name}`;
+        }).join('  •  ');
+        return `
+          <div class="crew-sync-bar">
+            <div style="flex:1; min-width:210px;">
+              <div style="font-size:0.81rem; font-weight:800; color:#14532d;">
+                👥 Equipe do Plantão (${activeCrew.membersDetailed.length}): ${escapeHtml(membersChips)}
+              </div>
+              <div style="font-size:0.74rem; color:#166534; margin-top:2px;">
+                ${escapeHtml(syncInfo)}
+              </div>
+            </div>
+            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+              <button type="button" class="btn btn-outline btn-sm" id="btn-crew-sync-now" style="background:#fff; padding:5px 9px; font-size:0.75rem;">🔄 Sincronizar</button>
+              <button type="button" class="btn btn-secondary btn-sm js-open-crew-modal" style="padding:5px 9px; font-size:0.75rem;">👥 Equipe</button>
+            </div>
+          </div>
+        `;
+      }
+      return `
+        <div class="crew-sync-bar unpaired">
+          <div style="flex:1; min-width:210px;">
+            <div style="font-size:0.81rem; font-weight:800; color:#9a3412;">
+              👥 Informe com quem você está trabalhando hoje (2 ou até 3 integrantes)
+            </div>
+            <div style="font-size:0.74rem; color:#7c2d12; margin-top:2px;">
+              Sincroniza a ficha em preenchimento entre vocês e já preenche os nomes, COREN e assinaturas no final!
+            </div>
+          </div>
+          <button type="button" class="btn btn-primary btn-sm js-open-crew-modal" style="padding:6px 11px; font-size:0.77rem;">
+            👥 Definir Equipe
+          </button>
+        </div>
+      `;
+    })();
 
     container.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; gap:8px; flex-wrap:wrap;">
@@ -1904,13 +3295,13 @@
         </button>
       </div>
 
+      ${crewBarHtml}
+
       ${renderQuickDraftBarHtml('ficha')}
 
-      <div class="step-pills">
-        ${steps.map(s => `
-          <button type="button" class="step-pill ${fichaStep === s.n ? 'active' : ''}" data-step="${s.n}">${s.label}</button>
-        `).join('')}
-      </div>
+      ${renderStepPillsBarHtml('ficha-steps', steps.map(s => `
+        <button type="button" class="step-pill ${fichaStep === s.n ? 'active' : ''}" data-step="${s.n}">${s.label}</button>
+      `).join(''))}
 
       ${stepHtml}
 
@@ -1932,9 +3323,12 @@
 
   function bindFichaEvents(container) {
     bindQuickDraftBarEvents(container);
+    bindStepPillsHorizontalScroll(container);
+    ensureOutsideSelectBoxCloseListener();
 
     container.querySelectorAll('.step-pill').forEach(btn => {
       btn.addEventListener('click', () => {
+        openSelectBoxKey = '';
         fichaStep = Number(btn.dataset.step);
         renderFichaView();
       });
@@ -1942,17 +3336,56 @@
 
     const prevBtn = document.getElementById('btn-prev-step');
     const nextBtn = document.getElementById('btn-next-step');
-    if (prevBtn) prevBtn.addEventListener('click', () => { if (fichaStep > 1) { fichaStep--; renderFichaView(); window.scrollTo(0, 0); } });
-    if (nextBtn) nextBtn.addEventListener('click', () => { if (fichaStep < 6) { fichaStep++; renderFichaView(); window.scrollTo(0, 0); } });
+    if (prevBtn) prevBtn.addEventListener('click', () => { if (fichaStep > 1) { openSelectBoxKey = ''; fichaStep--; renderFichaView(); window.scrollTo(0, 0); } });
+    if (nextBtn) nextBtn.addEventListener('click', () => { if (fichaStep < 6) { openSelectBoxKey = ''; fichaStep++; renderFichaView(); window.scrollTo(0, 0); } });
+
+    container.querySelectorAll('.js-open-crew-modal').forEach(btn => {
+      btn.addEventListener('click', () => {
+        openCrewSelectionModal({ isLoginPrompt: false });
+      });
+    });
+
+    const btnCrewSyncNow = document.getElementById('btn-crew-sync-now');
+    if (btnCrewSyncNow) {
+      btnCrewSyncNow.addEventListener('click', async () => {
+        btnCrewSyncNow.disabled = true;
+        btnCrewSyncNow.textContent = '⏳...';
+        try {
+          if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
+            await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: window.SamuStorage.getGitHubMeta().dirty });
+          }
+          await pullAndApplyCrewFichaChanges({ fromNetwork: true });
+          await refreshDraftCount();
+          await refreshSyncBadge();
+          renderFichaView();
+          showToast(navigator.onLine
+            ? '🔄 Ficha da equipe sincronizada com sucesso!'
+            : '🔄 Sincronizada na memória interna (sem internet agora).');
+        } catch (err) {
+          samuAlert('Erro ao sincronizar ficha da equipe: ' + err.message);
+        } finally {
+          btnCrewSyncNow.disabled = false;
+          btnCrewSyncNow.textContent = '🔄 Sincronizar';
+        }
+      });
+    }
 
     document.getElementById('btn-reset-ficha').addEventListener('click', async () => {
       if (!(await samuConfirm(editingFichaId ? 'Sair desta ficha e abrir uma nova ficha em branco (com o último KM Final)?' : 'Limpar todos os campos desta ficha em andamento?'))) return;
-      if (fichaState.kmFinal && String(fichaState.kmFinal).trim() !== '') {
-        window.SamuStorage.setLastKmFinal(fichaState.kmFinal);
+      const prevKmFinal = fichaState.kmFinal ? String(fichaState.kmFinal).trim() : '';
+      if (prevKmFinal !== '') {
+        window.SamuStorage.setLastKmFinal(prevKmFinal);
+      }
+      if (activeCrew) {
+        window.SamuStorage.closeCrewCurrentSession(activeCrew.crewId, currentCrewSessionId, 'reset', editingFichaId || '', prevKmFinal, false);
+        scheduleCrewCloudPush();
       }
       editingFichaId = null;
+      manualShowSecondEnf = false;
+      manualShowSecondCond = false;
       fichaState = createEmptyFicha();
       fichaStep = 1;
+      resetFichaSyncTracking(fichaState, uid('sf'), {}, false);
       await window.SamuStorage.clearDraft(currentUser.username, 'ficha');
       renderFichaView();
     });
@@ -2184,11 +3617,11 @@
         // Se escrever outro medicamento ou outra alergia manualmente, desmarca "Nega" automaticamente
         if (key === 'medicamentosOutro' && val.trim() && Array.isArray(fichaState.medicamentosSelecionados) && fichaState.medicamentosSelecionados.includes('Nega')) {
           fichaState.medicamentosSelecionados = fichaState.medicamentosSelecionados.filter(x => x !== 'Nega');
-          container.querySelectorAll('[data-med-chip="Nega"]').forEach(b => b.classList.remove('selected'));
+          updateSelectBoxInPlace('med');
         }
         if (key === 'alergiasOutro' && val.trim() && Array.isArray(fichaState.alergiasSelecionadas) && fichaState.alergiasSelecionadas.includes('Nega')) {
           fichaState.alergiasSelecionadas = fichaState.alergiasSelecionadas.filter(x => x !== 'Nega');
-          container.querySelectorAll('[data-alergia-chip="Nega"]').forEach(b => b.classList.remove('selected'));
+          updateSelectBoxInPlace('alergia');
         }
 
         // Cálculo automático de idade ao preencher DN
@@ -2204,56 +3637,62 @@
       });
     });
 
-    // Filtro rápido da lista de medicamentos (sem perder o foco de digitação)
-    const medFilterInp = document.getElementById('inp-med-filter');
-    if (medFilterInp) {
-      medFilterInp.addEventListener('input', () => {
-        medFilterQuery = medFilterInp.value;
-        const pos = medFilterInp.selectionStart;
-        renderFichaView();
-        const el = document.getElementById('inp-med-filter');
-        if (el) {
-          el.focus();
-          try { el.setSelectionRange(pos, pos); } catch (e) {}
-        }
-      });
-    }
-
-    // Seleção de Medicamentos em Uso ("Nega" em primeiro + ordem alfabética)
-    container.querySelectorAll('[data-med-chip]').forEach(btn => {
+    // Caixas de seleção compactas (Medicamentos em Uso e Alergias: "Nega" em 1º + ordem alfabética)
+    container.querySelectorAll('[data-sbox-toggle]').forEach(btn => {
       btn.addEventListener('click', () => {
-        const val = btn.dataset.medChip;
-        let cur = Array.isArray(fichaState.medicamentosSelecionados) ? fichaState.medicamentosSelecionados.slice() : [];
-        if (val === 'Nega') {
-          if (cur.includes('Nega')) {
-            cur = [];
-          } else {
-            cur = ['Nega'];
-            fichaState.medicamentosOutro = '';
-          }
-        } else {
-          cur = cur.filter(x => x !== 'Nega');
-          const idx = cur.indexOf(val);
-          if (idx >= 0) cur.splice(idx, 1);
-          else cur.push(val);
-        }
-        fichaState.medicamentosSelecionados = cur;
-        persistFichaDraft();
-        renderFichaView();
+        const key = btn.dataset.sboxToggle;
+        const prev = openSelectBoxKey;
+        openSelectBoxKey = (openSelectBoxKey === key) ? '' : key;
+        if (prev && prev !== key) updateSelectBoxInPlace(prev);
+        updateSelectBoxInPlace(key);
       });
     });
 
-    // Seleção de Alergias ("Nega" em primeiro + ordem alfabética)
-    container.querySelectorAll('[data-alergia-chip]').forEach(btn => {
+    container.querySelectorAll('[data-sbox-done]').forEach(btn => {
       btn.addEventListener('click', () => {
-        const val = btn.dataset.alergiaChip;
-        let cur = Array.isArray(fichaState.alergiasSelecionadas) ? fichaState.alergiasSelecionadas.slice() : [];
+        const key = btn.dataset.sboxDone;
+        if (openSelectBoxKey === key) openSelectBoxKey = '';
+        updateSelectBoxInPlace(key);
+      });
+    });
+
+    container.querySelectorAll('[data-sbox-search]').forEach(inp => {
+      inp.addEventListener('input', () => {
+        const key = inp.dataset.sboxSearch;
+        const q = inp.value || '';
+        if (key === 'med') medFilterQuery = q;
+        else alergiaFilterQuery = q;
+        const qNorm = normStr(q.trim());
+        const wrap = document.getElementById(`select-box-${key}`);
+        if (wrap) {
+          wrap.querySelectorAll(`[data-sbox-opt="${key}"]`).forEach(optBtn => {
+            const val = optBtn.dataset.sboxVal || '';
+            const show = !qNorm || normStr(val).includes(qNorm);
+            optBtn.classList.toggle('hidden', !show);
+          });
+        }
+      });
+    });
+
+    container.querySelectorAll('[data-sbox-opt]').forEach(optBtn => {
+      optBtn.addEventListener('click', () => {
+        const key = optBtn.dataset.sboxOpt;
+        const val = optBtn.dataset.sboxVal;
+        const isMed = key === 'med';
+        const stateProp = isMed ? 'medicamentosSelecionados' : 'alergiasSelecionadas';
+        const outroProp = isMed ? 'medicamentosOutro' : 'alergiasOutro';
+        const outroId = isMed ? 'inp-med-outro' : 'inp-alergia-outro';
+
+        let cur = Array.isArray(fichaState[stateProp]) ? fichaState[stateProp].slice() : [];
         if (val === 'Nega') {
           if (cur.includes('Nega')) {
             cur = [];
           } else {
             cur = ['Nega'];
-            fichaState.alergiasOutro = '';
+            fichaState[outroProp] = '';
+            const outroEl = document.getElementById(outroId);
+            if (outroEl) outroEl.value = '';
+            openSelectBoxKey = ''; // Fecha a caixa automaticamente ao escolher "Nega"
           }
         } else {
           cur = cur.filter(x => x !== 'Nega');
@@ -2261,9 +3700,22 @@
           if (idx >= 0) cur.splice(idx, 1);
           else cur.push(val);
         }
-        fichaState.alergiasSelecionadas = cur;
+        fichaState[stateProp] = cur;
         persistFichaDraft();
-        renderFichaView();
+        updateSelectBoxInPlace(key);
+      });
+    });
+
+    container.querySelectorAll('[data-sbox-tags]').forEach(tagsBox => {
+      tagsBox.addEventListener('click', (e) => {
+        const rmBtn = e.target && e.target.closest ? e.target.closest('[data-sbox-remove]') : null;
+        if (!rmBtn) return;
+        const key = rmBtn.dataset.sboxRemove;
+        const val = rmBtn.dataset.sboxVal;
+        const stateProp = (key === 'med') ? 'medicamentosSelecionados' : 'alergiasSelecionadas';
+        fichaState[stateProp] = (fichaState[stateProp] || []).filter(x => x !== val);
+        persistFichaDraft();
+        updateSelectBoxInPlace(key);
       });
     });
 
@@ -2450,6 +3902,34 @@
       });
     }
 
+    // Etapa 6: Botões para adicionar 2º Enfermagem / 2º Condutor manualmente ou reaplicar assinaturas da equipe
+    const btnAddSecondEnf = document.getElementById('btn-add-second-enf');
+    if (btnAddSecondEnf) {
+      btnAddSecondEnf.addEventListener('click', () => {
+        manualShowSecondEnf = true;
+        renderFichaView();
+      });
+    }
+    const btnAddSecondCond = document.getElementById('btn-add-second-cond');
+    if (btnAddSecondCond) {
+      btnAddSecondCond.addEventListener('click', () => {
+        manualShowSecondCond = true;
+        renderFichaView();
+      });
+    }
+    const btnReapplyCrew = document.getElementById('btn-reapply-crew-sigs');
+    if (btnReapplyCrew) {
+      btnReapplyCrew.addEventListener('click', () => {
+        activeCrew = currentUser ? window.SamuStorage.getActiveCrewForUser(currentUser.username) : null;
+        if (activeCrew) {
+          applyCrewToFichaState(fichaState, activeCrew, true);
+          persistFichaDraft();
+          renderFichaView();
+          showToast('✅ Nomes, COREN e assinaturas da equipe reaplicados!');
+        }
+      });
+    }
+
     // Etapa 6: Reaplicar COREN do Técnico logado caso tenha apagado
     const btnFillMyCoren = document.getElementById('btn-fill-my-coren');
     if (btnFillMyCoren) {
@@ -2463,6 +3943,56 @@
         }
       });
     }
+
+    // Etapa 5: Médicos Reguladores salvos automaticamente (1 toque preenche!)
+    const inpMedicoReg = document.getElementById('inp-medico-regulador');
+    if (inpMedicoReg) {
+      inpMedicoReg.addEventListener('change', () => {
+        const val = String(inpMedicoReg.value || '').trim();
+        if (val.length >= 3 && window.SamuStorage.upsertMedicoRegulador) {
+          window.SamuStorage.upsertMedicoRegulador({ nome: val });
+          renderFichaView();
+        }
+      });
+    }
+
+    const btnSaveMedicoNow = document.getElementById('btn-save-medico-now');
+    if (btnSaveMedicoNow) {
+      btnSaveMedicoNow.addEventListener('click', () => {
+        const nome = String(fichaState.medicoRegulador || '').trim();
+        if (!nome) {
+          samuAlert('Digite o nome do Médico Regulador para salvar na lista rápida.');
+          return;
+        }
+        window.SamuStorage.upsertMedicoRegulador({ nome });
+        persistFichaDraft();
+        renderFichaView();
+        showToast(`✅ Médico Regulador salvo para selecionar com 1 toque nas próximas fichas!`);
+      });
+    }
+
+    container.querySelectorAll('[data-del-medico]').forEach(delBtn => {
+      delBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const medId = delBtn.dataset.delMedico;
+        if (!(await samuConfirm('Remover este Médico Regulador da lista rápida?'))) return;
+        window.SamuStorage.deleteMedicoRegulador(medId);
+        renderFichaView();
+      });
+    });
+
+    container.querySelectorAll('[data-pick-medico]').forEach(chip => {
+      chip.addEventListener('click', () => {
+        const medId = chip.dataset.pickMedico;
+        const found = (window.SamuStorage.getMedicosReguladores() || []).find(m => m.id === medId);
+        if (!found) return;
+        fichaState.medicoRegulador = found.nome;
+        window.SamuStorage.upsertMedicoRegulador(found);
+        persistFichaDraft();
+        renderFichaView();
+        showToast(`👨‍⚕️ Médico Regulador preenchido: ${found.nome}`);
+      });
+    });
 
     // Etapa 6: Recebedores salvos do Hospital (1 toque preenche Nome + COREN/CRM e abre Assinatura!)
     const btnSaveReceiverNow = document.getElementById('btn-save-receiver-now');
@@ -2530,11 +4060,12 @@
       box.addEventListener('click', () => {
         const key = box.dataset.sigTarget;
         const allowPersonal = box.dataset.sigPersonal === '1';
+        const sigOwnerUser = box.dataset.sigUser || (allowPersonal && currentUser ? currentUser.username : '');
         window.SamuSignature.open({
           title: box.dataset.sigTitle || 'Assinatura',
           initialValue: fichaState[key] || '',
-          allowPersonalSave: allowPersonal,
-          username: currentUser ? currentUser.username : ''
+          allowPersonalSave: Boolean(allowPersonal && sigOwnerUser),
+          username: sigOwnerUser
         }, (dataUrl) => {
           fichaState[key] = dataUrl;
           if (key === 'sigRecebido' && String(fichaState.recebidoPorNome || '').trim()) {
@@ -2543,6 +4074,9 @@
               corenCrm: fichaState.recebidoCorenCrm || '',
               hospital: fichaState.destino || 'HBSA'
             });
+          }
+          if (currentUser && currentUser.role !== 'admin') {
+            activeCrew = window.SamuStorage.getActiveCrewForUser(currentUser.username);
           }
           persistFichaDraft();
           renderFichaView();
@@ -2562,8 +4096,9 @@
       btn.disabled = true;
       btn.textContent = 'Gerando PDF e Salvando...';
       try {
-        if (fichaState.kmFinal && String(fichaState.kmFinal).trim() !== '') {
-          window.SamuStorage.setLastKmFinal(fichaState.kmFinal);
+        const prevKmFinal = fichaState.kmFinal ? String(fichaState.kmFinal).trim() : '';
+        if (prevKmFinal !== '') {
+          window.SamuStorage.setLastKmFinal(prevKmFinal);
         }
 
         const recId = editingFichaId || uid('ficha');
@@ -2573,13 +4108,19 @@
 
         const generated = await window.SamuPDF.generatePdfForRecord(record);
         await window.SamuStorage.saveRecordLocal(record);
+        if (activeCrew) {
+          window.SamuStorage.closeCrewCurrentSession(activeCrew.crewId, currentCrewSessionId, 'submitted', recId, prevKmFinal, false);
+        }
         const upRes = await window.SamuStorage.uploadRecordToDrive(record, generated.base64);
         await window.SamuStorage.clearDraft(currentUser.username, 'ficha');
 
-        // Prepara nova ficha limpa para o próximo atendimento (já puxando o último KM Final como KM Inicial!)
+        // Prepara nova ficha limpa para o próximo atendimento (já puxando o último KM Final como KM Inicial e assinaturas da equipe!)
         editingFichaId = null;
+        manualShowSecondEnf = false;
+        manualShowSecondCond = false;
         fichaState = createEmptyFicha();
         fichaStep = 1;
+        resetFichaSyncTracking(fichaState, uid('sf'), {}, false);
         await refreshDraftCount();
         await refreshSyncBadge();
 
@@ -2598,6 +4139,9 @@
     const d = JSON.parse(JSON.stringify(fichaState));
     const tipos = (d.tiposAtendimento || []).slice();
     if (d.tipoOutroTexto) tipos.push(d.tipoOutroTexto);
+    const crewObj = (currentUser && currentUser.role !== 'admin')
+      ? window.SamuStorage.getActiveCrewForUser(currentUser.username)
+      : null;
 
     return {
       id,
@@ -2607,6 +4151,10 @@
       createdBy: (existing && existing.createdBy) ? existing.createdBy : currentUser.username,
       createdByName: (existing && existing.createdByName) ? existing.createdByName : currentUser.name,
       createdByRole: (existing && existing.createdByRole) ? existing.createdByRole : currentUser.role,
+      crewId: (crewObj && crewObj.crewId) || (existing && existing.crewId) || '',
+      crewMembers: (crewObj && Array.isArray(crewObj.members))
+        ? crewObj.members.slice()
+        : ((existing && Array.isArray(existing.crewMembers)) ? existing.crewMembers : [currentUser.username]),
       patientName: d.vitimaNome || 'Paciente não identificado',
       patientCpf: d.vitimaCpf || '',
       risk: d.risco || '',
@@ -2631,7 +4179,14 @@
     const itensMap = isDiurno ? d.itensDiurno : d.itensNoturno;
     const avariasArr = isDiurno ? d.avariasDiurno : d.avariasNoturno;
     const allItems = window.SAMU_SCHEMA.condutorLeftItems.concat(window.SAMU_SCHEMA.condutorRightItems);
-    const filledCount = allItems.filter(it => Boolean(itensMap[it.id])).length;
+    const filledCount = allItems.filter(it => Boolean(String(itensMap[it.id] || '').trim())).length;
+
+    const val = validateCondutorChecklist(d);
+    if (condutorValidationActive && val.valid) {
+      condutorValidationActive = false;
+    }
+    const showErr = condutorValidationActive && !val.valid;
+    const abastStatus = getCondutorAbastStatus(d);
 
     container.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
@@ -2644,15 +4199,17 @@
 
       ${renderQuickDraftBarHtml('condutor')}
 
+      <div id="cond-validation-banner-slot">${showErr ? renderChecklistValidationBannerHtml(val) : ''}</div>
+
       <div class="card">
         <div class="card-title"><span>📋 Identificação do Plantão e Viatura</span></div>
         <div class="grid-2">
-          <div class="field">
-            <label>Data</label>
+          <div class="field ${showErr && val.invalidFields.has('data') ? 'field-invalid' : ''}" id="cond-field-data">
+            <label>Data *</label>
             <input type="date" id="cond-data" value="${escapeHtml(d.data)}" />
           </div>
-          <div class="field">
-            <label>Turno sendo Preenchido</label>
+          <div class="field ${showErr && val.invalidFields.has('turnoAtivo') ? 'field-invalid' : ''}" id="cond-field-turno">
+            <label>Turno sendo Preenchido *</label>
             <select id="cond-turno">
               <option value="DIURNO" ${isDiurno ? 'selected' : ''}>☀️ PLANTÃO DIURNO</option>
               <option value="NOTURNO" ${!isDiurno ? 'selected' : ''}>🌙 PLANTÃO NOTURNO</option>
@@ -2660,44 +4217,81 @@
           </div>
         </div>
 
-        <div class="section-subtitle">Selecione a Viatura</div>
-        <div class="grid-2" style="margin-bottom:10px;">
-          ${window.SAMU_SCHEMA.viaturas.map(v => `
-            <button type="button" class="chip-btn ${d.viaturaId === v.id ? 'selected' : ''}" data-viatura="${v.id}" style="text-align:left;">
-              <strong>${v.label}</strong>${v.placa ? `<br><small>Placa: ${v.placa}</small>` : ''}
-            </button>
-          `).join('')}
+        <div class="field ${showErr && val.invalidFields.has('viaturaId') ? 'field-invalid' : ''}" id="cond-field-viatura" style="margin-bottom:10px;">
+          <div class="section-subtitle" style="margin-top:4px;">Selecione a Viatura *</div>
+          <div class="grid-2-compact">
+            ${window.SAMU_SCHEMA.viaturas.map(v => {
+              const savedCnt = v.id === 'outra'
+                ? (d.viaturaId === 'outra' ? window.SamuStorage.getViaturaAvarias('outra', d.outraPlaca).length : 0)
+                : window.SamuStorage.getViaturaAvarias(v.id, '').length;
+              return `
+                <button type="button" class="chip-btn ${d.viaturaId === v.id ? 'selected' : ''}" data-viatura="${v.id}" style="text-align:left;">
+                  <strong>${v.label}</strong>${v.placa ? `<br><small>Placa: ${v.placa}</small>` : ''}
+                  ${savedCnt > 0 ? `<br><small style="color:#c2410c; font-weight:800;">📌 ${savedCnt} avaria(s) salva(s)</small>` : ''}
+                </button>
+              `;
+            }).join('')}
+          </div>
         </div>
         ${d.viaturaId === 'outra' ? `
-          <div class="field">
-            <label>Informe Modelo / Placa da Outra Viatura</label>
+          <div class="field ${showErr && val.invalidFields.has('outraPlaca') ? 'field-invalid' : ''}" id="cond-field-outra-placa">
+            <label>Informe Modelo / Placa da Outra Viatura *</label>
             <input type="text" id="cond-outra-placa" placeholder="Ex: Mercedes Sprinter - ABC 1D23" value="${escapeHtml(d.outraPlaca)}" />
           </div>
         ` : ''}
 
         <div class="grid-2">
-          <div class="field">
-            <label>Condutor Diurno</label>
+          <div class="field ${showErr && val.invalidFields.has('condutorDiurno') ? 'field-invalid' : ''}" id="cond-field-nome-diurno">
+            <label>Condutor Diurno ${isDiurno ? '*' : ''}</label>
             <input type="text" id="cond-nome-diurno" value="${escapeHtml(d.condutorDiurno)}" />
           </div>
-          <div class="field">
-            <label>Condutor Noturno</label>
+          <div class="field ${showErr && val.invalidFields.has('condutorNoturno') ? 'field-invalid' : ''}" id="cond-field-nome-noturno">
+            <label>Condutor Noturno ${!isDiurno ? '*' : ''}</label>
             <input type="text" id="cond-nome-noturno" value="${escapeHtml(d.condutorNoturno)}" />
           </div>
         </div>
 
-        <div class="section-subtitle">Abastecimento (se realizado)</div>
-        <div class="grid-4">
-          <div class="field"><label>Litros</label><input type="text" id="cond-abast-l" placeholder="Ex: 48 L" value="${escapeHtml(d.abastLitros)}" /></div>
-          <div class="field"><label>Hora</label><input type="time" id="cond-abast-h" value="${escapeHtml(d.abastHora)}" /></div>
-          <div class="field"><label>KM</label><input type="number" id="cond-abast-km" placeholder="KM" value="${escapeHtml(d.abastKm)}" /></div>
-          <div class="field"><label>Responsável / Ass.</label><input type="text" id="cond-abast-ass" value="${escapeHtml(d.abastAss)}" /></div>
+        <div class="field ${showErr && val.invalidFields.has('abastRealizado') ? 'field-invalid' : ''}" id="cond-field-abast-status" style="margin-top:4px; margin-bottom:${abastStatus === 'SIM' ? '10px' : '0'};">
+          <label>Realizou Abastecimento no Plantão? *</label>
+          <div class="grid-2" style="margin-top:4px;">
+            <button type="button" class="chip-btn ${abastStatus === 'NAO' ? 'selected' : ''}" data-abast-choice="NAO">🚫 Não houve abastecimento</button>
+            <button type="button" class="chip-btn ${abastStatus === 'SIM' ? 'selected' : ''}" data-abast-choice="SIM">⛽ Sim, houve abastecimento</button>
+          </div>
         </div>
+        ${abastStatus === 'SIM' ? `
+          <div class="grid-abast">
+            <div class="field ${showErr && val.invalidFields.has('abastLitros') ? 'field-invalid' : ''}" id="cond-field-abast-l">
+              <label>Litros *</label>
+              <input type="text" id="cond-abast-l" placeholder="Ex: 48 L" value="${escapeHtml(d.abastLitros)}" />
+            </div>
+            <div class="field ${showErr && val.invalidFields.has('abastKm') ? 'field-invalid' : ''}" id="cond-field-abast-km">
+              <label>KM *</label>
+              <input type="number" id="cond-abast-km" placeholder="KM" value="${escapeHtml(d.abastKm)}" />
+            </div>
+            <div class="field field-full-phone ${showErr && val.invalidFields.has('abastHora') ? 'field-invalid' : ''}" id="cond-field-abast-h">
+              <div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">
+                <label style="margin:0;">Hora do Abastecimento *</label>
+                <button type="button" class="btn-quick-fill" id="btn-abast-hora-now" style="padding:2px 8px; font-size:0.74rem;">⏱ Agora</button>
+              </div>
+              <input type="time" id="cond-abast-h" value="${escapeHtml(d.abastHora)}" />
+            </div>
+          </div>
+          <div class="field ${showErr && val.invalidFields.has('sigAbastecimento') ? 'field-invalid' : ''}" id="cond-field-abast-sig" style="margin-top:2px; margin-bottom:0;">
+            <label style="${showErr && val.invalidFields.has('sigAbastecimento') ? 'color:#b91c1c;' : ''}">Assinatura do Abastecimento (com o dedo na tela) *</label>
+            <div class="sig-preview-box ${d.sigAbastecimento ? 'signed' : ''} ${showErr && val.invalidFields.has('sigAbastecimento') ? 'sig-invalid' : ''}" id="cond-abast-sig-box" style="min-height:86px;">
+              ${d.sigAbastecimento
+                ? `<img src="${d.sigAbastecimento}" alt="Assinatura Abastecimento" />`
+                : (d.abastAss
+                  ? `<span>✍️ Assinado (texto legado: ${escapeHtml(d.abastAss)}) — Toque para assinar com o dedo</span>`
+                  : `<span>✍️ Toque aqui para assinar o Abastecimento com o dedo</span>`)}
+            </div>
+          </div>
+        ` : ''}
       </div>
 
       <div class="card">
         <div class="card-title">
-          <span>✅ Itens da Viatura (${isDiurno ? 'Coluna Diurno' : 'Coluna Noturno'})</span>
+          <span>✅ Itens da Viatura (${isDiurno ? 'Coluna Diurno' : 'Coluna Noturno'}) *</span>
           <button type="button" class="btn btn-success btn-sm" id="btn-cond-all-ok">✅ Marcar Todos OK</button>
         </div>
         <p style="margin:0 0 10px; font-size:0.8rem; color:var(--muted);">
@@ -2707,8 +4301,9 @@
         <div>
           ${allItems.map(it => {
             const cur = itensMap[it.id] || '';
+            const rowInvalid = showErr && val.missingItemIds.has(it.id);
             return `
-              <div class="check-item-row">
+              <div class="check-item-row ${rowInvalid ? 'item-invalid' : ''}" id="cond-item-row-${it.id}">
                 <div class="check-item-info">
                   <span class="check-item-qty">${it.qty}</span>
                   <span class="check-item-name">${it.name}</span>
@@ -2730,8 +4325,23 @@
           <span>🚐 Vistoria Externa (${isDiurno ? 'Diurno' : 'Noturno'})</span>
           <button type="button" class="btn btn-outline btn-sm" id="btn-clear-avarias">Limpar Marcações</button>
         </div>
+        ${(() => {
+          const curVObj = window.SAMU_SCHEMA.viaturas.find(v => v.id === d.viaturaId);
+          const curVName = d.viaturaId === 'outra'
+            ? (d.outraPlaca || 'Outra Viatura')
+            : (curVObj ? `${curVObj.label} (${curVObj.placa})` : 'Viatura');
+          const cnt = (avariasArr || []).length;
+          return `
+            <div style="background:#fffbeb; border:1.5px solid #fcd34d; border-radius:10px; padding:8px 10px; margin-bottom:8px; font-size:0.8rem; color:#92400e; line-height:1.35;">
+              💾 <strong>Memória por Viatura ativa (${escapeHtml(curVName)}):</strong>
+              ${cnt > 0
+                ? `<strong>${cnt} parte(s) amassada(s)/riscada(s) salva(s)</strong> nesta viatura — já carregam prontas nos próximos plantões.`
+                : `nenhuma avaria salva nesta viatura no momento. Ao marcar um amassado ou riscado abaixo, ele já fica salvo para os próximos plantões.`}
+            </div>
+          `;
+        })()}
         <p style="margin:0 0 8px; font-size:0.83rem; color:var(--muted);">
-          Escolha o tipo de avaria abaixo e <strong>toque em cima do desenho da ambulância</strong> onde houver detalhe (toque num ponto vermelho para removê-lo):
+          Escolha o tipo de avaria abaixo e <strong>toque em cima do desenho da ambulância</strong> onde houver detalhe (toque num ponto vermelho para removê-lo quando for reparado):
         </p>
         <div class="chips-wrap" style="margin-bottom:10px; justify-content:center;">
           ${['A', 'D', 'F', 'Q', 'R'].map(c => {
@@ -2746,14 +4356,17 @@
           `).join('')}
         </div>
 
-        <div class="field" style="margin-top:14px;">
-          <label>Observações ${isDiurno ? 'Diurno' : 'Noturna'}</label>
-          <textarea rows="4" id="cond-obs-turno" placeholder="Registre qualquer anormalidade, falta de material, avaria ou intercorrência da viatura...">${escapeHtml(isDiurno ? d.obsDiurno : d.obsNoturno)}</textarea>
+        <div class="field ${showErr && val.invalidFields.has('obsTurno') ? 'field-invalid' : ''}" id="cond-field-obs" style="margin-top:14px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:4px; flex-wrap:wrap;">
+            <label style="margin:0;">Observações ${isDiurno ? 'Diurno' : 'Noturna'} *</label>
+            <button type="button" class="btn-quick-fill" id="btn-cond-obs-sem-alt">✅ Sem alterações</button>
+          </div>
+          <textarea rows="4" id="cond-obs-turno" placeholder="Obrigatório: registre anormalidade, falta de material, avaria ou toque em 'Sem alterações'...">${escapeHtml(isDiurno ? d.obsDiurno : d.obsNoturno)}</textarea>
         </div>
 
         <div class="field">
-          <label>Assinatura na Tela – Condutor ${isDiurno ? 'Diurno' : 'Noturno'}</label>
-          <div class="sig-preview-box ${(isDiurno ? d.sigCondutorDiurno : d.sigCondutorNoturno) ? 'signed' : ''}" id="cond-sig-box">
+          <label style="${showErr && val.invalidFields.has('sigTurno') ? 'color:#b91c1c;' : ''}">Assinatura na Tela – Condutor ${isDiurno ? 'Diurno' : 'Noturno'} *</label>
+          <div class="sig-preview-box ${(isDiurno ? d.sigCondutorDiurno : d.sigCondutorNoturno) ? 'signed' : ''} ${showErr && val.invalidFields.has('sigTurno') ? 'sig-invalid' : ''}" id="cond-sig-box">
             ${(isDiurno ? d.sigCondutorDiurno : d.sigCondutorNoturno)
               ? `<img src="${isDiurno ? d.sigCondutorDiurno : d.sigCondutorNoturno}" alt="Assinatura Condutor" />`
               : `<span>✍️ Toque para assinar Check List (${isDiurno ? 'Diurno' : 'Noturno'})</span>`}
@@ -2769,6 +4382,7 @@
     `;
 
     bindQuickDraftBarEvents(container);
+    bindStepPillsHorizontalScroll(container);
 
     const saveCondDraft = () => {
       if (!editingCondutorId && currentUser) {
@@ -2776,19 +4390,58 @@
       }
     };
 
+    const refreshCondValidationInPlace = () => {
+      if (!condutorValidationActive) return;
+      const v = validateCondutorChecklist(d);
+      const slot = document.getElementById('cond-validation-banner-slot');
+      if (v.valid) {
+        condutorValidationActive = false;
+        if (slot) slot.innerHTML = '';
+      } else if (slot) {
+        slot.innerHTML = renderChecklistValidationBannerHtml(v);
+      }
+      const fieldPairs = [
+        ['data', 'cond-field-data'],
+        ['turnoAtivo', 'cond-field-turno'],
+        ['viaturaId', 'cond-field-viatura'],
+        ['outraPlaca', 'cond-field-outra-placa'],
+        ['condutorDiurno', 'cond-field-nome-diurno'],
+        ['condutorNoturno', 'cond-field-nome-noturno'],
+        ['abastRealizado', 'cond-field-abast-status'],
+        ['abastLitros', 'cond-field-abast-l'],
+        ['abastHora', 'cond-field-abast-h'],
+        ['abastKm', 'cond-field-abast-km'],
+        ['sigAbastecimento', 'cond-field-abast-sig'],
+        ['obsTurno', 'cond-field-obs']
+      ];
+      fieldPairs.forEach(([key, domId]) => {
+        const el = document.getElementById(domId);
+        if (el) el.classList.toggle('field-invalid', !v.valid && v.invalidFields.has(key));
+      });
+    };
+
     document.getElementById('btn-reset-condutor').addEventListener('click', async () => {
-      if (!(await samuConfirm('Limpar os campos deste Check List de Condutor?'))) return;
+      if (!(await samuConfirm('Limpar os campos deste Check List de Condutor? (As avarias salvas da viatura serão mantidas)'))) return;
+      const keepViatura = d.viaturaId || 'master_29';
+      const keepOutraPlaca = d.outraPlaca || '';
       editingCondutorId = null;
+      condutorValidationActive = false;
       condutorState = createEmptyCondutor();
+      condutorState.viaturaId = keepViatura;
+      condutorState.outraPlaca = keepOutraPlaca;
+      applySavedAvariasToCondutorState(condutorState, true);
       await window.SamuStorage.clearDraft(currentUser.username, 'checklist_condutor');
       renderCondutorView();
     });
 
-    document.getElementById('cond-data').addEventListener('input', e => { d.data = e.target.value; saveCondDraft(); });
+    document.getElementById('cond-data').addEventListener('input', e => { d.data = e.target.value; saveCondDraft(); refreshCondValidationInPlace(); });
     document.getElementById('cond-turno').addEventListener('change', e => {
       d.turnoAtivo = e.target.value;
       if (d.turnoAtivo === 'DIURNO' && !d.condutorDiurno && currentUser) d.condutorDiurno = currentUser.name;
       if (d.turnoAtivo === 'NOTURNO' && !d.condutorNoturno && currentUser) d.condutorNoturno = currentUser.name;
+      if (!editingCondutorId) {
+        applySavedAvariasToCondutorState(d, true);
+      }
       saveCondDraft();
       renderCondutorView();
     });
@@ -2796,20 +4449,84 @@
     container.querySelectorAll('[data-viatura]').forEach(btn => {
       btn.addEventListener('click', () => {
         d.viaturaId = btn.dataset.viatura;
+        if (!editingCondutorId) {
+          applySavedAvariasToCondutorState(d, true);
+        }
         saveCondDraft();
         renderCondutorView();
       });
     });
 
     const outraInp = document.getElementById('cond-outra-placa');
-    if (outraInp) outraInp.addEventListener('input', e => { d.outraPlaca = e.target.value; saveCondDraft(); });
+    if (outraInp) {
+      outraInp.addEventListener('input', e => {
+        d.outraPlaca = e.target.value;
+        saveCondDraft();
+        refreshCondValidationInPlace();
+      });
+      outraInp.addEventListener('change', () => {
+        if (!editingCondutorId) {
+          applySavedAvariasToCondutorState(d, true);
+          saveCondDraft();
+          renderCondutorView();
+        }
+      });
+    }
 
-    document.getElementById('cond-nome-diurno').addEventListener('input', e => { d.condutorDiurno = e.target.value; saveCondDraft(); });
-    document.getElementById('cond-nome-noturno').addEventListener('input', e => { d.condutorNoturno = e.target.value; saveCondDraft(); });
-    document.getElementById('cond-abast-l').addEventListener('input', e => { d.abastLitros = e.target.value; saveCondDraft(); });
-    document.getElementById('cond-abast-h').addEventListener('input', e => { d.abastHora = e.target.value; saveCondDraft(); });
-    document.getElementById('cond-abast-km').addEventListener('input', e => { d.abastKm = e.target.value; saveCondDraft(); });
-    document.getElementById('cond-abast-ass').addEventListener('input', e => { d.abastAss = e.target.value; saveCondDraft(); });
+    document.getElementById('cond-nome-diurno').addEventListener('input', e => { d.condutorDiurno = e.target.value; saveCondDraft(); refreshCondValidationInPlace(); });
+    document.getElementById('cond-nome-noturno').addEventListener('input', e => { d.condutorNoturno = e.target.value; saveCondDraft(); refreshCondValidationInPlace(); });
+
+    container.querySelectorAll('[data-abast-choice]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const choice = btn.dataset.abastChoice;
+        d.abastRealizado = choice;
+        if (choice === 'NAO') {
+          d.abastLitros = '';
+          d.abastHora = '';
+          d.abastKm = '';
+          d.abastAss = '';
+          d.sigAbastecimento = '';
+        }
+        saveCondDraft();
+        renderCondutorView();
+      });
+    });
+
+    const abastL = document.getElementById('cond-abast-l');
+    const abastH = document.getElementById('cond-abast-h');
+    const abastKm = document.getElementById('cond-abast-km');
+    const btnAbastHoraNow = document.getElementById('btn-abast-hora-now');
+    const abastSigBox = document.getElementById('cond-abast-sig-box');
+    if (abastL) abastL.addEventListener('input', e => { d.abastRealizado = 'SIM'; d.abastLitros = e.target.value; saveCondDraft(); refreshCondValidationInPlace(); });
+    if (abastH) abastH.addEventListener('input', e => { d.abastRealizado = 'SIM'; d.abastHora = e.target.value; saveCondDraft(); refreshCondValidationInPlace(); });
+    if (abastKm) abastKm.addEventListener('input', e => { d.abastRealizado = 'SIM'; d.abastKm = e.target.value; saveCondDraft(); refreshCondValidationInPlace(); });
+    if (btnAbastHoraNow && abastH) {
+      btnAbastHoraNow.addEventListener('click', () => {
+        const t = nowHHMM();
+        d.abastRealizado = 'SIM';
+        d.abastHora = t;
+        abastH.value = t;
+        saveCondDraft();
+        refreshCondValidationInPlace();
+        showToast(`Horário do abastecimento: ${t}`);
+      });
+    }
+    if (abastSigBox) {
+      abastSigBox.addEventListener('click', () => {
+        window.SamuSignature.open({
+          title: 'Assinatura – Abastecimento da Viatura',
+          subtitle: 'Assine com o dedo no quadro abaixo',
+          initialValue: d.sigAbastecimento || '',
+          allowPersonalSave: true,
+          username: currentUser ? currentUser.username : ''
+        }, (dataUrl) => {
+          d.abastRealizado = 'SIM';
+          d.sigAbastecimento = dataUrl;
+          saveCondDraft();
+          renderCondutorView();
+        });
+      });
+    }
 
     document.getElementById('btn-cond-all-ok').addEventListener('click', () => {
       const target = isDiurno ? d.itensDiurno : d.itensNoturno;
@@ -2837,35 +4554,75 @@
       });
     });
 
+    const persistViaturaMarksNow = (marksList) => {
+      if (!editingCondutorId && window.SamuStorage.saveViaturaAvarias) {
+        window.SamuStorage.saveViaturaAvarias(
+          d.viaturaId || 'master_29',
+          d.outraPlaca || '',
+          marksList,
+          currentUser ? currentUser.username : ''
+        );
+      }
+    };
+
     const ambStage = document.getElementById('amb-stage');
     ambStage.addEventListener('click', (e) => {
       if (e.target.dataset.pinIdx !== undefined) {
         const idx = Number(e.target.dataset.pinIdx);
         avariasArr.splice(idx, 1);
+        persistViaturaMarksNow(avariasArr);
         saveCondDraft();
         renderCondutorView();
+        showToast('Marcação removida da memória desta viatura.');
         return;
       }
       const rect = ambStage.getBoundingClientRect();
       const x = Math.max(0.03, Math.min(0.97, (e.clientX - rect.left) / rect.width));
       const y = Math.max(0.03, Math.min(0.97, (e.clientY - rect.top) / rect.height));
       avariasArr.push({ x, y, code: activeDamageCode });
+      persistViaturaMarksNow(avariasArr);
       saveCondDraft();
       renderCondutorView();
+      showToast(`💾 Avaria "${activeDamageCode}" salva nesta viatura para os próximos plantões!`);
     });
 
-    document.getElementById('btn-clear-avarias').addEventListener('click', () => {
+    document.getElementById('btn-clear-avarias').addEventListener('click', async () => {
+      if (!avariasArr || avariasArr.length === 0) {
+        showToast('Nenhuma marcação nesta viatura para limpar.');
+        return;
+      }
+      if (!(await samuConfirm('Remover todas as partes amassadas/riscadas salvas desta viatura (ex.: após reparo ou funilaria)?'))) {
+        return;
+      }
       if (isDiurno) d.avariasDiurno = [];
       else d.avariasNoturno = [];
+      persistViaturaMarksNow([]);
       saveCondDraft();
       renderCondutorView();
+      showToast('Marcações salvas desta viatura foram limpas.');
     });
 
-    document.getElementById('cond-obs-turno').addEventListener('input', e => {
+    const condObsInp = document.getElementById('cond-obs-turno');
+    condObsInp.addEventListener('input', e => {
       if (isDiurno) d.obsDiurno = e.target.value;
       else d.obsNoturno = e.target.value;
       saveCondDraft();
+      refreshCondValidationInPlace();
     });
+
+    const btnObsSemAlt = document.getElementById('btn-cond-obs-sem-alt');
+    if (btnObsSemAlt) {
+      btnObsSemAlt.addEventListener('click', () => {
+        const cur = String((isDiurno ? d.obsDiurno : d.obsNoturno) || '').trim();
+        const nextVal = cur || 'Sem alterações.';
+        if (isDiurno) d.obsDiurno = nextVal;
+        else d.obsNoturno = nextVal;
+        condObsInp.value = nextVal;
+        saveCondDraft();
+        refreshCondValidationInPlace();
+        showToast(cur ? 'Observações já preenchidas!' : 'Observações preenchidas: Sem alterações.');
+      });
+    }
 
     document.getElementById('cond-sig-box').addEventListener('click', () => {
       window.SamuSignature.open({
@@ -2911,10 +4668,32 @@
     });
 
     document.getElementById('btn-save-send-condutor').addEventListener('click', async () => {
+      const checkVal = validateCondutorChecklist(d);
+      if (!checkVal.valid) {
+        condutorValidationActive = true;
+        renderCondutorView();
+        scrollToMissingChecklistField(checkVal.firstMissingDomId);
+        await samuAlert(
+          '⚠️ Preencha todos os campos do Check List antes de enviar:\n\n• ' +
+          checkVal.errors.join('\n• ')
+        );
+        return;
+      }
+
       const btn = document.getElementById('btn-save-send-condutor');
       btn.disabled = true;
       btn.textContent = 'Gerando PDF e Salvando...';
       try {
+        if (window.SamuStorage.saveViaturaAvarias) {
+          window.SamuStorage.saveViaturaAvarias(
+            d.viaturaId || 'master_29',
+            d.outraPlaca || '',
+            isDiurno ? d.avariasDiurno : d.avariasNoturno,
+            currentUser ? currentUser.username : ''
+          );
+        }
+        const keepViatura = d.viaturaId || 'master_29';
+        const keepOutraPlaca = d.outraPlaca || '';
         const recId = editingCondutorId || uid('ckcond');
         const existing = editingCondutorId ? await window.SamuStorage.getRecordById(editingCondutorId) : null;
         const record = buildCondRecord(recId, existing);
@@ -2924,13 +4703,17 @@
         await window.SamuStorage.clearDraft(currentUser.username, 'checklist_condutor');
 
         editingCondutorId = null;
+        condutorValidationActive = false;
         condutorState = createEmptyCondutor();
+        condutorState.viaturaId = keepViatura;
+        condutorState.outraPlaca = keepOutraPlaca;
+        applySavedAvariasToCondutorState(condutorState, true);
         await refreshDraftCount();
         await refreshSyncBadge();
         await openPdfPreviewModal(record, generated, upRes);
         renderCondutorView();
       } catch (err) {
-        alert('Erro ao salvar Check List: ' + err.message);
+        samuAlert('Erro ao salvar Check List: ' + err.message);
       } finally {
         btn.disabled = false;
         btn.textContent = '💾 Salvar e Enviar PDF ao Google Drive';
@@ -2951,13 +4734,19 @@
     const activeSec = sections[activeEnfSectionIdx];
 
     const totalAll = sections.reduce((acc, s) => acc + s.items.length, 0);
-    const doneAll = sections.reduce((acc, s) => acc + s.items.filter(i => Boolean(targetMap[i.id])).length, 0);
+    const doneAll = sections.reduce((acc, s) => acc + s.items.filter(i => Boolean(String(targetMap[i.id] || '').trim())).length, 0);
+
+    const val = validateEnfermagemChecklist(d);
+    if (enfermagemValidationActive && val.valid) {
+      enfermagemValidationActive = false;
+    }
+    const showErr = enfermagemValidationActive && !val.valid;
 
     container.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
         <div>
           <strong style="font-size:1.05rem;">🩺 Checagem Diária USB – Enfermagem</strong>
-          <div style="font-size:0.78rem; color:var(--muted);">Total conferido (${isDia ? 'CK DIA' : 'CK NOITE'}): ${doneAll} de ${totalAll} materiais</div>
+          <div id="enf-top-counter" style="font-size:0.78rem; color:var(--muted);">Total conferido (${isDia ? 'CK DIA' : 'CK NOITE'}): ${doneAll} de ${totalAll} materiais</div>
         </div>
         <div style="display:flex; gap:6px;">
           <button type="button" class="btn btn-success btn-sm" id="btn-enf-all-ok">✅ Tudo OK</button>
@@ -2967,38 +4756,39 @@
 
       ${renderQuickDraftBarHtml('enfermagem')}
 
+      <div id="enf-validation-banner-slot">${showErr ? renderChecklistValidationBannerHtml(val) : ''}</div>
+
       <div class="card">
-        <div class="grid-4">
-          <div class="field">
-            <label>Data</label>
+        <div class="grid-enf-header">
+          <div class="field ${showErr && val.invalidFields.has('data') ? 'field-invalid' : ''}" id="enf-field-data">
+            <label>Data *</label>
             <input type="date" id="enf-data" value="${escapeHtml(d.data)}" />
           </div>
-          <div class="field">
-            <label>Turno</label>
+          <div class="field ${showErr && val.invalidFields.has('turno') ? 'field-invalid' : ''}" id="enf-field-turno">
+            <label>Turno *</label>
             <select id="enf-turno">
               <option value="DIA" ${isDia ? 'selected' : ''}>☀️ CK DIA</option>
               <option value="NOITE" ${!isDia ? 'selected' : ''}>🌙 CK NOITE</option>
             </select>
           </div>
-          <div class="field">
-            <label>Profissional Enfermagem</label>
+          <div class="field ${showErr && val.invalidFields.has('responsavelNome') ? 'field-invalid' : ''}" id="enf-field-nome">
+            <label>Profissional Enfermagem *</label>
             <input type="text" id="enf-nome" value="${escapeHtml(d.responsavelNome)}" />
           </div>
-          <div class="field">
-            <label>COREN</label>
+          <div class="field ${showErr && val.invalidFields.has('responsavelCoren') ? 'field-invalid' : ''}" id="enf-field-coren">
+            <label>COREN *</label>
             <input type="text" id="enf-coren" value="${escapeHtml(d.responsavelCoren)}" />
           </div>
         </div>
       </div>
 
-      <div class="step-pills">
-        ${sections.map((sec, idx) => {
-          const secDone = sec.items.filter(it => Boolean(targetMap[it.id])).length;
-          return `<button type="button" class="step-pill ${idx === activeEnfSectionIdx ? 'active' : ''}" data-enf-sec="${idx}">
-            ${sec.title} (${secDone}/${sec.items.length})
-          </button>`;
-        }).join('')}
-      </div>
+      ${renderStepPillsBarHtml('enf-sections', sections.map((sec, idx) => {
+        const secDone = sec.items.filter(it => Boolean(String(targetMap[it.id] || '').trim())).length;
+        const pillInc = showErr && val.incompleteSecIdxs.has(idx);
+        return `<button type="button" class="step-pill ${idx === activeEnfSectionIdx ? 'active' : ''} ${pillInc ? 'pill-incomplete' : ''}" data-enf-sec="${idx}">
+          ${sec.title} (${secDone}/${sec.items.length})
+        </button>`;
+      }).join(''))}
 
       <div class="card">
         <div class="card-title">
@@ -3008,9 +4798,10 @@
 
         <div>
           ${activeSec.items.map(it => {
-            const val = targetMap[it.id] || '';
+            const itemVal = targetMap[it.id] || '';
+            const rowInvalid = showErr && val.missingItemIds.has(it.id);
             return `
-              <div class="check-item-row">
+              <div class="check-item-row ${rowInvalid ? 'item-invalid' : ''}" id="enf-item-row-${it.id}">
                 <div class="check-item-info">
                   <span class="check-item-qty">Qtd: ${it.qty}</span>
                   <span class="check-item-name">${it.name}</span>
@@ -3018,18 +4809,18 @@
                 <div class="code-pills" style="align-items:center;">
                   ${it.customInput ? `
                     <input type="text" data-enf-custom="${it.id}" placeholder="${it.placeholder || 'Libras'}"
-                      value="${escapeHtml(val)}"
-                      style="width:92px; padding:6px 8px; border:1.5px solid var(--border); border-radius:7px; font-weight:700; font-size:0.84rem;" />
+                      value="${escapeHtml(itemVal)}"
+                      style="width:126px; padding:7px 10px; border:1.5px solid ${rowInvalid ? '#dc2626' : 'var(--border)'}; border-radius:7px; font-weight:700; font-size:0.86rem;" />
                   ` : ''}
-                  <button type="button" class="code-pill ${val === 'OK' ? 'active-OK' : ''}" data-enf-item="${it.id}" data-val="OK">OK</button>
-                  <button type="button" class="code-pill ${val === 'F' ? 'active-warn' : ''}" data-enf-item="${it.id}" data-val="F">FALTA</button>
+                  <button type="button" class="code-pill ${itemVal === 'OK' ? 'active-OK' : ''}" data-enf-item="${it.id}" data-val="OK">OK</button>
+                  <button type="button" class="code-pill ${itemVal === 'F' ? 'active-warn' : ''}" data-enf-item="${it.id}" data-val="F">FALTA</button>
                 </div>
               </div>
             `;
           }).join('')}
         </div>
 
-        <div style="display:flex; justify-content:space-between; margin-top:12px;">
+        <div style="display:flex; justify-content:space-between; margin-top:12px; gap:8px; flex-wrap:wrap;">
           <button type="button" class="btn btn-outline btn-sm" id="btn-enf-prev" ${activeEnfSectionIdx === 0 ? 'disabled style="opacity:0.4"' : ''}>⬅️ Compartimento Anterior</button>
           <button type="button" class="btn btn-outline btn-sm" id="btn-enf-next" ${activeEnfSectionIdx === sections.length - 1 ? 'disabled style="opacity:0.4"' : ''}>Próximo Compartimento ➡️</button>
         </div>
@@ -3038,18 +4829,24 @@
       <div class="card">
         <div class="card-title"><span>📝 Observações &amp; Assinatura da Enfermagem</span></div>
         <div class="grid-2">
-          <div class="field">
-            <label>OBS – Mochilas (Página 1)</label>
-            <textarea rows="3" id="enf-obs-1" placeholder="Reposições realizadas, lacres, validade...">${escapeHtml(d.obsPagina1)}</textarea>
+          <div class="field ${showErr && val.invalidFields.has('obsPagina1') ? 'field-invalid' : ''}" id="enf-field-obs-1">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; margin-bottom:4px; flex-wrap:wrap;">
+              <label style="margin:0;">OBS – Mochilas (Página 1) *</label>
+              <button type="button" class="btn-quick-fill" data-enf-quick-obs="1">✅ Sem alterações</button>
+            </div>
+            <textarea rows="3" id="enf-obs-1" placeholder="Obrigatório: reposições realizadas, lacres, validade ou 'Sem alterações'...">${escapeHtml(d.obsPagina1)}</textarea>
           </div>
-          <div class="field">
-            <label>OBS – Viatura / Gavetas / Armário (Página 2)</label>
-            <textarea rows="3" id="enf-obs-2" placeholder="Observações dos materiais internos da USB...">${escapeHtml(d.obsPagina2)}</textarea>
+          <div class="field ${showErr && val.invalidFields.has('obsPagina2') ? 'field-invalid' : ''}" id="enf-field-obs-2">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; margin-bottom:4px; flex-wrap:wrap;">
+              <label style="margin:0;">OBS – Viatura / Gavetas / Armário (Pág. 2) *</label>
+              <button type="button" class="btn-quick-fill" data-enf-quick-obs="2">✅ Sem alterações</button>
+            </div>
+            <textarea rows="3" id="enf-obs-2" placeholder="Obrigatório: observações dos materiais internos da USB ou 'Sem alterações'...">${escapeHtml(d.obsPagina2)}</textarea>
           </div>
         </div>
         <div class="field">
-          <label>Assinatura e Carimbo Digital na Tela</label>
-          <div class="sig-preview-box ${d.sigEnfermagem ? 'signed' : ''}" id="enf-sig-box">
+          <label style="${showErr && val.invalidFields.has('sigEnfermagem') ? 'color:#b91c1c;' : ''}">Assinatura e Carimbo Digital na Tela *</label>
+          <div class="sig-preview-box ${d.sigEnfermagem ? 'signed' : ''} ${showErr && val.invalidFields.has('sigEnfermagem') ? 'sig-invalid' : ''}" id="enf-sig-box">
             ${d.sigEnfermagem
               ? `<img src="${d.sigEnfermagem}" alt="Assinatura Enfermagem" />`
               : `<span>✍️ Toque aqui para assinar o Check List de Enfermagem</span>`}
@@ -3065,6 +4862,7 @@
     `;
 
     bindQuickDraftBarEvents(container);
+    bindStepPillsHorizontalScroll(container);
 
     const saveEnfDraft = () => {
       if (!editingEnfermagemId && currentUser) {
@@ -3072,12 +4870,77 @@
       }
     };
 
-    document.getElementById('enf-data').addEventListener('input', e => { d.data = e.target.value; saveEnfDraft(); });
+    const refreshEnfValidationAndCountersInPlace = () => {
+      const curDoneAll = sections.reduce((acc, s) => acc + s.items.filter(i => Boolean(String(targetMap[i.id] || '').trim())).length, 0);
+      const topCnt = document.getElementById('enf-top-counter');
+      if (topCnt) topCnt.textContent = `Total conferido (${isDia ? 'CK DIA' : 'CK NOITE'}): ${curDoneAll} de ${totalAll} materiais`;
+
+      const activePill = container.querySelector(`[data-enf-sec="${activeEnfSectionIdx}"]`);
+      if (activePill) {
+        const secDone = activeSec.items.filter(it => Boolean(String(targetMap[it.id] || '').trim())).length;
+        activePill.textContent = `${activeSec.title} (${secDone}/${activeSec.items.length})`;
+      }
+
+      if (!enfermagemValidationActive) return;
+      const v = validateEnfermagemChecklist(d);
+      const slot = document.getElementById('enf-validation-banner-slot');
+      if (v.valid) {
+        enfermagemValidationActive = false;
+        if (slot) slot.innerHTML = '';
+      } else if (slot) {
+        slot.innerHTML = renderChecklistValidationBannerHtml(v);
+      }
+
+      const fieldPairs = [
+        ['data', 'enf-field-data'],
+        ['turno', 'enf-field-turno'],
+        ['responsavelNome', 'enf-field-nome'],
+        ['responsavelCoren', 'enf-field-coren'],
+        ['obsPagina1', 'enf-field-obs-1'],
+        ['obsPagina2', 'enf-field-obs-2']
+      ];
+      fieldPairs.forEach(([key, domId]) => {
+        const el = document.getElementById(domId);
+        if (el) el.classList.toggle('field-invalid', !v.valid && v.invalidFields.has(key));
+      });
+
+      sections.forEach((_, idx) => {
+        const pill = container.querySelector(`[data-enf-sec="${idx}"]`);
+        if (pill) pill.classList.toggle('pill-incomplete', !v.valid && v.incompleteSecIdxs.has(idx));
+      });
+
+      activeSec.items.forEach(it => {
+        const row = document.getElementById(`enf-item-row-${it.id}`);
+        if (row) row.classList.toggle('item-invalid', !v.valid && v.missingItemIds.has(it.id));
+      });
+    };
+
+    document.getElementById('enf-data').addEventListener('input', e => { d.data = e.target.value; saveEnfDraft(); refreshEnfValidationAndCountersInPlace(); });
     document.getElementById('enf-turno').addEventListener('change', e => { d.turno = e.target.value; saveEnfDraft(); renderEnfermagemView(); });
-    document.getElementById('enf-nome').addEventListener('input', e => { d.responsavelNome = e.target.value; saveEnfDraft(); });
-    document.getElementById('enf-coren').addEventListener('input', e => { d.responsavelCoren = e.target.value; saveEnfDraft(); });
-    document.getElementById('enf-obs-1').addEventListener('input', e => { d.obsPagina1 = e.target.value; saveEnfDraft(); });
-    document.getElementById('enf-obs-2').addEventListener('input', e => { d.obsPagina2 = e.target.value; saveEnfDraft(); });
+    document.getElementById('enf-nome').addEventListener('input', e => { d.responsavelNome = e.target.value; saveEnfDraft(); refreshEnfValidationAndCountersInPlace(); });
+    document.getElementById('enf-coren').addEventListener('input', e => { d.responsavelCoren = e.target.value; saveEnfDraft(); refreshEnfValidationAndCountersInPlace(); });
+    const obs1Inp = document.getElementById('enf-obs-1');
+    const obs2Inp = document.getElementById('enf-obs-2');
+    obs1Inp.addEventListener('input', e => { d.obsPagina1 = e.target.value; saveEnfDraft(); refreshEnfValidationAndCountersInPlace(); });
+    obs2Inp.addEventListener('input', e => { d.obsPagina2 = e.target.value; saveEnfDraft(); refreshEnfValidationAndCountersInPlace(); });
+
+    container.querySelectorAll('[data-enf-quick-obs]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const which = btn.dataset.enfQuickObs;
+        if (which === '1') {
+          const cur = String(d.obsPagina1 || '').trim();
+          d.obsPagina1 = cur || 'Sem alterações.';
+          obs1Inp.value = d.obsPagina1;
+        } else {
+          const cur = String(d.obsPagina2 || '').trim();
+          d.obsPagina2 = cur || 'Sem alterações.';
+          obs2Inp.value = d.obsPagina2;
+        }
+        saveEnfDraft();
+        refreshEnfValidationAndCountersInPlace();
+        showToast('Observação preenchida: Sem alterações.');
+      });
+    });
 
     container.querySelectorAll('[data-enf-sec]').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -3092,22 +4955,50 @@
     if (nextSec) nextSec.addEventListener('click', () => { if (activeEnfSectionIdx < sections.length - 1) { activeEnfSectionIdx++; renderEnfermagemView(); } });
 
     document.getElementById('btn-sec-ok').addEventListener('click', () => {
-      activeSec.items.forEach(it => { if (!targetMap[it.id]) targetMap[it.id] = 'OK'; });
+      activeSec.items.forEach(it => {
+        if (!it.customInput && !String(targetMap[it.id] || '').trim()) {
+          targetMap[it.id] = 'OK';
+        }
+      });
       saveEnfDraft();
       renderEnfermagemView();
-      showToast(`${activeSec.title}: todos os itens marcados OK!`);
+      const pendingCustom = activeSec.items.find(it => it.customInput && !String(targetMap[it.id] || '').trim());
+      if (pendingCustom) {
+        showToast(`✅ Itens marcados OK! Informe o valor de "${pendingCustom.name}".`);
+      } else {
+        showToast(`${activeSec.title}: todos os itens marcados OK!`);
+      }
     });
 
     document.getElementById('btn-enf-all-ok').addEventListener('click', () => {
-      sections.forEach(sec => sec.items.forEach(it => { if (!targetMap[it.id]) targetMap[it.id] = 'OK'; }));
+      let pendingCustomSecIdx = -1;
+      let pendingCustomName = '';
+      sections.forEach((sec, sIdx) => {
+        sec.items.forEach(it => {
+          if (!it.customInput && !String(targetMap[it.id] || '').trim()) {
+            targetMap[it.id] = 'OK';
+          } else if (it.customInput && !String(targetMap[it.id] || '').trim() && pendingCustomSecIdx === -1) {
+            pendingCustomSecIdx = sIdx;
+            pendingCustomName = it.name;
+          }
+        });
+      });
+      if (pendingCustomSecIdx >= 0) {
+        activeEnfSectionIdx = pendingCustomSecIdx;
+      }
       saveEnfDraft();
       renderEnfermagemView();
-      showToast('Todas as 10 mochilas/compartimentos marcados como OK!');
+      if (pendingCustomName) {
+        showToast(`✅ Materiais marcados OK! Informe o valor de "${pendingCustomName}".`);
+      } else {
+        showToast('Todas as 10 mochilas/compartimentos marcados como OK!');
+      }
     });
 
     document.getElementById('btn-reset-enf').addEventListener('click', async () => {
       if (!(await samuConfirm('Limpar os dados deste Check List de Enfermagem?'))) return;
       editingEnfermagemId = null;
+      enfermagemValidationActive = false;
       enfermagemState = createEmptyEnfermagem();
       await window.SamuStorage.clearDraft(currentUser.username, 'checklist_enfermagem');
       renderEnfermagemView();
@@ -3126,7 +5017,9 @@
     container.querySelectorAll('[data-enf-custom]').forEach(inp => {
       inp.addEventListener('input', () => {
         targetMap[inp.dataset.enfCustom] = inp.value;
+        inp.style.borderColor = String(inp.value || '').trim() ? 'var(--border)' : '#dc2626';
         saveEnfDraft();
+        refreshEnfValidationAndCountersInPlace();
       });
     });
 
@@ -3169,6 +5062,21 @@
     });
 
     document.getElementById('btn-save-send-enf').addEventListener('click', async () => {
+      const checkVal = validateEnfermagemChecklist(d);
+      if (!checkVal.valid) {
+        enfermagemValidationActive = true;
+        if (checkVal.firstMissingSecIdx >= 0) {
+          activeEnfSectionIdx = checkVal.firstMissingSecIdx;
+        }
+        renderEnfermagemView();
+        scrollToMissingChecklistField(checkVal.firstMissingDomId);
+        await samuAlert(
+          '⚠️ Preencha todos os campos do Check List de Enfermagem antes de enviar:\n\n• ' +
+          checkVal.errors.join('\n• ')
+        );
+        return;
+      }
+
       const btn = document.getElementById('btn-save-send-enf');
       btn.disabled = true;
       btn.textContent = 'Gerando PDF e Salvando...';
@@ -3182,13 +5090,14 @@
         await window.SamuStorage.clearDraft(currentUser.username, 'checklist_enfermagem');
 
         editingEnfermagemId = null;
+        enfermagemValidationActive = false;
         enfermagemState = createEmptyEnfermagem();
         await refreshDraftCount();
         await refreshSyncBadge();
         await openPdfPreviewModal(record, generated, upRes);
         renderEnfermagemView();
       } catch (err) {
-        alert('Erro ao salvar Check List de Enfermagem: ' + err.message);
+        samuAlert('Erro ao salvar Check List de Enfermagem: ' + err.message);
       } finally {
         btn.disabled = false;
         btn.textContent = '💾 Salvar e Enviar PDF ao Google Drive';
@@ -3348,8 +5257,12 @@
         if (!rec) return;
         if (rec.type === 'ficha') {
           fichaState = normalizeFichaData(rec.data);
+          if (activeCrew) {
+            applyCrewToFichaState(fichaState, activeCrew, false);
+          }
           editingFichaId = rec.id;
           fichaStep = 1;
+          resetFichaSyncTracking(fichaState, 'sf_rec_' + rec.id, {}, true);
           persistFichaDraft();
           activeTab = 'ficha';
         } else if (rec.type === 'checklist_condutor') {
@@ -3471,7 +5384,7 @@
       <div class="card">
         <div class="card-title"><span>✅ Aprovação de Novos Cadastros da Equipe</span></div>
         <p style="margin:0 0 10px; font-size:0.84rem; color:var(--muted);">
-          Quando um Técnico de Enfermagem (Login, Senha, COREN e CPF) ou Condutor (Login, Senha e CPF) cria cadastro na tela inicial, a solicitação aparece aqui para você aprovar. Funciona <strong>100% offline pela Base Interna</strong> e sincroniza com o <strong>GitHub</strong> sempre que houver internet.
+          Quando um Técnico de Enfermagem, Enfermeiro(a) (Login, Senha, COREN e CPF) ou Condutor (Login, Senha e CPF) cria cadastro na tela inicial, a solicitação aparece aqui para você aprovar. Funciona <strong>100% offline pela Base Interna</strong> e sincroniza com o <strong>GitHub</strong> sempre que houver internet.
         </p>
         <div style="display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; padding:10px 12px;">
           <div style="font-size:0.8rem;">
@@ -3494,13 +5407,16 @@
           </div>
         ` : pendingUsers.map(u => {
           const isEnf = u.role === 'enfermagem';
+          const subRole = window.SamuStorage.getUserSubRole(u);
+          const roleLabel = window.SamuStorage.getUserRoleLabel(u);
+          const roleIcon = subRole === 'enfermeiro' ? '👩‍⚕️' : (isEnf ? '🩺' : '🚑');
           const reqDate = u.requestedAt ? new Date(u.requestedAt).toLocaleString('pt-BR') : 'Agora';
           return `
             <div class="approval-card">
               <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
                 <div>
                   <span class="type-badge ${isEnf ? 'type-enfermagem' : 'type-condutor'}">
-                    ${isEnf ? '🩺 Téc. Enfermagem / Enfermeiro' : '🚑 Condutor Socorrista'}
+                    ${roleIcon} ${escapeHtml(roleLabel)}
                   </span>
                   <div style="font-size:1.02rem; font-weight:800; margin-top:4px; color:#0f172a;">${escapeHtml(u.name)}</div>
                 </div>
@@ -3510,15 +5426,24 @@
               <div style="font-size:0.84rem; color:#334155; margin-bottom:8px; line-height:1.5;">
                 👤 Login solicitado: <strong><code>${escapeHtml(u.username)}</code></strong>
                 • 🪪 CPF: <strong>${escapeHtml(u.cpf || 'Não informado')}</strong>
-                ${isEnf ? `<br>🩺 COREN informado: <strong>${escapeHtml(u.coren || u.councilId || 'Não informado')}</strong>` : ''}
+                ${isEnf ? `<br>${roleIcon} COREN informado: <strong>${escapeHtml(u.coren || u.councilId || 'Não informado')}</strong>` : ''}
               </div>
 
-              ${isEnf ? `
-                <div class="field" style="margin-bottom:10px;">
-                  <label>Confirmar / Ajustar COREN (já preencherá automático na ficha quando ele logar)</label>
+              <div class="grid-2" style="margin-bottom:10px;">
+                <div class="field" style="margin-bottom:0;">
+                  <label>Cargo / Nível de Acesso ao Aprovar</label>
+                  <select data-aprov-role="${escapeHtml(u.username)}">
+                    <option value="tecnico" ${subRole === 'tecnico' ? 'selected' : ''}>🩺 Téc. de Enfermagem</option>
+                    <option value="enfermeiro" ${subRole === 'enfermeiro' ? 'selected' : ''}>👩‍⚕️ Enfermeiro(a)</option>
+                    <option value="condutor" ${subRole === 'condutor' ? 'selected' : ''}>🚑 Condutor Socorrista</option>
+                    <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>🔑 Administrador / Coordenação (ADM)</option>
+                  </select>
+                </div>
+                <div class="field" data-aprov-coren-wrap="${escapeHtml(u.username)}" style="margin-bottom:0; ${subRole === 'condutor' ? 'display:none;' : ''}">
+                  <label>Confirmar / Ajustar COREN</label>
                   <input type="text" data-aprov-coren="${escapeHtml(u.username)}" value="${escapeHtml(u.coren || u.councilId || '')}" placeholder="Ex: COREN-SP 542.810-TE" />
                 </div>
-              ` : ''}
+              </div>
 
               <div style="display:flex; gap:8px; flex-wrap:wrap;">
                 <button type="button" class="btn btn-success btn-sm" data-approve-user="${escapeHtml(u.username)}">✅ Aprovar Cadastro</button>
@@ -3530,21 +5455,41 @@
       </div>
 
       <div class="card">
-        <div class="card-title"><span>👥 Equipe Já Aprovada na Base Interna (${approvedUsers.length})</span></div>
+        <div class="card-title"><span>👥 Equipe Já Aprovada – Alterar / Subir de Cargo (${approvedUsers.length})</span></div>
+        <p style="margin:0 0 10px; font-size:0.8rem; color:var(--muted);">
+          Você pode promover qualquer integrante já aprovado (ex.: tornar <strong>🔑 ADM</strong> ou subir de <strong>Téc. Enfermagem</strong> para <strong>Enfermeiro(a)</strong>) direto abaixo:
+        </p>
         <div>
           ${approvedUsers.map(u => {
-            const roleBadge = u.role === 'admin' ? '🔑 ADM' : (u.role === 'condutor' ? '🚑 Condutor' : '🩺 Enfermagem');
+            const subRole = window.SamuStorage.getUserSubRole(u);
+            const curSelVal = u.role === 'admin' ? 'admin' : (u.role === 'condutor' ? 'condutor' : subRole);
+            const isSelf = u.username.toLowerCase() === currentUser.username.toLowerCase();
+            const roleIcon = u.role === 'admin' ? '🔑' : (u.role === 'condutor' ? '🚑' : (subRole === 'enfermeiro' ? '👩‍⚕️' : '🩺'));
+            const roleBadge = `${roleIcon} ${window.SamuStorage.getUserRoleLabel(u)}`;
             const corenTxt = u.coren || u.councilId || '';
             return `
-              <div class="check-item-row" style="flex-wrap:wrap;">
-                <div class="check-item-info">
-                  <strong>${escapeHtml(u.name)}</strong> <small style="color:var(--muted);">(${roleBadge})</small><br>
+              <div class="check-item-row" style="flex-wrap:wrap; gap:8px;">
+                <div class="check-item-info" style="min-width:190px;">
+                  <strong>${escapeHtml(u.name)}</strong> <small style="color:var(--muted);">(${escapeHtml(roleBadge)})</small><br>
                   <small style="color:var(--muted);">
                     Login: <code>${escapeHtml(u.username)}</code>
                     ${u.cpf ? ` • CPF: ${escapeHtml(u.cpf)}` : ''}
                     ${corenTxt ? ` • <strong>${escapeHtml(corenTxt)}</strong>` : ''}
                   </small>
                 </div>
+                ${isSelf ? `
+                  <span class="type-badge" style="background:#f1f5f9; color:#334155;">🔑 Seu login atual (ADM)</span>
+                ` : `
+                  <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; flex:1; justify-content:flex-end;">
+                    <select data-promote-role="${escapeHtml(u.username)}" style="flex:1; min-width:175px; max-width:260px; padding:8px 10px; border:1.5px solid var(--border); border-radius:8px; font-size:0.83rem; font-weight:700; background:#fff;">
+                      <option value="tecnico" ${curSelVal === 'tecnico' ? 'selected' : ''}>🩺 Téc. Enfermagem</option>
+                      <option value="enfermeiro" ${curSelVal === 'enfermeiro' ? 'selected' : ''}>👩‍⚕️ Enfermeiro(a)</option>
+                      <option value="condutor" ${curSelVal === 'condutor' ? 'selected' : ''}>🚑 Condutor</option>
+                      <option value="admin" ${curSelVal === 'admin' ? 'selected' : ''}>🔑 Administrador (ADM)</option>
+                    </select>
+                    <button type="button" class="btn btn-primary btn-sm" data-promote-save="${escapeHtml(u.username)}">⬆️ Salvar Cargo</button>
+                  </div>
+                `}
               </div>
             `;
           }).join('')}
@@ -3592,12 +5537,36 @@
       });
     }
 
+    container.querySelectorAll('[data-aprov-role]').forEach(sel => {
+      sel.addEventListener('change', () => {
+        const uname = sel.dataset.aprovRole;
+        const escUname = CSS.escape ? CSS.escape(uname) : uname;
+        const wrap = container.querySelector(`[data-aprov-coren-wrap="${escUname}"]`);
+        if (wrap) wrap.style.display = sel.value === 'condutor' ? 'none' : '';
+      });
+    });
+
+    const mapRoleChoiceToFields = (choiceVal) => {
+      if (choiceVal === 'admin') return { role: 'admin', subRole: 'admin' };
+      if (choiceVal === 'condutor') return { role: 'condutor', subRole: 'condutor' };
+      if (choiceVal === 'enfermeiro') return { role: 'enfermagem', subRole: 'enfermeiro' };
+      return { role: 'enfermagem', subRole: 'tecnico' };
+    };
+
     container.querySelectorAll('[data-approve-user]').forEach(btn => {
       btn.addEventListener('click', async () => {
         const uname = btn.dataset.approveUser;
-        const corenInput = container.querySelector(`[data-aprov-coren="${CSS.escape ? CSS.escape(uname) : uname}"]`);
+        const escUname = CSS.escape ? CSS.escape(uname) : uname;
+        const corenInput = container.querySelector(`[data-aprov-coren="${escUname}"]`);
+        const roleSelect = container.querySelector(`[data-aprov-role="${escUname}"]`);
         const overrides = {};
-        if (corenInput) {
+        if (roleSelect) {
+          Object.assign(overrides, mapRoleChoiceToFields(roleSelect.value));
+        }
+        if (overrides.role === 'condutor') {
+          overrides.coren = '';
+          overrides.councilId = '';
+        } else if (corenInput) {
           overrides.coren = corenInput.value.trim();
           overrides.councilId = overrides.coren;
         }
@@ -3608,13 +5577,75 @@
           renderBottomNav();
           await refreshSyncBadge();
           renderAprovacoesView(true);
+          const finalLbl = window.SamuStorage.getUserRoleLabel(res.user);
           showToast(res.githubSynced
-            ? `✅ "${uname}" aprovado na Base Interna e atualizado no GitHub!`
-            : `✅ "${uname}" aprovado na Base Interna! (Sincronizará c/ GitHub ao conectar)`);
+            ? `✅ "${uname}" aprovado como ${finalLbl} na Base Interna e no GitHub!`
+            : `✅ "${uname}" aprovado como ${finalLbl} na Base Interna! (Sincronizará c/ GitHub ao conectar)`);
         } catch (err) {
           samuAlert('Erro ao aprovar cadastro: ' + err.message);
           btn.disabled = false;
           btn.textContent = '✅ Aprovar Cadastro';
+        }
+      });
+    });
+
+    container.querySelectorAll('[data-promote-save]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const uname = btn.dataset.promoteSave;
+        const escUname = CSS.escape ? CSS.escape(uname) : uname;
+        const sel = container.querySelector(`[data-promote-role="${escUname}"]`);
+        if (!sel) return;
+        const target = approvedUsers.find(u => u.username.toLowerCase() === uname.toLowerCase());
+        if (!target) return;
+
+        const mapped = mapRoleChoiceToFields(sel.value);
+        const curSelVal = target.role === 'admin' ? 'admin' : (target.role === 'condutor' ? 'condutor' : window.SamuStorage.getUserSubRole(target));
+        if (sel.value === curSelVal) {
+          showToast(`"${target.name}" já está com este cargo.`);
+          return;
+        }
+
+        const newRolePreview = window.SamuStorage.getUserRoleLabel(Object.assign({}, target, mapped));
+        if (!(await samuConfirm(`Alterar o cargo de "${target.name}" (${target.username}) para "${newRolePreview}"?`))) {
+          sel.value = curSelVal;
+          return;
+        }
+
+        const updatedUser = Object.assign({}, target, mapped, {
+          updatedAt: new Date().toISOString()
+        });
+        btn.disabled = true;
+        btn.textContent = 'Salvando...';
+        try {
+          window.SamuStorage.upsertLocalUser(updatedUser);
+          let ghSynced = false;
+          if (navigator.onLine && window.SamuStorage.hasGitHubConfigured() && window.SamuStorage.getSettings().githubToken) {
+            try {
+              const ghRes = await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true });
+              ghSynced = Boolean(ghRes && ghRes.pushed);
+            } catch (eGh) {}
+          }
+          const curSettings = window.SamuStorage.getSettings();
+          if (curSettings.scriptUrl && navigator.onLine) {
+            try {
+              await window.SamuStorage.apiPost({
+                action: 'saveUser',
+                authUser: currentUser.username,
+                authPass: currentUser.password,
+                userData: updatedUser
+              });
+            } catch (eGs) {}
+          }
+          renderBottomNav();
+          await refreshSyncBadge();
+          renderAprovacoesView(true);
+          showToast(ghSynced
+            ? `✅ Cargo de "${target.name}" atualizado para ${newRolePreview} (Base Interna + GitHub)!`
+            : `✅ Cargo de "${target.name}" atualizado para ${newRolePreview}!`);
+        } catch (err) {
+          samuAlert('Erro ao alterar cargo: ' + err.message);
+          btn.disabled = false;
+          btn.textContent = '⬆️ Salvar Cargo';
         }
       });
     });
@@ -3662,6 +5693,7 @@
     const pendingUsers = window.SamuStorage.getPendingUsers();
     const users = allUsers.filter(u => u.status !== 'pending');
     const receiversCount = window.SamuStorage.getHospitalReceivers().length;
+    const medicosRegCount = window.SamuStorage.getMedicosReguladores ? window.SamuStorage.getMedicosReguladores().length : 0;
     const patientsCount = Object.keys(window.SamuStorage.getInternalPatientsMap() || {}).length;
     const ghMeta = window.SamuStorage.getGitHubMeta();
 
@@ -3685,6 +5717,7 @@
           <span class="type-badge type-enfermagem">👥 Aprovados: ${users.length}</span>
           <span class="type-badge" style="background:#fef3c7; color:#92400e;">⏳ Pendentes: ${pendingUsers.length}</span>
           <span class="type-badge type-condutor">🏥 Recebedores Salvos: ${receiversCount}</span>
+          <span class="type-badge" style="background:#e0f2fe; color:#0369a1;">👨‍⚕️ Médicos Reguladores: ${medicosRegCount}</span>
           <span class="type-badge type-ficha">🪪 CPFs na Base: ${patientsCount}</span>
         </div>
 
@@ -3756,7 +5789,8 @@
             <div class="field">
               <label>Função / Perfil de Acesso</label>
               <select id="u-role">
-                <option value="enfermagem">🩺 Técnico de Enfermagem / Enfermeiro (COREN pré-preenche na ficha)</option>
+                <option value="tecnico">🩺 Técnico(a) de Enfermagem (COREN pré-preenche na ficha)</option>
+                <option value="enfermeiro">👩‍⚕️ Enfermeiro(a) (COREN pré-preenche na ficha)</option>
                 <option value="condutor">🚑 Condutor Socorrista (Login, Senha e CPF)</option>
                 <option value="admin">🔑 Administrador / Coordenação (vê tudo e aprova cadastros)</option>
               </select>
@@ -3790,12 +5824,16 @@
         <div class="card-title"><span>📋 Equipe Aprovada (${users.length})</span></div>
         <div>
           ${users.map(u => {
-            const roleBadge = u.role === 'admin' ? '🔑 ADM (Vê Tudo)' : (u.role === 'condutor' ? '🚑 Condutor' : '🩺 Enfermagem');
+            const subRole = window.SamuStorage.getUserSubRole(u);
+            const roleIcon = u.role === 'admin' ? '🔑' : (u.role === 'condutor' ? '🚑' : (subRole === 'enfermeiro' ? '👩‍⚕️' : '🩺'));
+            const roleBadge = u.role === 'admin'
+              ? '🔑 ADM (Vê Tudo)'
+              : `${roleIcon} ${window.SamuStorage.getUserRoleLabel(u)}`;
             const corenVal = u.coren || u.councilId || '';
             return `
               <div class="check-item-row" style="flex-wrap:wrap;">
                 <div class="check-item-info">
-                  <strong>${escapeHtml(u.name)}</strong> <small style="color:var(--muted);">(${roleBadge})</small><br>
+                  <strong>${escapeHtml(u.name)}</strong> <small style="color:var(--muted);">(${escapeHtml(roleBadge)})</small><br>
                   <small style="color:var(--muted);">
                     Login: <code>${escapeHtml(u.username)}</code> • Senha: <code>${escapeHtml(u.password || '****')}</code>
                     ${u.cpf ? ` • CPF: ${escapeHtml(u.cpf)}` : ''}
@@ -3815,12 +5853,18 @@
       </div>
     `;
 
-    // Oculta campo COREN quando perfil selecionado for Condutor
+    // Oculta campo COREN quando perfil selecionado for Condutor e ajusta exemplo p/ Enfermeiro vs Técnico
     const uRoleSel = document.getElementById('u-role');
     const uCorenWrap = document.getElementById('u-coren-wrap');
+    const uCouncilInp = document.getElementById('u-council');
     const syncRoleCorenVisibility = () => {
       if (!uRoleSel || !uCorenWrap) return;
       uCorenWrap.style.display = uRoleSel.value === 'condutor' ? 'none' : '';
+      if (uCouncilInp) {
+        uCouncilInp.placeholder = uRoleSel.value === 'enfermeiro'
+          ? 'Ex: COREN-SP 318.420-ENF'
+          : 'Ex: COREN-SP 542.810-TE';
+      }
     };
     if (uRoleSel) {
       uRoleSel.addEventListener('change', syncRoleCorenVisibility);
@@ -3996,11 +6040,15 @@
 
     document.getElementById('adm-user-form').addEventListener('submit', async (e) => {
       e.preventDefault();
-      const roleVal = document.getElementById('u-role').value;
+      const selVal = document.getElementById('u-role').value;
+      const isNursingRole = selVal === 'tecnico' || selVal === 'enfermeiro' || selVal === 'enfermagem';
+      const roleVal = isNursingRole ? 'enfermagem' : selVal;
+      const subRoleVal = selVal === 'enfermeiro' ? 'enfermeiro' : (isNursingRole ? 'tecnico' : selVal);
       const corenVal = roleVal === 'condutor' ? '' : document.getElementById('u-council').value.trim();
       const userData = {
         name: document.getElementById('u-name').value.trim(),
         role: roleVal,
+        subRole: subRoleVal,
         username: document.getElementById('u-username').value.trim().toLowerCase(),
         password: document.getElementById('u-password').value.trim(),
         cpf: window.SamuStorage.formatCpf(document.getElementById('u-cpf').value),
@@ -4045,7 +6093,9 @@
         const target = users.find(u => u.username.toLowerCase() === btn.dataset.editU.toLowerCase());
         if (!target) return;
         document.getElementById('u-name').value = target.name || '';
-        document.getElementById('u-role').value = target.role || 'condutor';
+        document.getElementById('u-role').value = target.role === 'admin'
+          ? 'admin'
+          : (target.role === 'condutor' ? 'condutor' : window.SamuStorage.getUserSubRole(target));
         document.getElementById('u-username').value = target.username || '';
         document.getElementById('u-password').value = target.password || '';
         document.getElementById('u-cpf').value = target.cpf || '';
@@ -4128,6 +6178,10 @@
       } else {
         statusEl.textContent = '⏳ Salvo no aparelho! Sem internet agora — enviará ao Google Drive automaticamente.';
       }
+    } else if (record && record.type === 'checklist_condutor' && !validateCondutorChecklist(record.data).valid) {
+      statusEl.textContent = '⚠️ Check List incompleto — preencha todos os campos antes de enviar ou compartilhar.';
+    } else if (record && record.type === 'checklist_enfermagem' && !validateEnfermagemChecklist(record.data).valid) {
+      statusEl.textContent = '⚠️ Check List incompleto — preencha todos os campos antes de enviar ou compartilhar.';
     } else if (record.driveUrl) {
       statusEl.textContent = '☁️ Este PDF já está arquivado no Google Drive.';
     } else {

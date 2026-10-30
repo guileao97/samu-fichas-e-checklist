@@ -43,10 +43,12 @@
         <div class="field">
           <label>Sua Função no SAMU</label>
           <div class="role-pick-grid">
-            <button type="button" class="role-pick-btn active" data-reg-role="enfermagem">🩺 Téc. Enferm. / Enfermeiro</button>
-            <button type="button" class="role-pick-btn" data-reg-role="condutor">🚑 Condutor Socorrista</button>
+            <button type="button" class="role-pick-btn active" data-reg-role="enfermagem" data-reg-subrole="tecnico">🩺 Téc. Enfermagem</button>
+            <button type="button" class="role-pick-btn" data-reg-role="enfermagem" data-reg-subrole="enfermeiro">👩‍⚕️ Enfermeiro(a)</button>
+            <button type="button" class="role-pick-btn" data-reg-role="condutor" data-reg-subrole="condutor">🚑 Condutor Socorrista</button>
           </div>
           <input type="hidden" id="reg-role" value="enfermagem" />
+          <input type="hidden" id="reg-subrole" value="tecnico" />
         </div>
 
         <div class="field">
@@ -106,8 +108,9 @@
       <div class="login-demo-box">
         <div><strong>Acessos iniciais configurados (editáveis pelo Adm):</strong></div>
         <div>• <strong>Adm (vê tudo):</strong> <code>admin</code> / senha: <code>samu192</code></div>
-        <div>• <strong>Condutor:</strong> <code>condutor</code> / senha: <code>1234</code></div>
+        <div>• <strong>Condutores:</strong> <code>condutor</code> ou <code>condutor2</code> / senha: <code>1234</code></div>
         <div>• <strong>Téc. Enfermagem:</strong> <code>enfermagem</code> / senha: <code>1234</code></div>
+        <div>• <strong>Enfermeiro(a):</strong> <code>enfermeiro</code> / senha: <code>1234</code></div>
       </div>
       <div id="login-version-footer" style="margin-top: 10px; text-align: center; font-size: 0.74rem; color: var(--muted); font-weight: 700;"></div>
     </div>
@@ -130,6 +133,9 @@
         </div>
       </div>
       <div class="topbar-actions">
+        <button type="button" class="sync-pill hidden" id="btn-top-crew" title="Definir ou alterar equipe do plantão">
+          <span id="top-crew-text">👥 Equipe</span>
+        </button>
         <button type="button" class="sync-pill" id="btn-sync-status" title="Sincronizar com Google Drive">
           <span id="sync-status-text">Offline</span>
         </button>
@@ -179,6 +185,11 @@
       </div>
       <div class="preview-pages-scroll" id="regulacao-photo-container" style="padding: 16px;"></div>
     </div>
+  </div>
+
+  <!-- MODAL DE SELEÇÃO DA EQUIPE DO PLANTÃO (ATÉ 3 INTEGRANTES + SINCRONIZAÇÃO DE FICHAS) -->
+  <div id="crew-modal" class="sig-modal hidden" style="z-index: 165;">
+    <div class="crew-modal-card" id="crew-modal-body"></div>
   </div>
 
   <script src="js/assets.js"></script>

@@ -202,6 +202,7 @@ def main():
     parser = argparse.ArgumentParser(description="Publicar SAMU 192 Orlândia no GitHub")
     parser.add_argument("--token", default="", help="Personal Access Token do GitHub")
     parser.add_argument("--novo-apk", action="store_true", help="Incrementa apkVersionCode para compilar novo .APK e forçar auto-update do APK")
+    parser.add_argument("--manter-versao", action="store_true", help="Mantém apkVersionCode e otaRevision atuais (ex: ao subir o .apk da versão atual)")
     parser.add_argument("--notas", default="", help="Descrição desta atualização")
     args = parser.parse_args()
 
@@ -273,7 +274,7 @@ def main():
         local_ver = json.load(vf)
 
     now_iso = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    if remote_ver is not None:
+    if remote_ver is not None and not args.manter_versao:
         next_ota = max(int(local_ver.get("otaRevision", 1)), int(remote_ver.get("otaRevision", 1))) + 1
         cur_code = max(int(local_ver.get("apkVersionCode", 1)), int(remote_ver.get("apkVersionCode", 1)))
         cur_name = str(remote_ver.get("apkVersionName") or local_ver.get("apkVersionName") or "1.0.0")
