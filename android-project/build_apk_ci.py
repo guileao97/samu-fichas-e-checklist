@@ -35,6 +35,14 @@ def find_java_tool(tool_name):
         candidates.append(os.path.join(java_home, "bin", tool_name + EXE))
     if IS_WIN:
         candidates.append(os.path.join(r"C:\Program Files\Android\Android Studio\jbr\bin", tool_name + EXE))
+        candidates.append(os.path.join(r"C:\Program Files\Android\Android Studio\jre\bin", tool_name + EXE))
+        for pattern in (
+            r"C:\Program Files\Eclipse Adoptium\jdk*\bin",
+            r"C:\Program Files\Java\jdk*\bin",
+            r"C:\Program Files\Microsoft\jdk*\bin",
+        ):
+            for hit_dir in sorted(glob.glob(pattern), reverse=True):
+                candidates.append(os.path.join(hit_dir, tool_name + EXE))
     which_hit = shutil.which(tool_name)
     if which_hit:
         candidates.append(which_hit)
@@ -49,12 +57,32 @@ def find_sdk_root():
         val = os.environ.get(env_key, "")
         if val and os.path.isdir(val):
             return val
+    portable_sdk = os.path.join(REPO_ROOT, ".android-sdk")
+    if os.path.isdir(portable_sdk):
+        return portable_sdk
     if IS_WIN:
         local_app = os.environ.get("LOCALAPPDATA", r"C:\Users\Guilh\AppData\Local")
-        win_sdk = os.path.join(local_app, "Android", "Sdk")
-        if os.path.isdir(win_sdk):
-            return win_sdk
+        for candidate in (
+            os.path.join(local_app, "Android", "Sdk"),
+            r"C:\Android\Sdk",
+            r"C:\Android\sdk",
+        ):
+            if os.path.isdir(candidate):
+                return candidate
     raise RuntimeError("Android SDK nao encontrado (defina ANDROID_HOME ou ANDROID_SDK_ROOT).")
+
+
+def has_local_build_environment():
+    try:
+        find_java_tool("java")
+        find_java_tool("javac")
+        find_java_tool("keytool")
+        sdk_root = find_sdk_root()
+        platforms = glob.glob(os.path.join(sdk_root, "platforms", "android-*", "android.jar"))
+        btools = [d for d in glob.glob(os.path.join(sdk_root, "build-tools", "*")) if os.path.isdir(d)]
+        return bool(platforms and btools)
+    except Exception:
+        return False
 
 
 def run_step(name, cmd, env=None):

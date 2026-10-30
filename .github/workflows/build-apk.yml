@@ -1,0 +1,78 @@
+name: Compilar e Publicar APK SAMU 192 Orlandia
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'base_dados_samu.json'
+      - 'github-database/**'
+      - '*.md'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar código do repositório
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Configurar Android SDK (API 34)
+        uses: android-actions/setup-android@v3
+
+      - name: Instalar Build-Tools 34.0.0 e Plataforma Android 34
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Compilar e Assinar SAMU_192_Orlandia.apk
+        run: |
+          python3 android-project/build_apk_ci.py
+
+      - name: Salvar certificado de assinatura fixo no repositório (apenas no 1º build)
+        run: |
+          if [[ -n "$(git status --porcelain android-project/samu_orlandia_release.jks)" ]]; then
+            git config user.name "SAMU 192 Build Bot"
+            git config user.email "actions@github.com"
+            git add android-project/samu_orlandia_release.jks
+            git commit -m "chore: salvar certificado fixo para auto-update do APK [skip ci]"
+            git push origin HEAD:main
+          fi
+
+      - name: Disponibilizar APK nos Artefatos da Execução
+        uses: actions/upload-artifact@v4
+        with:
+          name: SAMU_192_Orlandia_APK
+          path: |
+            SAMU_192_Orlandia.apk
+            version.json
+
+      - name: Publicar Release Oficial p/ Auto-Update dos Celulares
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER_NAME=$(python3 -c "import json; d=json.load(open('version.json')); print(d.get('apkVersionName','1.0.0'))")
+          VER_CODE=$(python3 -c "import json; d=json.load(open('version.json')); print(d.get('apkVersionCode',1))")
+          OTA_REV=$(python3 -c "import json; d=json.load(open('version.json')); print(d.get('otaRevision',1))")
+          NOTES=$(python3 -c "import json; d=json.load(open('version.json')); print(d.get('releaseNotes','Atualização automática SAMU 192 Orlândia-SP'))")
+          TAG="v${VER_NAME}-b${VER_CODE}-r${OTA_REV}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" SAMU_192_Orlandia.apk version.json --clobber
+          else
+            gh release create "$TAG" SAMU_192_Orlandia.apk version.json \
+              --title "SAMU 192 Orlândia v${VER_NAME} (Build ${VER_CODE} • Rev #${OTA_REV})" \
+              --notes "${NOTES}" \
+              --latest
+          fi
