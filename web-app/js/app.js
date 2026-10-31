@@ -540,10 +540,45 @@
   function hasMeaningfulFichaData(d) {
     if (!d) return false;
     const defaultHosp = (window.SamuStorage.getSettings().defaultHospital || 'HBSA').toUpperCase();
-    const customDestino = d.destino && String(d.destino).trim().toUpperCase() !== defaultHosp;
-    if (d.vitimaNome || d.vitimaCpf || d.vitimaTelefone || d.motivoSolicitacao || d.ocorrenciaEndereco || d.kmFinal || d.descricaoCena || d.relatorioEnfermagem || customDestino || d.recebidoPorNome) return true;
-    if ((d.locaisOcorrencia && d.locaisOcorrencia.length) || (d.tiposAtendimento && d.tiposAtendimento.length) || (d.procedimentos && d.procedimentos.length)) return true;
-    if ((d.medicamentosSelecionados && d.medicamentosSelecionados.length) || d.medicamentosOutro || (d.alergiasSelecionadas && d.alergiasSelecionadas.length) || d.alergiasOutro) return true;
+    const customDestino = Boolean(d.destino && String(d.destino).trim().toUpperCase() !== defaultHosp);
+    const lastKm = String(window.SamuStorage.getLastKmFinal() || '').trim();
+    const customKmIni = Boolean(d.kmInicial && String(d.kmInicial).trim() !== lastKm);
+    const customData = Boolean(d.data && String(d.data).trim() !== todayISO());
+    const customCidade = Boolean(d.vitimaCidade && String(d.vitimaCidade).trim() !== 'Orlândia');
+    const customCep = Boolean(d.vitimaCep && String(d.vitimaCep).trim() !== '14620-000');
+
+    if (customDestino || customKmIni || customData || customCidade || customCep || d.haQueimaduras === 'SIM' || d.localOutroCheck || d.tipoOutroCheck || d.situacaoOutroCheck || d.procOutroCheck) {
+      return true;
+    }
+
+    const textKeys = [
+      'kmFinal', 'motivoSolicitacao', 'risco', 'localOutroTexto',
+      'ocorrenciaEndereco', 'ocorrenciaNumero', 'ocorrenciaReferencia', 'ocorrenciaContato',
+      'vitimaNome', 'vitimaIdade', 'vitimaDn', 'vitimaTelefone',
+      'vitimaEndereco', 'vitimaNumero', 'vitimaBairro', 'vitimaNaturalidade',
+      'vitimaPai', 'vitimaMae', 'vitimaCpf', 'vitimaRg', 'vitimaCns',
+      'tipoOutroTexto', 'situacaoOutroTexto', 'descricaoCena', 'queimadurasPorcentagem',
+      'viaAerea', 'respiracao', 'circulacao', 'consciente',
+      'pupilaDirTamanho', 'pupilaDirReativa', 'pupilaEsqTamanho', 'pupilaEsqReativa',
+      'svPa', 'svFc', 'svFr', 'svSat', 'svDextro', 'svTemp',
+      'medicamentosOutro', 'alergiasOutro', 'procOutroTexto', 'conduta',
+      'medicoRegulador', 'pertences', 'relatorioEnfermagem',
+      'termoNome', 'termoCpf', 'sigTermo', 'obsHospital',
+      'recebidoPorNome', 'recebidoCorenCrm', 'sigRecebido'
+    ];
+    for (let i = 0; i < textKeys.length; i++) {
+      if (d[textKeys[i]] && String(d[textKeys[i]]).trim() !== '') return true;
+    }
+
+    const arrayKeys = [
+      'locaisOcorrencia', 'tiposAtendimento', 'situacoesLocal', 'burnZonesSelected',
+      'pele', 'antecedentes', 'medicamentosSelecionados', 'alergiasSelecionadas',
+      'procedimentos', 'termosSelecionados', 'setorRecomendado', 'setorAdmitido'
+    ];
+    for (let i = 0; i < arrayKeys.length; i++) {
+      if (Array.isArray(d[arrayKeys[i]]) && d[arrayKeys[i]].length > 0) return true;
+    }
+
     const h = d.horarios || {};
     return Object.keys(h).some(k => Boolean(h[k]));
   }
@@ -4195,13 +4230,10 @@
     return `
       <div class="quick-draft-bar">
         <div class="quick-draft-btns">
-          <button type="button" class="btn-draft-save js-btn-save-draft" data-draft-kind="${kind}">
+          <button type="button" class="btn-draft-save js-btn-save-draft" data-draft-kind="${kind}" ${isFicha ? 'title="Salva esta ocorrência em Rascunhos e já abre uma nova ficha limpa na hora"' : ''}>
             📌 Salvar Rascunho
           </button>
           ${isFicha ? `
-            <button type="button" class="btn-draft-new js-btn-save-new-ficha" title="Salva esta ocorrência como rascunho e abre uma nova ficha limpa para a próxima ocorrência">
-              ➕ Salvar + Nova
-            </button>
             <button type="button" class="btn-draft-whatsapp js-btn-send-regulacao" title="Gera a foto do cabeçalho preenchido até os horários para enviar à Regulação Médica no WhatsApp">
               📲 Cabeçalho Regulação
             </button>
@@ -4271,12 +4303,14 @@
       if (startNewAfter && !editingFichaId && !hasMeaningfulFichaData(fichaState)) {
         if (activeCrew) {
           window.SamuStorage.closeCrewCurrentSession(activeCrew.crewId, currentCrewSessionId, 'reset', '', '', false);
+          scheduleCrewCloudPush({ immediate: true });
         }
         fichaState = createEmptyFicha();
         fichaStep = 1;
         resetFichaSyncTracking(fichaState, uid('sf'), {}, false);
         await window.SamuStorage.clearDraft(currentUser.username, 'ficha');
         renderFichaView();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
         showToast('Nova ficha em branco pronta!');
         return;
       }
@@ -4296,6 +4330,7 @@
         const hintParts = [
           fichaState.motivoSolicitacao,
           fichaState.ocorrenciaEndereco,
+          fichaState.risco ? ('Risco ' + fichaState.risco) : '',
           (fichaState.horarios && fichaState.horarios.horaChamado) ? ('Chamado ' + fichaState.horarios.horaChamado) : ''
         ].filter(Boolean);
         record.patientName = hintParts.length > 0 ? ('Rascunho: ' + hintParts[0]) : 'Ocorrência em preenchimento';
@@ -4306,7 +4341,7 @@
       if (startNewAfter) {
         if (activeCrew) {
           window.SamuStorage.closeCrewCurrentSession(activeCrew.crewId, currentCrewSessionId, 'draft_saved', recId, prevKmFinal, false);
-          scheduleCrewCloudPush();
+          scheduleCrewCloudPush({ immediate: true });
         }
         editingFichaId = null;
         manualShowSecondEnf = false;
@@ -4321,7 +4356,7 @@
         const pulledKm = window.SamuStorage.getLastKmFinal();
         showToast(pulledKm
           ? `📌 Rascunho salvo! Nova ficha aberta (KM Inicial: ${pulledKm}).`
-          : '📌 Rascunho salvo! Nova ficha aberta para a próxima ocorrência.');
+          : '📌 Rascunho salvo! Nova ficha aberta na hora.');
       } else {
         editingFichaId = recId;
         persistFichaDraft();
@@ -4381,7 +4416,7 @@
       ? `<div style="text-align:center; padding:26px 12px; color:var(--muted);">
            <div style="font-size:1.9rem; margin-bottom:6px;">📌</div>
            <strong>Nenhum rascunho pendente</strong>
-           <p style="font-size:0.84rem; margin:6px 0 0;">Quando houver várias ocorrências seguidas, toque em <strong>Salvar Rascunho</strong> ou <strong>Salvar + Nova</strong> em qualquer página para guardar e terminar depois.</p>
+           <p style="font-size:0.84rem; margin:6px 0 0;">Quando houver várias ocorrências seguidas, toque em <strong>Salvar Rascunho</strong> em qualquer página para guardar a ficha atual e já abrir uma ficha nova na hora.</p>
          </div>`
       : drafts.map(rec => {
           const isF = rec.type === 'ficha';
@@ -4520,12 +4555,8 @@
     disableExternalAutofillInContainer(container);
     container.querySelectorAll('.js-btn-save-draft').forEach(btn => {
       btn.addEventListener('click', () => {
-        saveCurrentAsDraftRecord(btn.dataset.draftKind || 'ficha', false);
-      });
-    });
-    container.querySelectorAll('.js-btn-save-new-ficha').forEach(btn => {
-      btn.addEventListener('click', () => {
-        saveCurrentAsDraftRecord('ficha', true);
+        const kind = btn.dataset.draftKind || 'ficha';
+        saveCurrentAsDraftRecord(kind, kind === 'ficha');
       });
     });
     container.querySelectorAll('.js-btn-open-drafts').forEach(btn => {
