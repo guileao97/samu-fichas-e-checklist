@@ -28,6 +28,9 @@
 html, body {
   margin: 0;
   padding: 0;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   background: var(--bg);
   color: var(--text);
@@ -53,6 +56,9 @@ textarea::placeholder {
 /* ===================== TELA DE LOGIN ===================== */
 .login-screen {
   min-height: 100vh;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -117,6 +123,9 @@ textarea::placeholder {
 /* ===================== CABEÇALHO DO APP ===================== */
 .app-shell {
   min-height: 100vh;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
   padding-bottom: 84px;
 }
 
@@ -124,13 +133,17 @@ textarea::placeholder {
   position: sticky;
   top: 0;
   z-index: 40;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
   background: linear-gradient(90deg, var(--samu-red-dark), var(--samu-red) 65%, var(--samu-orange));
   color: #ffffff;
   padding: 10px 14px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px;
   box-shadow: 0 3px 10px rgba(0, 0, 0, 0.16);
 }
 
@@ -139,6 +152,8 @@ textarea::placeholder {
   align-items: center;
   gap: 10px;
   min-width: 0;
+  max-width: 100%;
+  flex: 1 1 140px;
 }
 
 .topbar-brand img {
@@ -165,6 +180,11 @@ textarea::placeholder {
 
 .topbar-role-badge {
   display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
   font-size: 0.72rem;
   font-weight: 700;
   text-transform: uppercase;
@@ -177,15 +197,18 @@ textarea::placeholder {
 .topbar-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .sync-pill {
   border: none;
   background: rgba(255, 255, 255, 0.18);
   color: #fff;
-  font-size: 0.76rem;
+  font-size: 0.75rem;
   font-weight: 700;
   padding: 6px 10px;
   border-radius: 99px;
@@ -193,6 +216,10 @@ textarea::placeholder {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sync-pill.pending { background: #f59e0b; color: #111827; }
@@ -226,6 +253,12 @@ textarea::placeholder {
   background: rgba(255, 255, 255, 0.16);
 }
 
+code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
+}
+
 .pw-pill {
   background: #fef3c7;
   color: #92400e;
@@ -234,6 +267,8 @@ textarea::placeholder {
   border-radius: 6px;
   font-weight: 800;
   font-size: 0.8rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 @media (max-width: 520px) {
@@ -255,6 +290,10 @@ body.sim-phone-mode .btn-logout { padding: 5px 8px; font-size: 0.74rem; }
   bottom: 0;
   left: 0;
   right: 0;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+  box-sizing: border-box;
   z-index: 45;
   background: #ffffff;
   border-top: 1px solid var(--border);
@@ -265,8 +304,9 @@ body.sim-phone-mode .btn-logout { padding: 5px 8px; font-size: 0.74rem; }
 }
 
 .nav-tab {
-  flex: 1;
+  flex: 1 1 0;
   min-width: 0;
+  overflow: hidden;
   position: relative;
   border: none;
   background: transparent;
@@ -281,6 +321,12 @@ body.sim-phone-mode .btn-logout { padding: 5px 8px; font-size: 0.74rem; }
   border-radius: 10px;
   cursor: pointer;
   white-space: nowrap;
+}
+
+.nav-tab > span:last-child {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .nav-tab .nav-icon { font-size: 1.18rem; line-height: 1.1; position: relative; }
@@ -309,12 +355,20 @@ body.sim-phone-mode .btn-logout { padding: 5px 8px; font-size: 0.74rem; }
 
 /* ===================== LAYOUT PRINCIPAL E CARDS ===================== */
 .main-container {
+  width: 100%;
   max-width: 960px;
+  overflow-x: hidden;
+  box-sizing: border-box;
   margin: 0 auto;
   padding: 14px 12px 32px;
 }
 
 .card {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow-wrap: break-word;
   background: var(--card);
   border-radius: var(--radius);
   padding: 16px;
@@ -1165,6 +1219,11 @@ body.sim-phone-mode .btn-now {
 }
 
 .history-card {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow-wrap: break-word;
   background: #ffffff;
   border-radius: 13px;
   padding: 14px;
@@ -1177,12 +1236,18 @@ body.sim-phone-mode .btn-now {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 6px;
 }
 
 .type-badge {
   display: inline-block;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.3;
   font-size: 0.72rem;
   font-weight: 800;
   padding: 3px 8px;
@@ -2471,4 +2536,44 @@ body.bg-sync-docked-draft .quick-draft-bar {
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1.5px dashed #cbd5e1;
+}
+
+/* ===================== CONVITE E ACEITE DE EQUIPE DO PLANTÃO ===================== */
+.crew-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  padding: 2px 7px;
+  border-radius: 99px;
+}
+.crew-status-pill.accepted {
+  background: #dcfce7;
+  color: #14532d;
+  border: 1px solid #86efac;
+}
+.crew-status-pill.pending {
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fcd34d;
+}
+.crew-status-pill.declined {
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fca5a5;
+}
+
+.crew-invite-banner {
+  background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+  border: 2px solid #2563eb;
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.14);
 }

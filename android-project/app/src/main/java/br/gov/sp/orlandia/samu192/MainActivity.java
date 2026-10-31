@@ -46,6 +46,8 @@ import android.widget.Toast;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -53,13 +55,19 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.SSLSocketFactory;
 
 /**
  * Activity Principal do Aplicativo SAMU 192 – Orlândia-SP.
@@ -83,6 +91,13 @@ public class MainActivity extends Activity {
     private ConnectivityManager.NetworkCallback networkCallback;
     private File pendingApkInstallFile;
     private AlertDialog unknownSourcesDialog;
+
+    private final Object nativeWsLock = new Object();
+    private volatile int nativeWsGen = 0;
+    private volatile Socket nativeWsSocket = null;
+    private volatile OutputStream nativeWsOut = null;
+    private final Object nativeWsWriteLock = new Object();
+    private final SecureRandom nativeWsRandom = new SecureRandom();
 
     public static boolean isAppInForeground() {
         return sIsAppInForeground;
@@ -158,8 +173,8 @@ public class MainActivity extends Activity {
         settings.setDatabaseEnabled(true);
         settings.setSaveFormData(false);
         settings.setAllowFileAccess(true);
-        settings.setLoadWithOverviewMode(true);
-        settings.setUseWideViewPort(true);
+        settings.setLoadWithOverviewMode(false);
+        settings.setUseWideViewPort(false);
         settings.setSupportZoom(false);
         settings.setBuiltInZoomControls(false);
         settings.setDisplayZoomControls(false);
@@ -582,7 +597,7 @@ public class MainActivity extends Activity {
         if (webView != null) {
             webView.evaluateJavascript(
                 "(function(){ " +
-                "  var ids = ['samu-dialog-modal','samu-sig-modal','drafts-modal','regulacao-photo-modal','pdf-preview-modal','server-explorer-modal','drive-explorer-modal'];" +
+                "  var ids = ['samu-dialog-modal','crew-invite-modal','samu-sig-modal','drafts-modal','regulacao-photo-modal','pdf-preview-modal','server-explorer-modal','drive-explorer-modal'];" +
                 "  for (var i = 0; i < ids.length; i++) {" +
                 "    var el = document.getElementById(ids[i]);" +
                 "    if (el && !el.classList.contains('hidden')) { el.classList.add('hidden'); return 'closed'; }" +
@@ -603,6 +618,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        closeNativeWebSocketInternal();
         try {
             if (unknownSourcesDialog != null && unknownSourcesDialog.isShowing()) {
                 unknownSourcesDialog.dismiss();
@@ -626,6 +642,72 @@ public class MainActivity extends Activity {
         }
         SamuSyncForegroundService.onMainActivityDestroyed(this);
         super.onDestroy();
+    }
+
+    private void closeNativeWebSocketInternal() {
+        Socket toClose;
+        synchronized (nativeWsLock) {
+            nativeWsGen++;
+            toClose = nativeWsSocket;
+            nativeWsSocket = null;
+            nativeWsOut = null;
+        }
+        if (toClose != null) {
+            try { toClose.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    private void emitWsEventToJs(final int gen, final String eventType, final String payload) {
+        runOnUiThread(() -> {
+            if (gen != nativeWsGen || webView == null || isFinishing()) return;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && isDestroyed()) return;
+            String js = "window.__onAndroidWsEvent && window.__onAndroidWsEvent('"
+                    + jsEscape(eventType) + "', '" + jsEscape(payload) + "');";
+            webView.evaluateJavascript(js, null);
+        });
+    }
+
+    private void sendNativeWsMaskedFrame(final OutputStream out, final int opcode, final byte[] payload) throws Exception {
+        byte[] data = payload != null ? payload : new byte[0];
+        byte[] mask = new byte[4];
+        nativeWsRandom.nextBytes(mask);
+        synchronized (nativeWsWriteLock) {
+            out.write(0x80 | (opcode & 0x0F));
+            int len = data.length;
+            if (len <= 125) {
+                out.write(0x80 | len);
+            } else if (len <= 65535) {
+                out.write(0x80 | 126);
+                out.write((len >>> 8) & 0xFF);
+                out.write(len & 0xFF);
+            } else {
+                out.write(0x80 | 127);
+                long l = len;
+                for (int shift = 56; shift >= 0; shift -= 8) {
+                    out.write((int) ((l >>> shift) & 0xFFL));
+                }
+            }
+            out.write(mask);
+            if (len > 0) {
+                byte[] masked = new byte[len];
+                for (int i = 0; i < len; i++) {
+                    masked[i] = (byte) (data[i] ^ mask[i & 3]);
+                }
+                out.write(masked);
+            }
+            out.flush();
+        }
+    }
+
+    private static byte[] readExactWsBytes(InputStream ins, int count) throws Exception {
+        byte[] buf = new byte[count];
+        int off = 0;
+        while (off < count) {
+            int r = ins.read(buf, off, count - off);
+            if (r == -1) throw new EOFException("WS EOF");
+            off += r;
+        }
+        return buf;
     }
 
     private static String jsEscape(String s) {
@@ -984,6 +1066,197 @@ public class MainActivity extends Activity {
                     }
                 });
             }
+        }
+
+        /* ===================== WEBSOCKET NATIVO TEMPO REAL (LAN WS:// + 4G WSS://) ===================== */
+
+        @JavascriptInterface
+        public boolean hasNativeWebSocket() {
+            return true;
+        }
+
+        @JavascriptInterface
+        public void wsDisconnect() {
+            closeNativeWebSocketInternal();
+        }
+
+        @JavascriptInterface
+        public boolean wsSend(final String text) {
+            final OutputStream out = nativeWsOut;
+            final Socket sock = nativeWsSocket;
+            if (out == null || sock == null || sock.isClosed()) return false;
+            final byte[] bytes = (text != null ? text : "").getBytes(StandardCharsets.UTF_8);
+            SamuSyncForegroundService.HTTP_POOL.execute(() -> {
+                try {
+                    sendNativeWsMaskedFrame(out, 0x1, bytes);
+                } catch (Exception e) {
+                    try { sock.close(); } catch (Exception ignored) {}
+                }
+            });
+            return true;
+        }
+
+        @JavascriptInterface
+        public void wsConnect(final String wsUrl) {
+            final int myGen;
+            Socket oldSock;
+            synchronized (nativeWsLock) {
+                nativeWsGen++;
+                myGen = nativeWsGen;
+                oldSock = nativeWsSocket;
+                nativeWsSocket = null;
+                nativeWsOut = null;
+            }
+            if (oldSock != null) {
+                try { oldSock.close(); } catch (Exception ignored) {}
+            }
+            if (wsUrl == null || wsUrl.trim().isEmpty()) return;
+
+            new Thread(() -> {
+                Socket sock = null;
+                try {
+                    URI uri = URI.create(wsUrl.trim());
+                    String scheme = uri.getScheme() != null ? uri.getScheme().toLowerCase() : "ws";
+                    boolean secure = "wss".equals(scheme) || "https".equals(scheme);
+                    String host = uri.getHost();
+                    if (host == null || host.isEmpty()) throw new Exception("Host WS inválido");
+                    int port = uri.getPort() > 0 ? uri.getPort() : (secure ? 443 : 80);
+                    String rawPath = (uri.getRawPath() == null || uri.getRawPath().isEmpty()) ? "/ws" : uri.getRawPath();
+                    String target = uri.getRawQuery() != null && !uri.getRawQuery().isEmpty()
+                            ? (rawPath + "?" + uri.getRawQuery())
+                            : rawPath;
+
+                    Socket tcp = new Socket();
+                    tcp.connect(new InetSocketAddress(host, port), 5500);
+                    if (secure) {
+                        SSLSocketFactory sf = (SSLSocketFactory) SSLSocketFactory.getDefault();
+                        SSLSocket ssl = (SSLSocket) sf.createSocket(tcp, host, port, true);
+                        ssl.startHandshake();
+                        sock = ssl;
+                    } else {
+                        sock = tcp;
+                    }
+                    sock.setTcpNoDelay(true);
+                    sock.setSoTimeout(95000);
+
+                    synchronized (nativeWsLock) {
+                        if (myGen != nativeWsGen) {
+                            try { sock.close(); } catch (Exception ignored) {}
+                            return;
+                        }
+                        nativeWsSocket = sock;
+                    }
+
+                    InputStream ins = sock.getInputStream();
+                    OutputStream out = sock.getOutputStream();
+
+                    byte[] keyNonce = new byte[16];
+                    nativeWsRandom.nextBytes(keyNonce);
+                    String secKey = Base64.encodeToString(keyNonce, Base64.NO_WRAP);
+                    String hostHdr = ((secure && port == 443) || (!secure && port == 80)) ? host : (host + ":" + port);
+
+                    String req = "GET " + target + " HTTP/1.1\r\n"
+                            + "Host: " + hostHdr + "\r\n"
+                            + "Upgrade: websocket\r\n"
+                            + "Connection: Upgrade\r\n"
+                            + "Sec-WebSocket-Key: " + secKey + "\r\n"
+                            + "Sec-WebSocket-Version: 13\r\n"
+                            + "User-Agent: SAMU192-Fichas-WS/1.0\r\n\r\n";
+                    out.write(req.getBytes(StandardCharsets.US_ASCII));
+                    out.flush();
+
+                    ByteArrayOutputStream hdrBuf = new ByteArrayOutputStream(512);
+                    int st = 0;
+                    boolean gotEnd = false;
+                    while (hdrBuf.size() < 16384) {
+                        int b = ins.read();
+                        if (b == -1) break;
+                        hdrBuf.write(b);
+                        if (b == '\r' && (st == 0 || st == 2)) st++;
+                        else if (b == '\n' && st == 1) st = 2;
+                        else if (b == '\n' && st == 3) { gotEnd = true; break; }
+                        else st = 0;
+                    }
+                    String hdrStr = hdrBuf.toString("UTF-8");
+                    if (!gotEnd || (!hdrStr.startsWith("HTTP/1.1 101") && !hdrStr.startsWith("HTTP/1.0 101"))) {
+                        throw new Exception("Handshake WS recusado");
+                    }
+
+                    synchronized (nativeWsLock) {
+                        if (myGen != nativeWsGen) {
+                            try { sock.close(); } catch (Exception ignored) {}
+                            return;
+                        }
+                        nativeWsOut = out;
+                    }
+                    emitWsEventToJs(myGen, "open", wsUrl);
+
+                    ByteArrayOutputStream textAsm = new ByteArrayOutputStream();
+                    boolean assembling = false;
+                    while (myGen == nativeWsGen && !sock.isClosed()) {
+                        int b0 = ins.read();
+                        if (b0 == -1) break;
+                        int b1 = ins.read();
+                        if (b1 == -1) break;
+
+                        boolean fin = (b0 & 0x80) != 0;
+                        int opcode = b0 & 0x0F;
+                        boolean masked = (b1 & 0x80) != 0;
+                        long pLen = (b1 & 0x7F);
+                        if (pLen == 126L) {
+                            byte[] ext = readExactWsBytes(ins, 2);
+                            pLen = (((ext[0] & 0xFF) << 8) | (ext[1] & 0xFF));
+                        } else if (pLen == 127L) {
+                            byte[] ext = readExactWsBytes(ins, 8);
+                            pLen = 0L;
+                            for (int i = 0; i < 8; i++) pLen = (pLen << 8) | (ext[i] & 0xFFL);
+                        }
+                        if (pLen < 0L || pLen > 8L * 1024L * 1024L) break;
+
+                        byte[] mKey = masked ? readExactWsBytes(ins, 4) : null;
+                        byte[] payload = pLen > 0L ? readExactWsBytes(ins, (int) pLen) : new byte[0];
+                        if (masked && mKey != null) {
+                            for (int i = 0; i < payload.length; i++) {
+                                payload[i] = (byte) (payload[i] ^ mKey[i & 3]);
+                            }
+                        }
+
+                        if (opcode == 0x8) {
+                            break;
+                        } else if (opcode == 0x9) {
+                            sendNativeWsMaskedFrame(out, 0xA, payload);
+                        } else if (opcode == 0x1) {
+                            if (fin) {
+                                emitWsEventToJs(myGen, "message", new String(payload, StandardCharsets.UTF_8));
+                            } else {
+                                textAsm.reset();
+                                textAsm.write(payload);
+                                assembling = true;
+                            }
+                        } else if (opcode == 0x0 && assembling) {
+                            textAsm.write(payload);
+                            if (fin) {
+                                assembling = false;
+                                emitWsEventToJs(myGen, "message", new String(textAsm.toByteArray(), StandardCharsets.UTF_8));
+                                textAsm.reset();
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    emitWsEventToJs(myGen, "error", e.getMessage() != null ? e.getMessage() : "ws_err");
+                } finally {
+                    if (sock != null) {
+                        try { sock.close(); } catch (Exception ignored) {}
+                    }
+                    synchronized (nativeWsLock) {
+                        if (myGen == nativeWsGen) {
+                            nativeWsSocket = null;
+                            nativeWsOut = null;
+                        }
+                    }
+                    emitWsEventToJs(myGen, "close", "");
+                }
+            }, "SamuFichasRealtimeWS").start();
         }
 
         /* ===================== AUTO-UPDATE NATIVO VIA GITHUB (LIVE OTA + APK) ===================== */

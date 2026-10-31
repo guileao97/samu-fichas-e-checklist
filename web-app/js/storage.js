@@ -1538,6 +1538,7 @@
       : {};
     return {
       key: MODULES_CFG_KEY,
+      revision: Math.max(0, Number(raw.revision) || 0),
       condutorEnabled: raw.condutorEnabled !== false,
       enfermagemEnabled: raw.enfermagemEnabled !== false,
       updatedBy: String(raw.updatedBy || ''),
@@ -1548,9 +1549,12 @@
   async function saveChecklistModulesConfig(patch, updatedBy, opts) {
     const cur = getChecklistModulesConfig();
     const p = (patch && typeof patch === 'object') ? patch : {};
-    const nowIso = new Date().toISOString();
+    const prevMs = Date.parse(String(cur.updatedAt || '')) || 0;
+    const nowIso = new Date(Math.max(Date.now(), prevMs + 1000)).toISOString();
+    const nextRev = (Math.max(0, Number(cur.revision) || 0)) + 1;
     const next = {
       key: MODULES_CFG_KEY,
+      revision: nextRev,
       condutorEnabled: p.condutorEnabled !== undefined ? Boolean(p.condutorEnabled) : cur.condutorEnabled,
       enfermagemEnabled: p.enfermagemEnabled !== undefined ? Boolean(p.enfermagemEnabled) : cur.enfermagemEnabled,
       updatedBy: String(updatedBy || (getSession() && getSession().username) || cur.updatedBy || ''),
@@ -1560,6 +1564,23 @@
     avMap[MODULES_CFG_KEY] = next;
     setViaturaAvariasMap(avMap);
     markGitHubDirty();
+
+    // Espelha imediatamente também direto no Google Drive em 2º plano (para celulares em contingência 4G sem Servidor Central)
+    const driveScriptUrl = String((getSettings() && getSettings().scriptUrl) || '').trim();
+    if (driveScriptUrl) {
+      apiPost({
+        action: 'syncDatabase',
+        pushChanges: true,
+        onlyPrintQueue: true,
+        fastPrintPatch: true,
+        clientDb: {
+          schemaVersion: 3,
+          updatedAt: nowIso,
+          viaturaAvarias: { [MODULES_CFG_KEY]: next }
+        }
+      }, driveScriptUrl, { forceDirectDrive: true }).catch(() => {});
+    }
+
     if (!(opts && opts.skipCloudAwait) && hasGitHubConfigured()) {
       try {
         await syncInternalDbWithGitHub({ pushChanges: true, forceTryOnline: true });
@@ -1568,9 +1589,7 @@
     return next;
   }
 
-  function isChecklistAllowedForUser(kind, userObj) {
-    const u = userObj || getSession();
-    if (u && isUserAdmin(u)) return true;
+  function isChecklistAllowedForUser(kind, _userObj) {
     const cfg = getChecklistModulesConfig();
     if (kind === 'condutor' || kind === 'checklist_condutor') return Boolean(cfg.condutorEnabled);
     if (kind === 'enfermagem' || kind === 'checklist_enfermagem') return Boolean(cfg.enfermagemEnabled);
@@ -2709,11 +2728,19 @@
     const byUname = new Map();
     allUsers.forEach(u => byUname.set(u.username.toLowerCase(), u));
 
+    const rawStatuses = (rawCrew.memberStatuses && typeof rawCrew.memberStatuses === 'object' && !Array.isArray(rawCrew.memberStatuses))
+      ? rawCrew.memberStatuses
+      : null;
+
+    const normalizedStatuses = {};
     const membersDetailed = rawCrew.members.map(uname => {
       const key = String(uname || '').trim().toLowerCase();
       const found = byUname.get(key);
       const uObj = found || normalizeUserObj({ username: key, name: key, role: 'condutor' });
       const subRole = getUserSubRole(uObj);
+      const st = rawStatuses ? String(rawStatuses[key] || 'pending').toLowerCase() : 'accepted';
+      const inviteStatus = (st === 'accepted' || st === 'declined') ? st : 'pending';
+      normalizedStatuses[key] = inviteStatus;
       return {
         username: uObj.username,
         name: uObj.name,
@@ -2722,12 +2749,17 @@
         roleLabel: getUserRoleLabel(uObj),
         cpf: uObj.cpf || '',
         coren: uObj.role === 'enfermagem' ? (uObj.coren || uObj.councilId || '') : '',
-        savedSignature: getSavedSignature(uObj.username) || uObj.savedSignature || ''
+        savedSignature: getSavedSignature(uObj.username) || uObj.savedSignature || '',
+        inviteStatus
       };
     });
 
-    // Ordem determinística para que todos os celulares preencham exatamente o mesmo Slot 1 e Slot 2
-    const nursingSlots = membersDetailed
+    const acceptedMembers = membersDetailed.filter(m => m.inviteStatus === 'accepted');
+    const pendingMembers = membersDetailed.filter(m => m.inviteStatus === 'pending');
+    const declinedMembers = membersDetailed.filter(m => m.inviteStatus === 'declined');
+
+    // Somente integrantes que JÁ ACEITARAM entram nos slots automáticos de nomes/COREN/CPF/assinatura da Ficha!
+    const nursingSlots = acceptedMembers
       .filter(m => m.role === 'enfermagem')
       .sort((a, b) => {
         const rankA = a.subRole === 'enfermeiro' ? 0 : 1;
@@ -2736,27 +2768,56 @@
         return a.username.localeCompare(b.username);
       });
 
-    const driverSlots = membersDetailed
+    const driverSlots = acceptedMembers
       .filter(m => m.role === 'condutor')
       .sort((a, b) => a.username.localeCompare(b.username));
 
     const meLower = String(perspectiveUsername || '').trim().toLowerCase();
     const teammates = meLower
-      ? membersDetailed.filter(m => m.username !== meLower)
+      ? membersDetailed.filter(m => m.username.toLowerCase() !== meLower)
       : membersDetailed.slice();
+
+    const inviterKey = String(rawCrew.invitedBy || rawCrew.updatedBy || rawCrew.createdBy || '').trim().toLowerCase();
+    const inviterObj = inviterKey ? byUname.get(inviterKey) : null;
 
     return {
       crewId: rawCrew.crewId || computeCrewId(rawCrew.members),
+      revision: Math.max(0, Number(rawCrew.revision) || 0),
+      inviteId: String(rawCrew.inviteId || ''),
+      invitedBy: inviterKey,
+      invitedByName: String(rawCrew.invitedByName || (inviterObj && inviterObj.name) || inviterKey || ''),
+      memberStatuses: normalizedStatuses,
       members: membersDetailed.map(m => m.username),
       membersDetailed,
+      acceptedMembers,
+      pendingMembers,
+      declinedMembers,
+      allAccepted: pendingMembers.length === 0 && declinedMembers.length === 0 && acceptedMembers.length >= 2,
       teammates,
       nursingSlots,
       driverSlots,
       active: rawCrew.active !== false,
       createdBy: rawCrew.createdBy || '',
       updatedBy: rawCrew.updatedBy || '',
-      updatedAt: rawCrew.updatedAt || ''
+      updatedAt: rawCrew.updatedAt || '',
+      endedBy: String(rawCrew.endedBy || ''),
+      endedReason: String(rawCrew.endedReason || ''),
+      lastAcceptedBy: String(rawCrew.lastAcceptedBy || ''),
+      lastAcceptedByName: String(rawCrew.lastAcceptedByName || ''),
+      lastAcceptedAt: String(rawCrew.lastAcceptedAt || ''),
+      lastDeclinedBy: String(rawCrew.lastDeclinedBy || ''),
+      lastDeclinedByName: String(rawCrew.lastDeclinedByName || '')
     };
+  }
+
+  function isCrewEntryNewer(candidate, currentBest) {
+    if (!currentBest) return true;
+    const rA = Number(candidate && candidate.revision) || 0;
+    const rB = Number(currentBest && currentBest.revision) || 0;
+    const tA = String((candidate && candidate.updatedAt) || '');
+    const tB = String((currentBest && currentBest.updatedAt) || '');
+    if (tA !== tB) return tA > tB;
+    return rA >= rB;
   }
 
   function getActiveCrewForUser(username) {
@@ -2768,11 +2829,49 @@
       const c = map[cid];
       if (!c || c.active === false || !Array.isArray(c.members)) return;
       if (!c.members.map(x => String(x).toLowerCase()).includes(uname)) return;
-      if (!best || String(c.updatedAt || '') >= String(best.updatedAt || '')) {
+      if (c.memberStatuses && typeof c.memberStatuses === 'object') {
+        const mySt = String(c.memberStatuses[uname] || 'pending').toLowerCase();
+        if (mySt !== 'accepted') return;
+      }
+      if (isCrewEntryNewer(c, best)) {
         best = c;
       }
     });
     return best ? hydrateCrewRecord(best, uname) : null;
+  }
+
+  function getPendingCrewInviteForUser(username) {
+    const uname = String(username || '').trim().toLowerCase();
+    if (!uname) return null;
+    const map = getCrewTeamsMap();
+    let best = null;
+    Object.keys(map).forEach(cid => {
+      const c = map[cid];
+      if (!c || c.active === false || !Array.isArray(c.members)) return;
+      if (!c.members.map(x => String(x).toLowerCase()).includes(uname)) return;
+      if (!c.memberStatuses || typeof c.memberStatuses !== 'object') return;
+      const mySt = String(c.memberStatuses[uname] || '').toLowerCase();
+      if (mySt !== 'pending') return;
+      if (isCrewEntryNewer(c, best)) {
+        best = c;
+      }
+    });
+    return best ? hydrateCrewRecord(best, uname) : null;
+  }
+
+  function getRecentCrewNotificationsForUser(username) {
+    const uname = String(username || '').trim().toLowerCase();
+    if (!uname) return [];
+    const map = getCrewTeamsMap();
+    const list = [];
+    Object.keys(map).forEach(cid => {
+      const c = map[cid];
+      if (!c || !Array.isArray(c.members)) return;
+      const invitedBy = String(c.invitedBy || c.createdBy || '').toLowerCase();
+      if (invitedBy !== uname) return;
+      list.push(c);
+    });
+    return list;
   }
 
   function getSharedFichasMap() {
@@ -3015,49 +3114,96 @@
       throw new Error(check.message);
     }
 
+    const initiatorLower = String(initiatorUsername || cleanNames[0] || '').trim().toLowerCase();
+    const initiatorUserObj = allUsers.find(u => u.username.toLowerCase() === initiatorLower);
+    const initiatorName = (initiatorUserObj && initiatorUserObj.name) || initiatorLower;
+
     const newCrewId = computeCrewId(cleanNames);
     const crewsMap = getCrewTeamsMap();
     const sharedMap = getSharedFichasMap();
 
-    // Se algum integrante já estava com uma ficha em andamento em dupla e adicionou o 3º integrante, leva a ficha em andamento junto!
+    // Verifica quem já tinha aceitado vínculo ativo com o iniciador (ex.: dupla ativa adicionando 3º integrante)
+    const prevInitiatorCrew = getActiveCrewForUser(initiatorLower);
+    const alreadyAcceptedWithInitiator = new Set([initiatorLower]);
+    if (prevInitiatorCrew && Array.isArray(prevInitiatorCrew.acceptedMembers)) {
+      prevInitiatorCrew.acceptedMembers.forEach(m => {
+        if (m && m.username) alreadyAcceptedWithInitiator.add(String(m.username).toLowerCase());
+      });
+    }
+
+    // Se o iniciador já estava com uma ficha em andamento em dupla e adicionou o 3º integrante, leva a ficha junto!
     let carryOverWs = null;
-    cleanNames.forEach(un => {
-      const prevCrew = getActiveCrewForUser(un);
-      if (prevCrew && prevCrew.crewId !== newCrewId) {
-        const pWs = sharedMap[prevCrew.crewId];
-        if (pWs && pWs.currentFicha && hasMeaningfulFichaProgress(pWs.currentFicha.data)) {
-          if (!carryOverWs || String(pWs.updatedAt || '') > String(carryOverWs.updatedAt || '')) {
-            carryOverWs = pWs;
-          }
-        }
+    if (prevInitiatorCrew && prevInitiatorCrew.crewId !== newCrewId) {
+      const pWs = sharedMap[prevInitiatorCrew.crewId];
+      if (pWs && pWs.currentFicha && hasMeaningfulFichaProgress(pWs.currentFicha.data)) {
+        carryOverWs = pWs;
       }
+    }
+
+    let maxKnownMs = Date.now();
+    Object.values(crewsMap).forEach(c => {
+      const ms = Date.parse(String((c && c.updatedAt) || '')) || 0;
+      if (ms > maxKnownMs) maxKnownMs = ms;
     });
+    const closeTs = new Date(maxKnownMs + 500).toISOString();
+    const activeTs = new Date(maxKnownMs + 1000).toISOString();
 
-    const closeTs = new Date(Date.now() - 5).toISOString();
-    const activeTs = new Date().toISOString();
-
+    // Encerra apenas equipes anteriores do próprio iniciador (ou da dupla já aceita que está migrando p/ trio),
+    // sem derrubar equipe ativa de um convidado antes dele aceitar o convite!
     Object.keys(crewsMap).forEach(cid => {
       if (cid === newCrewId) return;
       const c = crewsMap[cid];
       if (!c || c.active === false || !Array.isArray(c.members)) return;
-      const overlaps = c.members.some(m => cleanNames.includes(String(m).toLowerCase()));
-      if (overlaps) {
+      const membersLower = c.members.map(m => String(m).toLowerCase());
+      const hasInitiator = membersLower.includes(initiatorLower);
+      if (hasInitiator) {
         crewsMap[cid] = Object.assign({}, c, {
           active: false,
-          endedBy: initiatorUsername || '',
+          revision: (Math.max(0, Number(c.revision) || 0)) + 1,
+          endedBy: initiatorLower,
+          endedReason: 'reconfigured',
           updatedAt: closeTs
         });
       }
     });
 
     const prevEntry = crewsMap[newCrewId];
+    const prevWasActive = Boolean(prevEntry && prevEntry.active !== false);
+    const memberStatuses = {};
+    let hasPending = false;
+    cleanNames.forEach(un => {
+      if (un === initiatorLower) {
+        memberStatuses[un] = 'accepted';
+      } else if (prevWasActive && prevEntry.memberStatuses && prevEntry.memberStatuses[un] === 'accepted') {
+        memberStatuses[un] = 'accepted';
+      } else if (alreadyAcceptedWithInitiator.has(un)) {
+        memberStatuses[un] = 'accepted';
+      } else {
+        memberStatuses[un] = 'pending';
+        hasPending = true;
+      }
+    });
+
+    const nextInviteId = hasPending
+      ? ('inv_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7))
+      : String((prevEntry && prevEntry.inviteId) || ('inv_' + Date.now()));
+
     crewsMap[newCrewId] = {
       crewId: newCrewId,
+      revision: (Math.max(0, Number(prevEntry && prevEntry.revision) || 0)) + 1,
+      inviteId: nextInviteId,
+      invitedBy: initiatorLower,
+      invitedByName: initiatorName,
       members: cleanNames,
+      memberStatuses,
       active: true,
-      createdBy: (prevEntry && prevEntry.createdBy) || initiatorUsername || cleanNames[0],
-      updatedBy: initiatorUsername || cleanNames[0],
-      updatedAt: activeTs
+      createdBy: (prevEntry && prevEntry.createdBy) || initiatorLower || cleanNames[0],
+      updatedBy: initiatorLower || cleanNames[0],
+      updatedAt: activeTs,
+      endedBy: '',
+      endedReason: '',
+      lastDeclinedBy: '',
+      lastDeclinedByName: ''
     };
     setCrewTeamsMap(crewsMap);
 
@@ -3070,14 +3216,151 @@
     }
 
     markGitHubDirty();
-    return hydrateCrewRecord(crewsMap[newCrewId], initiatorUsername);
+    return hydrateCrewRecord(crewsMap[newCrewId], initiatorLower);
+  }
+
+  function respondToCrewInvite(crewId, username, accept) {
+    const uname = String(username || '').trim().toLowerCase();
+    const cidTarget = String(crewId || '').trim();
+    if (!uname || !cidTarget) throw new Error('Convite de equipe inválido.');
+
+    const crewsMap = getCrewTeamsMap();
+    const raw = crewsMap[cidTarget];
+    if (!raw || raw.active === false || !Array.isArray(raw.members)) {
+      throw new Error('Este convite de equipe já foi encerrado ou alterado.');
+    }
+
+    const allUsers = getLocalUsers();
+    const meUser = allUsers.find(u => u.username.toLowerCase() === uname);
+    const meName = (meUser && meUser.name) || uname;
+
+    let maxMs = Date.now();
+    Object.values(crewsMap).forEach(c => {
+      const ms = Date.parse(String((c && c.updatedAt) || '')) || 0;
+      if (ms > maxMs) maxMs = ms;
+    });
+    const closeTs = new Date(maxMs + 500).toISOString();
+    const actTs = new Date(maxMs + 1000).toISOString();
+
+    const statuses = Object.assign({}, (raw.memberStatuses && typeof raw.memberStatuses === 'object') ? raw.memberStatuses : {});
+    raw.members.forEach(m => {
+      const ml = String(m || '').toLowerCase();
+      if (!statuses[ml]) statuses[ml] = 'accepted';
+    });
+
+    if (accept) {
+      // Ao aceitar, encerra qualquer outra equipe anterior em que este profissional estava vinculado
+      Object.keys(crewsMap).forEach(otherCid => {
+        if (otherCid === cidTarget) return;
+        const oc = crewsMap[otherCid];
+        if (!oc || oc.active === false || !Array.isArray(oc.members)) return;
+        if (oc.members.map(x => String(x).toLowerCase()).includes(uname)) {
+          crewsMap[otherCid] = Object.assign({}, oc, {
+            active: false,
+            revision: (Math.max(0, Number(oc.revision) || 0)) + 1,
+            endedBy: uname,
+            endedReason: 'joined_new_crew',
+            updatedAt: closeTs
+          });
+        }
+      });
+
+      statuses[uname] = 'accepted';
+      crewsMap[cidTarget] = Object.assign({}, raw, {
+        revision: (Math.max(0, Number(raw.revision) || 0)) + 1,
+        memberStatuses: statuses,
+        active: true,
+        updatedBy: uname,
+        updatedAt: actTs,
+        lastAcceptedBy: uname,
+        lastAcceptedByName: meName,
+        lastAcceptedAt: actTs
+      });
+      setCrewTeamsMap(crewsMap);
+      markGitHubDirty();
+      return {
+        accepted: true,
+        crew: hydrateCrewRecord(crewsMap[cidTarget], uname)
+      };
+    }
+
+    // Recusou o convite
+    statuses[uname] = 'declined';
+    const remainingNames = raw.members
+      .map(m => String(m || '').toLowerCase())
+      .filter(m => m && m !== uname && statuses[m] !== 'declined');
+    const remainingUsers = remainingNames
+      .map(un => allUsers.find(u => u.username.toLowerCase() === un))
+      .filter(Boolean);
+    const remainingValid = remainingUsers.length >= 2 && validateCrewSelection(remainingUsers).valid;
+
+    crewsMap[cidTarget] = Object.assign({}, raw, {
+      revision: (Math.max(0, Number(raw.revision) || 0)) + 1,
+      memberStatuses: statuses,
+      active: false,
+      endedBy: uname,
+      endedReason: 'declined',
+      lastDeclinedBy: uname,
+      lastDeclinedByName: meName,
+      updatedBy: uname,
+      updatedAt: actTs
+    });
+
+    // Se eram 3 integrantes e os 2 restantes formam uma dupla válida já aceita, preserva a dupla ativa!
+    if (remainingValid) {
+      const duoId = computeCrewId(remainingNames);
+      const prevDuo = crewsMap[duoId];
+      const duoStatuses = {};
+      remainingNames.forEach(rn => {
+        duoStatuses[rn] = statuses[rn] === 'accepted' ? 'accepted' : 'pending';
+      });
+      const duoTs = new Date(maxMs + 1500).toISOString();
+      crewsMap[duoId] = {
+        crewId: duoId,
+        revision: (Math.max(0, Number(prevDuo && prevDuo.revision) || 0)) + 1,
+        inviteId: String(raw.inviteId || ('inv_' + Date.now())),
+        invitedBy: String(raw.invitedBy || remainingNames[0]),
+        invitedByName: String(raw.invitedByName || ''),
+        members: remainingNames,
+        memberStatuses: duoStatuses,
+        active: true,
+        createdBy: String((prevDuo && prevDuo.createdBy) || raw.createdBy || remainingNames[0]),
+        updatedBy: uname,
+        updatedAt: duoTs,
+        lastDeclinedBy: uname,
+        lastDeclinedByName: meName
+      };
+      const sharedMap = getSharedFichasMap();
+      const srcWs = sharedMap[cidTarget];
+      if (srcWs && srcWs.currentFicha && hasMeaningfulFichaProgress(srcWs.currentFicha.data)) {
+        const dstWs = ensureCrewWorkspaceShape(duoId, sharedMap[duoId]);
+        if (!dstWs.currentFicha || !hasMeaningfulFichaProgress(dstWs.currentFicha.data)) {
+          dstWs.currentFicha = JSON.parse(JSON.stringify(srcWs.currentFicha));
+          dstWs.updatedAt = duoTs;
+          sharedMap[duoId] = dstWs;
+          setSharedFichasMap(sharedMap);
+        }
+      }
+    }
+
+    setCrewTeamsMap(crewsMap);
+    markGitHubDirty();
+    return {
+      accepted: false,
+      crewId: cidTarget
+    };
   }
 
   function clearActiveCrewForUser(username) {
     const uname = String(username || '').trim().toLowerCase();
     if (!uname) return false;
     const crewsMap = getCrewTeamsMap();
-    const now = new Date().toISOString();
+    let maxMs = Date.now();
+    Object.values(crewsMap).forEach(c => {
+      const ms = Date.parse(String((c && c.updatedAt) || '')) || 0;
+      if (ms > maxMs) maxMs = ms;
+    });
+    const now = new Date(maxMs + 1000).toISOString();
     let changed = false;
 
     Object.keys(crewsMap).forEach(cid => {
@@ -3086,7 +3369,9 @@
       if (c.members.map(x => String(x).toLowerCase()).includes(uname)) {
         crewsMap[cid] = Object.assign({}, c, {
           active: false,
+          revision: (Math.max(0, Number(c.revision) || 0)) + 1,
           endedBy: uname,
+          endedReason: 'manual_exit',
           updatedAt: now
         });
         changed = true;
@@ -3553,7 +3838,7 @@
       setInternalPatientsMap(patMap);
     }
 
-    // 5. Mescla equipes ativas do plantão (activeCrews)
+    // 5. Mescla equipes ativas do plantão (activeCrews com suporte a revision monotônica e convites pendentes)
     if (remote.activeCrews && typeof remote.activeCrews === 'object') {
       const crewsMap = getCrewTeamsMap();
       let crewsChanged = false;
@@ -3561,24 +3846,37 @@
         const rc = remote.activeCrews[cid];
         if (!rc || !Array.isArray(rc.members)) return;
         const lc = crewsMap[cid];
-        if (!lc || String(rc.updatedAt || '') > String(lc.updatedAt || '')) {
+        const rRev = Number(rc.revision) || 0;
+        const lRev = lc ? (Number(lc.revision) || 0) : 0;
+        const shouldTake = !lc || ((rRev > 0 || lRev > 0)
+          ? (rRev > lRev || (rRev === lRev && String(rc.updatedAt || '') > String(lc.updatedAt || '')))
+          : (String(rc.updatedAt || '') > String(lc.updatedAt || '')));
+        if (shouldTake) {
           crewsMap[cid] = rc;
           crewsChanged = true;
         }
       });
 
-      // Se um integrante entrou em uma equipe mais recente, desativa vínculos antigos conflitantes
+      // Somente integrantes com status 'accepted' reivindicam exclusividade e desativam vínculos antigos conflitantes
       const activeEntries = Object.values(crewsMap)
         .filter(c => c && c.active !== false && Array.isArray(c.members))
-        .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
-      const claimedMembers = new Set();
+        .sort((a, b) => {
+          const cmpTs = String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''));
+          if (cmpTs !== 0) return cmpTs;
+          return (Number(b.revision) || 0) - (Number(a.revision) || 0);
+        });
+      const claimedAcceptedMembers = new Set();
       activeEntries.forEach(c => {
-        const hasClaimed = c.members.some(m => claimedMembers.has(String(m).toLowerCase()));
+        const stMap = (c.memberStatuses && typeof c.memberStatuses === 'object') ? c.memberStatuses : null;
+        const acceptedInThisCrew = c.members
+          .map(m => String(m || '').toLowerCase())
+          .filter(ml => ml && (!stMap || String(stMap[ml] || 'pending').toLowerCase() === 'accepted'));
+        const hasClaimed = acceptedInThisCrew.some(ml => claimedAcceptedMembers.has(ml));
         if (hasClaimed) {
           crewsMap[c.crewId] = Object.assign({}, c, { active: false });
           crewsChanged = true;
         } else {
-          c.members.forEach(m => claimedMembers.add(String(m).toLowerCase()));
+          acceptedInThisCrew.forEach(ml => claimedAcceptedMembers.add(ml));
         }
       });
 
@@ -3605,7 +3903,7 @@
       }
     }
 
-    // 7. Mescla avarias salvas de cada viatura (amassados, riscados, danificados) + fila/config de impressão remota na Base SAMU
+    // 7. Mescla avarias salvas de cada viatura + fila/config de impressão remota + ativação de módulos (__modules_cfg__)
     if (remote.viaturaAvarias && typeof remote.viaturaAvarias === 'object') {
       const localAv = getViaturaAvariasMap();
       let avChanged = false;
@@ -3617,7 +3915,12 @@
           if (vKey === SERVER_CENTRAL_AVARIA_KEY) {
             ingestDiscoveredServerEndpoint(rEntry, 'sync_db');
           }
-          if (!lEntry || String(rEntry.updatedAt || '') > String(lEntry.updatedAt || '')) {
+          const rRev = Number(rEntry.revision) || 0;
+          const lRev = lEntry ? (Number(lEntry.revision) || 0) : 0;
+          const shouldTakeSys = !lEntry || ((rRev > 0 || lRev > 0)
+            ? (rRev > lRev || (rRev === lRev && String(rEntry.updatedAt || '') > String(lEntry.updatedAt || '')))
+            : (String(rEntry.updatedAt || '') > String(lEntry.updatedAt || '')));
+          if (shouldTakeSys) {
             localAv[vKey] = Object.assign({}, rEntry, {
               key: vKey,
               updatedAt: rEntry.updatedAt || new Date().toISOString()
@@ -4312,6 +4615,391 @@
     runtimeServerState.activeBaseUrl = '';
     runtimeServerState.activeMode = '';
     runtimeServerState.lastProbeAtMs = 0;
+    disconnectRealtimeServerWebSocket();
+  }
+
+  /* ===================== CANAL WEBSOCKET TEMPO REAL (< 50ms) + PATCH LEVE DA EQUIPE ===================== */
+  const realtimeSyncListeners = new Set();
+  const realtimeWsState = {
+    connected: false,
+    connecting: false,
+    targetWsUrl: '',
+    usingNative: false,
+    browserWs: null,
+    reconnectTimer: null
+  };
+
+  function onRealtimeSyncEvent(listener) {
+    if (typeof listener !== 'function') return () => {};
+    realtimeSyncListeners.add(listener);
+    return () => {
+      realtimeSyncListeners.delete(listener);
+    };
+  }
+
+  function notifyRealtimeSyncListeners(payload) {
+    realtimeSyncListeners.forEach(fn => {
+      try {
+        fn(payload || {});
+      } catch (e) {}
+    });
+  }
+
+  function isRealtimeWsConnected() {
+    return Boolean(realtimeWsState.connected && runtimeServerState.activeBaseUrl);
+  }
+
+  function buildRealtimeWsUrl(baseUrl) {
+    const clean = normalizeServerBaseUrl(baseUrl);
+    if (!clean) return '';
+    let wsBase = clean;
+    if (/^https:\/\//i.test(wsBase)) {
+      wsBase = wsBase.replace(/^https:\/\//i, 'wss://');
+    } else if (/^http:\/\//i.test(wsBase)) {
+      wsBase = wsBase.replace(/^http:\/\//i, 'ws://');
+    } else {
+      wsBase = 'ws://' + wsBase;
+    }
+    return `${wsBase}/ws?role=fichas&auth=samu192_orlandia_realtime_2026`;
+  }
+
+  function scheduleRealtimeWsReconnect() {
+    if (realtimeWsState.reconnectTimer) {
+      clearTimeout(realtimeWsState.reconnectTimer);
+      realtimeWsState.reconnectTimer = null;
+    }
+    if (!runtimeServerState.activeBaseUrl) return;
+    realtimeWsState.reconnectTimer = setTimeout(() => {
+      realtimeWsState.reconnectTimer = null;
+      if (runtimeServerState.activeBaseUrl && !realtimeWsState.connected && !realtimeWsState.connecting) {
+        ensureRealtimeServerWebSocket(runtimeServerState.activeBaseUrl);
+      }
+    }, 2500);
+  }
+
+  function handleIncomingRealtimeWsMessage(rawText) {
+    if (!rawText || typeof rawText !== 'string') return;
+    let msg = null;
+    try {
+      msg = JSON.parse(rawText);
+    } catch (e) {
+      return;
+    }
+    if (!msg || typeof msg !== 'object') return;
+    noteNetworkOnline();
+    if (msg.type === 'fichas_sync' || msg.type === 'welcome') {
+      const evPayload = {
+        type: msg.type,
+        event: String(msg.event || 'ws'),
+        requiresFullPull: Boolean(msg.requiresFullPull)
+      };
+      if (msg.realtimeDb && typeof msg.realtimeDb === 'object') {
+        mergeRemoteDatabaseIntoInternal(msg.realtimeDb);
+        purgeDeletedRecordsFromLocalDb().catch(() => {});
+        syncAllCrewDraftsToLocalRecords()
+          .then(() => notifyRealtimeSyncListeners(evPayload))
+          .catch(() => notifyRealtimeSyncListeners(evPayload));
+      } else {
+        notifyRealtimeSyncListeners(evPayload);
+      }
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    window.__onAndroidWsEvent = function(evType, payloadStr) {
+      if (!realtimeWsState.usingNative) return;
+      if (evType === 'open') {
+        realtimeWsState.connected = true;
+        realtimeWsState.connecting = false;
+        noteNetworkOnline();
+      } else if (evType === 'message') {
+        handleIncomingRealtimeWsMessage(String(payloadStr || ''));
+      } else if (evType === 'close' || evType === 'error') {
+        const wasActive = realtimeWsState.connected || realtimeWsState.connecting;
+        realtimeWsState.connected = false;
+        realtimeWsState.connecting = false;
+        if (wasActive && runtimeServerState.activeBaseUrl) {
+          scheduleRealtimeWsReconnect();
+        }
+      }
+    };
+  }
+
+  function disconnectRealtimeServerWebSocket() {
+    if (realtimeWsState.reconnectTimer) {
+      clearTimeout(realtimeWsState.reconnectTimer);
+      realtimeWsState.reconnectTimer = null;
+    }
+    realtimeWsState.connected = false;
+    realtimeWsState.connecting = false;
+    realtimeWsState.targetWsUrl = '';
+    if (realtimeWsState.usingNative) {
+      realtimeWsState.usingNative = false;
+      try {
+        if (window.AndroidBridge && typeof window.AndroidBridge.wsDisconnect === 'function') {
+          window.AndroidBridge.wsDisconnect();
+        }
+      } catch (e) {}
+    }
+    if (realtimeWsState.browserWs) {
+      const oldWs = realtimeWsState.browserWs;
+      realtimeWsState.browserWs = null;
+      try {
+        oldWs.onopen = null;
+        oldWs.onmessage = null;
+        oldWs.onerror = null;
+        oldWs.onclose = null;
+        oldWs.close();
+      } catch (e) {}
+    }
+  }
+
+  function ensureRealtimeServerWebSocket(optionalBaseUrl) {
+    const base = normalizeServerBaseUrl(optionalBaseUrl || runtimeServerState.activeBaseUrl);
+    if (!base) {
+      disconnectRealtimeServerWebSocket();
+      return false;
+    }
+    const wsUrl = buildRealtimeWsUrl(base);
+    if (!wsUrl) return false;
+    if ((realtimeWsState.connected || realtimeWsState.connecting) && realtimeWsState.targetWsUrl === wsUrl) {
+      return realtimeWsState.connected;
+    }
+
+    disconnectRealtimeServerWebSocket();
+
+    const hasNativeWs = Boolean(
+      typeof window !== 'undefined' &&
+      window.AndroidBridge &&
+      typeof window.AndroidBridge.hasNativeWebSocket === 'function' &&
+      window.AndroidBridge.hasNativeWebSocket() &&
+      typeof window.AndroidBridge.wsConnect === 'function'
+    );
+
+    if (hasNativeWs) {
+      try {
+        realtimeWsState.usingNative = true;
+        realtimeWsState.connecting = true;
+        realtimeWsState.targetWsUrl = wsUrl;
+        window.AndroidBridge.wsConnect(wsUrl);
+        return true;
+      } catch (eNat) {
+        realtimeWsState.usingNative = false;
+        realtimeWsState.connecting = false;
+        realtimeWsState.targetWsUrl = '';
+      }
+    }
+
+    const canUseBrowserWs = Boolean(
+      typeof WebSocket === 'function' &&
+      (wsUrl.startsWith('wss://') || (typeof window !== 'undefined' && window.location && window.location.protocol !== 'https:'))
+    );
+    if (!canUseBrowserWs) return false;
+
+    try {
+      realtimeWsState.usingNative = false;
+      realtimeWsState.connecting = true;
+      realtimeWsState.targetWsUrl = wsUrl;
+      const ws = new WebSocket(wsUrl);
+      realtimeWsState.browserWs = ws;
+      ws.onopen = () => {
+        if (realtimeWsState.browserWs !== ws) return;
+        realtimeWsState.connected = true;
+        realtimeWsState.connecting = false;
+        noteNetworkOnline();
+      };
+      ws.onmessage = (ev) => {
+        if (realtimeWsState.browserWs !== ws) return;
+        handleIncomingRealtimeWsMessage(typeof ev.data === 'string' ? ev.data : '');
+      };
+      ws.onerror = () => {};
+      ws.onclose = () => {
+        if (realtimeWsState.browserWs !== ws) return;
+        realtimeWsState.browserWs = null;
+        realtimeWsState.connected = false;
+        realtimeWsState.connecting = false;
+        if (runtimeServerState.activeBaseUrl) {
+          scheduleRealtimeWsReconnect();
+        }
+      };
+      return true;
+    } catch (eBr) {
+      realtimeWsState.browserWs = null;
+      realtimeWsState.connecting = false;
+      realtimeWsState.targetWsUrl = '';
+      return false;
+    }
+  }
+
+  function sendRealtimeWsJson(payloadObj) {
+    if (!realtimeWsState.connected || !payloadObj) return false;
+    let raw = '';
+    try {
+      raw = JSON.stringify(payloadObj);
+    } catch (e) {
+      return false;
+    }
+    if (realtimeWsState.usingNative && window.AndroidBridge && typeof window.AndroidBridge.wsSend === 'function') {
+      try {
+        return Boolean(window.AndroidBridge.wsSend(raw));
+      } catch (e) {
+        return false;
+      }
+    }
+    if (realtimeWsState.browserWs && realtimeWsState.browserWs.readyState === 1) {
+      try {
+        realtimeWsState.browserWs.send(raw);
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  function buildCrewRealtimePatchObject() {
+    const crewsRaw = getCrewTeamsMap();
+    const exportCrews = pruneMapByTimestamp(crewsRaw, 40, v => (v && v.updatedAt) || '');
+    const sharedRaw = getSharedFichasMap();
+    const exportShared = {};
+    Object.keys(sharedRaw).forEach(cid => {
+      const ws = ensureCrewWorkspaceShape(cid, sharedRaw[cid]);
+      const hasDrafts = ws.draftRecords && Object.keys(ws.draftRecords).length > 0;
+      const hasClosed = ws.closedSessions && Object.keys(ws.closedSessions).length > 0;
+      const hasClosedDrafts = ws.closedDraftIds && Object.keys(ws.closedDraftIds).length > 0;
+      if (ws.currentFicha || hasDrafts || hasClosed || hasClosedDrafts) {
+        exportShared[cid] = ws;
+      }
+    });
+    const avAll = getViaturaAvariasMap();
+    const realtimeAv = {};
+    Object.keys(avAll || {}).forEach(k => {
+      if (k === MODULES_CFG_KEY || k === SERVER_CENTRAL_AVARIA_KEY || k.indexOf('__ckday_') === 0) {
+        realtimeAv[k] = avAll[k];
+      }
+    });
+    return {
+      schemaVersion: 3,
+      system: 'SAMU 192 - Orlandia-SP',
+      updatedAt: new Date().toISOString(),
+      deletedRecordsMap: getDeletedRecordsMap(),
+      viaturaAvarias: realtimeAv,
+      activeCrews: exportCrews,
+      sharedFichas: exportShared
+    };
+  }
+
+  let ongoingFastCrewSync = null;
+  async function syncCrewRealtimeFast(options) {
+    const opts = (options && typeof options === 'object') ? options : {};
+    if (!opts.forceTryOnline && isRecentlyConfirmedOffline()) {
+      return { ok: false, skipped: true, reason: 'offline' };
+    }
+    const shouldPush = Boolean(opts.pushChanges);
+
+    let srvBase = runtimeServerState.activeBaseUrl;
+    if (!srvBase && runtimeServerState.activeMode !== 'drive_fallback') {
+      srvBase = await resolveActiveServerBaseUrl({ allowDiscovery: false });
+    }
+
+    if (srvBase) {
+      ensureRealtimeServerWebSocket(srvBase);
+      if (shouldPush && isRealtimeWsConnected()) {
+        const sentWs = sendRealtimeWsJson({
+          type: 'crew_push',
+          clientDb: buildCrewRealtimePatchObject()
+        });
+        if (sentWs) {
+          return {
+            ok: true,
+            backend: 'servidor_ws',
+            pushed: true,
+            pulled: false
+          };
+        }
+      }
+
+      if (ongoingFastCrewSync && !shouldPush) {
+        try { return await ongoingFastCrewSync; } catch (e) {}
+      }
+
+      const runHttpFast = async () => {
+        try {
+          const res = await apiPostSingleAttempt({
+            action: 'syncDatabase',
+            pushChanges: shouldPush,
+            onlyCrewRealtime: true,
+            clientDb: shouldPush ? buildCrewRealtimePatchObject() : null,
+            _foregroundSync: shouldPush
+          }, `${srvBase}/api/fichas`);
+          if (res && res.ok) {
+            if (res.db && typeof res.db === 'object') {
+              mergeRemoteDatabaseIntoInternal(res.db);
+              await purgeDeletedRecordsFromLocalDb();
+              await syncAllCrewDraftsToLocalRecords();
+            }
+            return {
+              ok: true,
+              backend: 'servidor_http_fast',
+              pushed: shouldPush,
+              pulled: Boolean(res.db)
+            };
+          }
+        } catch (eSrvFast) {
+          invalidateActiveServerCache();
+        }
+        return null;
+      };
+
+      const pFast = runHttpFast();
+      if (!shouldPush) ongoingFastCrewSync = pFast;
+      try {
+        const fastOut = await pFast;
+        if (fastOut) return fastOut;
+      } finally {
+        if (ongoingFastCrewSync === pFast) ongoingFastCrewSync = null;
+      }
+    }
+
+    // Contingência Google Drive com payload enxuto (~3 KB) para digitação/convites rápidos mesmo sem o A14 na rede
+    const curSettings = getSettings();
+    const driveUrl = String(curSettings.scriptUrl || '').trim();
+    if (driveUrl) {
+      if (ongoingFastCrewSync && !shouldPush) {
+        try { return await ongoingFastCrewSync; } catch (e) {}
+      }
+      const runDriveFast = async () => {
+        const res = await apiPost({
+          action: 'syncDatabase',
+          pushChanges: shouldPush,
+          clientDb: shouldPush ? buildCrewRealtimePatchObject() : null,
+          _foregroundSync: shouldPush
+        }, driveUrl, { forceDirectDrive: true });
+        if (!res || !res.ok) {
+          throw new Error((res && res.error) || 'Falha na sincronização rápida.');
+        }
+        if (res.db && typeof res.db === 'object') {
+          mergeRemoteDatabaseIntoInternal(res.db);
+          await purgeDeletedRecordsFromLocalDb();
+          await syncAllCrewDraftsToLocalRecords();
+        }
+        return {
+          ok: true,
+          backend: 'google_drive_fast',
+          pushed: shouldPush,
+          pulled: Boolean(res.db)
+        };
+      };
+      const pDrv = runDriveFast();
+      if (!shouldPush) ongoingFastCrewSync = pDrv;
+      try {
+        return await pDrv;
+      } finally {
+        if (ongoingFastCrewSync === pDrv) ongoingFastCrewSync = null;
+      }
+    }
+
+    return syncInternalDbWithGitHub({ pushChanges: shouldPush });
   }
 
   function isPrivateLanUrl(u) {
@@ -4425,6 +5113,7 @@
           runtimeServerState.activeMode = hitManual.mode;
           runtimeServerState.lastHealth = hitManual.health;
           runtimeServerState.lastProbeAtMs = Date.now();
+          ensureRealtimeServerWebSocket(hitManual.baseUrl);
           return hitManual.baseUrl;
         }
       }
@@ -4465,11 +5154,13 @@
         runtimeServerState.activeBaseUrl = winner.baseUrl;
         runtimeServerState.activeMode = winner.mode;
         runtimeServerState.lastHealth = winner.health;
+        ensureRealtimeServerWebSocket(winner.baseUrl);
         return winner.baseUrl;
       }
 
       runtimeServerState.activeBaseUrl = '';
       runtimeServerState.activeMode = 'drive_fallback';
+      disconnectRealtimeServerWebSocket();
       return '';
     };
 
@@ -4486,6 +5177,7 @@
     const stored = getStoredServerEndpoints();
     return {
       isConnected: Boolean(runtimeServerState.activeBaseUrl),
+      wsConnected: isRealtimeWsConnected(),
       activeBaseUrl: runtimeServerState.activeBaseUrl || '',
       activeMode: runtimeServerState.activeMode || (stored.lanUrl || stored.tunnelUrl ? 'idle' : 'drive_fallback'),
       manualUrl: settings.serverUrl || '',
@@ -4507,6 +5199,7 @@
         runtimeServerState.activeMode = hit.mode;
         runtimeServerState.lastHealth = hit.health;
         runtimeServerState.lastProbeAtMs = Date.now();
+        ensureRealtimeServerWebSocket(hit.baseUrl);
         return hit;
       }
       return { ok: false, error: `Servidor Central A14 não respondeu em ${clean}.` };
@@ -6079,7 +6772,10 @@
     adminResetUserPassword,
     validateCrewSelection,
     getActiveCrewForUser,
+    getPendingCrewInviteForUser,
+    getRecentCrewNotificationsForUser,
     setActiveCrewForUsers,
+    respondToCrewInvite,
     clearActiveCrewForUser,
     getCrewWorkspace,
     hasMeaningfulFichaProgress,
@@ -6087,6 +6783,10 @@
     saveCrewCurrentFicha,
     closeCrewCurrentSession,
     syncAllCrewDraftsToLocalRecords,
+    onRealtimeSyncEvent,
+    ensureRealtimeServerWebSocket,
+    isRealtimeWsConnected,
+    syncCrewRealtimeFast,
     getHospitalReceivers,
     upsertHospitalReceiver,
     editHospitalReceiver,

@@ -1988,6 +1988,8 @@
       if (crewModal) crewModal.classList.add('hidden');
       const pwModal = document.getElementById('password-modal');
       if (pwModal) pwModal.classList.add('hidden');
+      const invModal = document.getElementById('crew-invite-modal');
+      if (invModal) invModal.classList.add('hidden');
       const topCrewBtn = document.getElementById('btn-top-crew');
       if (topCrewBtn) topCrewBtn.classList.add('hidden');
       document.getElementById('app-shell').classList.add('hidden');
@@ -1998,7 +2000,14 @@
     const btnTopCrew = document.getElementById('btn-top-crew');
     if (btnTopCrew) {
       btnTopCrew.addEventListener('click', () => {
-        openCrewSelectionModal({ isLoginPrompt: false });
+        const pendingInv = (currentUser && window.SamuStorage.getPendingCrewInviteForUser)
+          ? window.SamuStorage.getPendingCrewInviteForUser(currentUser.username)
+          : null;
+        if (pendingInv) {
+          openCrewInviteModal(pendingInv);
+        } else {
+          openCrewSelectionModal({ isLoginPrompt: false });
+        }
       });
     }
 
@@ -2019,6 +2028,8 @@
         updateBgSyncDockLayout();
         const crewModal = document.getElementById('crew-modal');
         if (crewModal) crewModal.classList.add('hidden');
+        const invModal = document.getElementById('crew-invite-modal');
+        if (invModal) invModal.classList.add('hidden');
         const passModal = document.getElementById('password-modal');
         if (passModal) passModal.classList.add('hidden');
         document.getElementById('app-shell').classList.add('hidden');
@@ -2363,6 +2374,8 @@
       try {
         await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: window.SamuStorage.getGitHubMeta().dirty });
         if (currentUser) {
+          checkCrewResponseNotifications();
+          checkAndShowPendingCrewInvite();
           await pullAndApplyCrewFichaChanges({ fromNetwork: true });
           if (!editingCondutorId && condutorState) {
             applySavedAvariasToCondutorState(condutorState, false);
@@ -2412,6 +2425,32 @@
       } catch (e) {}
     };
 
+    // Sincronização instantânea via WebSocket do Servidor Central A14 (< 50ms) ao digitar, convidar/aceitar equipe ou ativar/desativar Check Lists
+    if (window.SamuStorage.onRealtimeSyncEvent) {
+      window.SamuStorage.onRealtimeSyncEvent(async (ev) => {
+        if (!currentUser) return;
+        try {
+          checkCrewResponseNotifications();
+          checkAndShowPendingCrewInvite();
+          await pullAndApplyCrewFichaChanges({ fromNetwork: true });
+          if (!editingCondutorId && condutorState) {
+            applySharedDailyToCondutorState(condutorState, { replaceOtherShift: false });
+            if (activeTab === 'condutor' && !isUserTypingInInput()) renderCondutorView();
+          }
+          if (!editingEnfermagemId && enfermagemState) {
+            applySharedDailyToEnfermagemState(enfermagemState, { replaceOtherShift: false });
+            if (activeTab === 'enfermagem' && !isUserTypingInInput()) renderEnfermagemView();
+          }
+          await refreshDraftCount();
+          renderBottomNav();
+          await refreshSyncBadge();
+          if (ev && ev.requiresFullPull) {
+            pullGitHubWheneverOnline();
+          }
+        } catch (eWsEv) {}
+      });
+    }
+
     // Sincronização instantânea entre abas abertas no mesmo aparelho / Simulador
     window.addEventListener('storage', (ev) => {
       if (!currentUser || !ev || !ev.key) return;
@@ -2421,6 +2460,8 @@
         ev.key === 'samu_users_cache_v1' ||
         ev.key === 'samu_saved_sigs_v1'
       ) {
+        checkCrewResponseNotifications();
+        checkAndShowPendingCrewInvite();
         pullAndApplyCrewFichaChanges({ fromStorageEvent: true });
         refreshDraftCount();
       } else if (ev.key === 'samu_viatura_avarias_v1') {
@@ -2485,27 +2526,34 @@
       }
     }, 18000);
 
-    // Sincronização ultra-rápida (a cada 2.5s na aba Ficha) entre os celulares da equipe durante o preenchimento
+    // Sincronização ultra-rápida entre os celulares da equipe (digitação em tempo real, convites de equipe e ativação/desativação de Check Lists)
     let crewTickCounter = 0;
     setInterval(async () => {
-      if (!currentUser || !window.SamuStorage.hasOperationalRole(currentUser) || document.hidden || isRecentlyOfflinePassive()) return;
+      if (!currentUser || document.hidden || isRecentlyOfflinePassive()) return;
       if (!window.SamuStorage.hasGitHubConfigured()) return;
       if (crewPushInFlight) return;
       crewTickCounter++;
-      // Sem vínculo ativo: checa a cada ~20s p/ detectar vínculo feito pelo colega; vinculado fora da aba Ficha: ~7.5s; na aba Ficha: 2.5s!
-      if (!activeCrew) {
-        if (crewTickCounter % 8 !== 0) return;
-      } else if (activeTab !== 'ficha') {
-        if (crewTickCounter % 3 !== 0) return;
+      const wsLive = Boolean(window.SamuStorage.isRealtimeWsConnected && window.SamuStorage.isRealtimeWsConnected());
+      const isOp = window.SamuStorage.hasOperationalRole(currentUser);
+      if (wsLive) {
+        // Com WebSocket ativo (< 50ms), faz apenas verificação leve de segurança a cada ~4.8s
+        if (crewTickCounter % 4 !== 0) return;
+      } else if (!isOp) {
+        if (crewTickCounter % 4 !== 0) return;
+      } else if (!activeCrew || activeTab !== 'ficha') {
+        // Sem equipe ativa ou fora da Ficha: checa a cada ~2.4s p/ detectar convites de plantão e bloqueio de Check List imediatamente!
+        if (crewTickCounter % 2 !== 0) return;
       }
       try {
-        await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: window.SamuStorage.getGitHubMeta().dirty });
+        await window.SamuStorage.syncCrewRealtimeFast({ pushChanges: false });
+        checkCrewResponseNotifications();
+        checkAndShowPendingCrewInvite();
         await pullAndApplyCrewFichaChanges({ fromNetwork: true });
         await refreshDraftCount();
         renderBottomNav();
         await refreshSyncBadge();
       } catch (e) {}
-    }, 2500);
+    }, 1200);
 
     const existingSession = window.SamuStorage.getSession();
     if (existingSession) {
@@ -2608,7 +2656,11 @@
     } catch (eSig) {}
   }
 
-  /* ===================== EQUIPE DO PLANTÃO (ATÉ 3 MEMBROS) & FICHA COMPARTILHADA ===================== */
+  /* ===================== EQUIPE DO PLANTÃO (ATÉ 3 MEMBROS) & CONVITE COM ACEITE EM TEMPO REAL ===================== */
+  const seenCrewEventsMap = new Map();
+  const autoPoppedInviteKeys = new Set();
+  let lastRenderedPendingInviteKey = '';
+
   function updateTopbarCrewButton() {
     const btn = document.getElementById('btn-top-crew');
     const txt = document.getElementById('top-crew-text');
@@ -2618,15 +2670,294 @@
       return;
     }
     btn.classList.remove('hidden');
+    const pendingInv = window.SamuStorage.getPendingCrewInviteForUser
+      ? window.SamuStorage.getPendingCrewInviteForUser(currentUser.username)
+      : null;
     activeCrew = window.SamuStorage.getActiveCrewForUser(currentUser.username);
-    if (activeCrew && activeCrew.members && activeCrew.members.length >= 2) {
-      btn.classList.add('synced');
-      btn.classList.remove('pending');
-      txt.textContent = `👥 Equipe (${activeCrew.members.length})`;
+
+    if (pendingInv) {
+      btn.classList.remove('synced');
+      btn.classList.add('pending');
+      txt.textContent = '🔔 Aceitar Equipe!';
+    } else if (activeCrew && activeCrew.members && activeCrew.members.length >= 2) {
+      const accLen = Array.isArray(activeCrew.acceptedMembers) ? activeCrew.acceptedMembers.length : activeCrew.members.length;
+      const pendLen = Array.isArray(activeCrew.pendingMembers) ? activeCrew.pendingMembers.length : 0;
+      if (pendLen > 0) {
+        btn.classList.remove('synced');
+        btn.classList.add('pending');
+        txt.textContent = `⏳ Equipe (${accLen}/${activeCrew.members.length})`;
+      } else {
+        btn.classList.add('synced');
+        btn.classList.remove('pending');
+        txt.textContent = `👥 Equipe (${accLen})`;
+      }
     } else {
       btn.classList.remove('synced');
       btn.classList.add('pending');
       txt.textContent = '👥 Equipe';
+    }
+  }
+
+  function buildCrewEventSignature(c) {
+    if (!c) return '';
+    return [
+      String(c.revision || 0),
+      String(c.lastAcceptedBy || ''),
+      String(c.lastAcceptedAt || ''),
+      String(c.lastDeclinedBy || ''),
+      String(c.endedReason || ''),
+      String(c.updatedAt || '')
+    ].join('|');
+  }
+
+  function seedCrewNotificationsBaseline() {
+    seenCrewEventsMap.clear();
+    if (!currentUser || !window.SamuStorage.getRecentCrewNotificationsForUser) return;
+    const list = window.SamuStorage.getRecentCrewNotificationsForUser(currentUser.username) || [];
+    list.forEach(c => {
+      if (c && c.crewId) {
+        seenCrewEventsMap.set(c.crewId, {
+          sig: buildCrewEventSignature(c),
+          lastAcceptedBy: String(c.lastAcceptedBy || ''),
+          lastAcceptedAt: String(c.lastAcceptedAt || ''),
+          lastDeclinedBy: String(c.lastDeclinedBy || ''),
+          updatedAt: String(c.updatedAt || '')
+        });
+      }
+    });
+  }
+
+  function checkCrewResponseNotifications() {
+    if (!currentUser || !window.SamuStorage.getRecentCrewNotificationsForUser) return;
+    const meLower = currentUser.username.toLowerCase();
+    const list = window.SamuStorage.getRecentCrewNotificationsForUser(meLower) || [];
+    list.forEach(c => {
+      if (!c || !c.crewId) return;
+      const sig = buildCrewEventSignature(c);
+      const prev = seenCrewEventsMap.get(c.crewId);
+      seenCrewEventsMap.set(c.crewId, {
+        sig,
+        lastAcceptedBy: String(c.lastAcceptedBy || ''),
+        lastAcceptedAt: String(c.lastAcceptedAt || ''),
+        lastDeclinedBy: String(c.lastDeclinedBy || ''),
+        updatedAt: String(c.updatedAt || '')
+      });
+      if (!prev || prev.sig === sig) return;
+
+      const accBy = String(c.lastAcceptedBy || '').toLowerCase();
+      if (accBy && accBy !== meLower && (accBy !== prev.lastAcceptedBy.toLowerCase() || String(c.lastAcceptedAt || '') !== prev.lastAcceptedAt)) {
+        const nm = c.lastAcceptedByName || accBy;
+        showToast(`✅ ${nm} aceitou fazer parte da Equipe do Plantão!`, { isSuccess: true, durationMs: 5500 });
+        updateTopbarCrewButton();
+      }
+
+      const decBy = String(c.lastDeclinedBy || '').toLowerCase();
+      if (decBy && decBy !== meLower && (decBy !== prev.lastDeclinedBy.toLowerCase() || String(c.updatedAt || '') !== prev.updatedAt)) {
+        const nm = c.lastDeclinedByName || decBy;
+        showToast(`❌ ${nm} recusou o convite da Equipe do Plantão.`, { durationMs: 5500 });
+        updateTopbarCrewButton();
+      }
+    });
+  }
+
+  function ensureCrewInviteModalDom() {
+    let modal = document.getElementById('crew-invite-modal');
+    if (modal) return modal;
+    modal = document.createElement('div');
+    modal.id = 'crew-invite-modal';
+    modal.className = 'sig-modal hidden';
+    modal.style.zIndex = '185';
+    modal.innerHTML = `
+      <div class="sig-modal-box" style="max-width:460px;">
+        <div id="crew-invite-modal-body"></div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    return modal;
+  }
+
+  async function acceptOrDeclineCrewInvite(inviteCrew, accept) {
+    if (!currentUser || !inviteCrew || !window.SamuStorage.respondToCrewInvite) return;
+    const invKey = `${inviteCrew.crewId}::${inviteCrew.inviteId || inviteCrew.revision || inviteCrew.updatedAt || ''}`;
+    autoPoppedInviteKeys.add(invKey);
+
+    const invModal = document.getElementById('crew-invite-modal');
+    if (invModal) invModal.classList.add('hidden');
+
+    if (accept) {
+      const updated = window.SamuStorage.respondToCrewInvite(inviteCrew.crewId, currentUser.username, true);
+      activeCrew = window.SamuStorage.getActiveCrewForUser(currentUser.username) || updated;
+      updateTopbarCrewButton();
+
+      if (activeCrew && fichaState) {
+        const ws = window.SamuStorage.getCrewWorkspace(activeCrew.crewId);
+        if (ws && ws.currentFicha && ws.currentFicha.data) {
+          const localHasProgress = hasMeaningfulFichaData(fichaState);
+          const localDoc = localHasProgress
+            ? {
+                sessionId: currentCrewSessionId || ws.currentFicha.sessionId,
+                recordId: editingFichaId || '',
+                isLoadedRecord: currentCrewIsLoadedRecord,
+                updatedAt: new Date().toISOString(),
+                updatedBy: currentUser.username,
+                updatedByName: currentUser.name,
+                fieldTs: currentFichaFieldTs,
+                data: fichaState
+              }
+            : null;
+          const merged = window.SamuStorage.mergeSharedFichaDocs(localDoc, ws.currentFicha, ws.closedSessions);
+          if (merged && merged.data) {
+            fichaState = normalizeFichaData(merged.data);
+            editingFichaId = merged.recordId || null;
+            resetFichaSyncTracking(fichaState, merged.sessionId, merged.fieldTs, merged.isLoadedRecord);
+          }
+        }
+        applyCrewToFichaState(fichaState, activeCrew, true);
+        persistFichaDraft({ immediate: true });
+      }
+      await window.SamuStorage.syncAllCrewDraftsToLocalRecords();
+      await refreshDraftCount();
+      if (!isUserTypingInInput()) {
+        renderActiveView();
+      }
+      if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
+        window.SamuStorage.syncCrewRealtimeFast({ pushChanges: true })
+          .then(() => refreshSyncBadge())
+          .catch(() => {});
+      }
+      const partnerNames = (activeCrew && activeCrew.teammates ? activeCrew.teammates : []).map(t => t.name).join(' + ');
+      showToast(`✅ Você entrou na Equipe do Plantão${partnerNames ? ` com ${partnerNames}` : ''}! Ficha e assinaturas sincronizadas.`, { isSuccess: true, durationMs: 5500 });
+    } else {
+      window.SamuStorage.respondToCrewInvite(inviteCrew.crewId, currentUser.username, false);
+      activeCrew = window.SamuStorage.getActiveCrewForUser(currentUser.username);
+      updateTopbarCrewButton();
+      if (activeTab === 'ficha' && !isUserTypingInInput()) {
+        renderFichaView();
+      }
+      if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
+        window.SamuStorage.syncCrewRealtimeFast({ pushChanges: true })
+          .then(() => refreshSyncBadge())
+          .catch(() => {});
+      }
+      showToast('❌ Convite para a Equipe do Plantão recusado.');
+    }
+  }
+
+  function openCrewInviteModal(inviteCrew) {
+    if (!currentUser || !inviteCrew) return;
+    const modal = ensureCrewInviteModalDom();
+    const body = document.getElementById('crew-invite-modal-body');
+    if (!body) return;
+
+    const invKey = `${inviteCrew.crewId}::${inviteCrew.inviteId || inviteCrew.revision || inviteCrew.updatedAt || ''}`;
+    autoPoppedInviteKeys.add(invKey);
+
+    const inviterName = inviteCrew.invitedByName || inviteCrew.invitedBy || 'Colega de plantão';
+    const membersRows = (inviteCrew.membersDetailed || []).map(m => {
+      const icon = m.subRole === 'condutor' ? '🚑' : (m.subRole === 'enfermeiro' ? '👩‍⚕️' : '🩺');
+      const isMe = m.username.toLowerCase() === currentUser.username.toLowerCase();
+      const stBadge = m.inviteStatus === 'accepted'
+        ? '<span class="crew-status-pill accepted">✅ Confirmado</span>'
+        : '<span class="crew-status-pill pending">⏳ Aguardando aceite</span>';
+      return `
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; padding:8px 10px; border-radius:10px; background:#fff; border:1px solid #cbd5e1;">
+          <div style="min-width:0; flex:1;">
+            <strong style="font-size:0.86rem; color:#0f172a;">${icon} ${escapeHtml(m.name)}${isMe ? ' (Você)' : ''}</strong>
+            <div style="font-size:0.75rem; color:var(--muted);">${escapeHtml(m.roleLabel)}${m.coren ? ` • ${escapeHtml(m.coren)}` : ''}</div>
+          </div>
+          ${stBadge}
+        </div>
+      `;
+    }).join('');
+
+    body.innerHTML = `
+      <div style="margin-bottom:10px;">
+        <div style="display:inline-flex; align-items:center; gap:6px; background:#fef3c7; color:#92400e; border:1px solid #f59e0b; border-radius:999px; padding:3px 10px; font-size:0.73rem; font-weight:800; margin-bottom:6px;">
+          🔔 CONVITE DE EQUIPE DO PLANTÃO
+        </div>
+        <h3 style="margin:0; font-size:1.06rem; color:#0f172a;">
+          Deseja fazer parte desta Equipe de Plantão?
+        </h3>
+        <p style="margin:5px 0 0; font-size:0.82rem; color:#334155; line-height:1.38;">
+          <strong>${escapeHtml(inviterName)}</strong> selecionou você para trabalhar junto no plantão. Ao aceitar, a <strong>Ficha de Atendimento sincroniza ao vivo enquanto digitam</strong> e seus dados/assinatura entram automaticamente!
+        </p>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:6px; margin-bottom:12px; background:#f8fafc; padding:9px; border-radius:11px; border:1px solid #e2e8f0;">
+        <div style="font-size:0.75rem; font-weight:800; color:#475569;">INTEGRANTES DA EQUIPE (${(inviteCrew.membersDetailed || []).length}):</div>
+        ${membersRows}
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        <button type="button" class="btn btn-success" id="btn-accept-crew-invite" style="font-size:0.92rem; padding:11px 14px;">
+          ✅ Aceitar e Sincronizar Equipe
+        </button>
+        <div style="display:flex; gap:8px;">
+          <button type="button" class="btn btn-danger btn-sm" id="btn-decline-crew-invite" style="flex:1;">
+            ❌ Recusar
+          </button>
+          <button type="button" class="btn btn-secondary btn-sm" id="btn-later-crew-invite" style="flex:1;">
+            Decidir Depois
+          </button>
+        </div>
+      </div>
+    `;
+
+    const btnAcc = document.getElementById('btn-accept-crew-invite');
+    const btnDec = document.getElementById('btn-decline-crew-invite');
+    const btnLater = document.getElementById('btn-later-crew-invite');
+
+    if (btnAcc) {
+      btnAcc.addEventListener('click', async () => {
+        btnAcc.disabled = true;
+        btnAcc.textContent = '✅ Entrando na Equipe...';
+        await acceptOrDeclineCrewInvite(inviteCrew, true);
+      });
+    }
+    if (btnDec) {
+      btnDec.addEventListener('click', async () => {
+        btnDec.disabled = true;
+        await acceptOrDeclineCrewInvite(inviteCrew, false);
+      });
+    }
+    if (btnLater) {
+      btnLater.addEventListener('click', () => {
+        modal.classList.add('hidden');
+      });
+    }
+
+    modal.classList.remove('hidden');
+  }
+
+  function checkAndShowPendingCrewInvite() {
+    if (!currentUser || !window.SamuStorage.hasOperationalRole(currentUser)) return;
+    if (!window.SamuStorage.getPendingCrewInviteForUser) return;
+    const pendingInv = window.SamuStorage.getPendingCrewInviteForUser(currentUser.username);
+    updateTopbarCrewButton();
+
+    const curInvKey = pendingInv
+      ? `${pendingInv.crewId}::${pendingInv.inviteId || pendingInv.revision || pendingInv.updatedAt || ''}`
+      : '';
+
+    if (curInvKey !== lastRenderedPendingInviteKey) {
+      lastRenderedPendingInviteKey = curInvKey;
+      if (activeTab === 'ficha' && !isUserTypingInInput()) {
+        const y = window.scrollY;
+        renderFichaView();
+        window.scrollTo(0, y);
+      }
+    }
+
+    if (!pendingInv) {
+      const invModal = document.getElementById('crew-invite-modal');
+      if (invModal && !invModal.classList.contains('hidden')) {
+        invModal.classList.add('hidden');
+      }
+      return;
+    }
+
+    if (!autoPoppedInviteKeys.has(curInvKey)) {
+      openCrewInviteModal(pendingInv);
     }
   }
 
@@ -2687,7 +3018,11 @@
     crewDirtySinceLastPush = false;
     crewPushQueuedImmediate = false;
     try {
-      await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true });
+      if (window.SamuStorage.syncCrewRealtimeFast) {
+        await window.SamuStorage.syncCrewRealtimeFast({ pushChanges: true });
+      } else {
+        await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true });
+      }
       await pullAndApplyCrewFichaChanges({ fromNetwork: true });
       await refreshDraftCount();
       await refreshSyncBadge();
@@ -2708,7 +3043,7 @@
     if (!navigator.onLine || !window.SamuStorage.hasGitHubConfigured()) return;
     crewPushTimer = setTimeout(() => {
       runCrewCloudPushNow();
-    }, 50);
+    }, 30);
   }
 
   function scheduleCrewCloudPush(opts) {
@@ -2718,17 +3053,21 @@
       flushCrewCloudPushNow();
       return;
     }
+    const wsLive = Boolean(window.SamuStorage.isRealtimeWsConnected && window.SamuStorage.isRealtimeWsConnected());
+    const srvSnap = window.SamuStorage.getServerStatusSnapshot ? window.SamuStorage.getServerStatusSnapshot() : null;
+    const burstMs = wsLive ? 140 : ((srvSnap && srvSnap.isConnected) ? 220 : 480);
+
     const now = Date.now();
     if (!crewTypingBurstStartTs) crewTypingBurstStartTs = now;
     const elapsed = now - crewTypingBurstStartTs;
-    if (elapsed >= 850) {
+    if (elapsed >= burstMs) {
       flushCrewCloudPushNow();
       return;
     }
     clearTimeout(crewPushTimer);
     crewPushTimer = setTimeout(() => {
       runCrewCloudPushNow();
-    }, Math.max(120, 850 - elapsed));
+    }, Math.max(55, burstMs - elapsed));
   }
 
   function applyFichaValuesToDomWithoutStealingFocus(activeEl) {
@@ -2796,6 +3135,9 @@
   async function pullAndApplyCrewFichaChanges(opts) {
     if (!currentUser || !window.SamuStorage.hasOperationalRole(currentUser) || !fichaState) return false;
     const prevCrewId = activeCrew ? activeCrew.crewId : '';
+    const prevAcceptedKey = activeCrew && Array.isArray(activeCrew.acceptedMembers)
+      ? activeCrew.acceptedMembers.map(m => m.username).sort().join(',')
+      : '';
     activeCrew = window.SamuStorage.getActiveCrewForUser(currentUser.username);
     updateTopbarCrewButton();
 
@@ -2807,6 +3149,11 @@
       }
       return false;
     }
+
+    const curAcceptedKey = Array.isArray(activeCrew.acceptedMembers)
+      ? activeCrew.acceptedMembers.map(m => m.username).sort().join(',')
+      : '';
+    const crewAcceptanceChanged = (prevCrewId !== activeCrew.crewId) || (prevAcceptedKey !== curAcceptedKey);
 
     const ws = window.SamuStorage.getCrewWorkspace(activeCrew.crewId);
     if (!ws) return false;
@@ -2826,7 +3173,7 @@
       return true;
     }
 
-    let changed = (prevCrewId !== activeCrew.crewId);
+    let changed = crewAcceptanceChanged;
 
     if (ws.currentFicha && ws.currentFicha.data) {
       const localHasProgress = hasMeaningfulFichaData(fichaState) || Object.keys(currentFichaFieldTs || {}).length > 0;
@@ -2845,7 +3192,7 @@
 
       const mergedDoc = window.SamuStorage.mergeSharedFichaDocs(localDoc, ws.currentFicha, ws.closedSessions);
       if (mergedDoc && mergedDoc.data) {
-        applyCrewToFichaState(mergedDoc.data, activeCrew, prevCrewId !== activeCrew.crewId);
+        applyCrewToFichaState(mergedDoc.data, activeCrew, crewAcceptanceChanged);
         const normalizedMerged = normalizeFichaData(mergedDoc.data);
         const nextEditId = mergedDoc.recordId || null;
 
@@ -2865,7 +3212,7 @@
           changed = true;
         }
       }
-    } else if (prevCrewId !== activeCrew.crewId) {
+    } else if (crewAcceptanceChanged) {
       applyCrewToFichaState(fichaState, activeCrew, true);
       stampChangedFichaFields(Date.now());
       changed = true;
@@ -2949,6 +3296,12 @@
       const corenTxt = u.role === 'enfermagem' ? (u.coren || u.councilId || '') : '';
       const hasSig = Boolean(window.SamuStorage.getSavedSignature(uname) || u.savedSignature);
       const icon = sub === 'condutor' ? '🚑' : (sub === 'enfermeiro' ? '👩‍⚕️' : '🩺');
+      const curSt = (activeCrew && activeCrew.memberStatuses && activeCrew.memberStatuses[uname]) || '';
+      const stHtml = (isSel && activeCrew && Array.isArray(activeCrew.members) && activeCrew.members.includes(uname))
+        ? (curSt === 'accepted'
+            ? ' • <span class="crew-status-pill accepted">✅ Aceitou</span>'
+            : ' • <span class="crew-status-pill pending">⏳ Aguardando aceite</span>')
+        : '';
       return `
         <button type="button" class="crew-member-option ${isSel ? 'selected' : ''}" data-pick-crew-user="${escapeHtml(uname)}">
           <div class="crew-member-check">${isSel ? '✓' : ''}</div>
@@ -2957,6 +3310,7 @@
             <small>
               ${escapeHtml(roleLbl)}${corenTxt ? ` • ${escapeHtml(corenTxt)}` : ''}
               ${hasSig ? ' • <span style="color:#15803d;font-weight:800;">✍️ Assinatura salva</span>' : ''}
+              ${stHtml}
             </small>
           </div>
         </button>
@@ -2984,7 +3338,7 @@
           <div>
             <h3 style="margin:0; font-size:1.05rem; color:var(--samu-red-dark);">👥 Equipe do Plantão (${chosenMembers.length}/3)</h3>
             <p style="margin:3px 0 0; font-size:0.79rem; color:var(--muted); line-height:1.35;">
-              Selecione com quem você está trabalhando. A <strong>Ficha em preenchimento fica sincronizada</strong> entre vocês e os <strong>nomes, COREN e assinaturas</strong> já entram preenchidos no final da ficha!
+              <strong>Basta selecionar em apenas 1 celular!</strong> Aparecerá automaticamente no APK do colega para ele <strong>Aceitar</strong> fazer parte da equipe do plantão.
             </p>
           </div>
         </div>
@@ -2999,8 +3353,10 @@
         </div>
 
         ${(activeCrew && activeCrew.teammates && activeCrew.teammates.length > 0) ? `
-          <div style="background:#f0fdf4; border:1.5px solid #86efac; border-radius:10px; padding:8px 10px; margin-bottom:10px; font-size:0.79rem; color:#14532d; font-weight:700;">
-            🔗 Vinculado atualmente com: <strong>${escapeHtml(activeCrew.teammates.map(t => t.name).join(' + '))}</strong>.
+          <div style="background:${activeCrew.allAccepted ? '#f0fdf4' : '#fffbeb'}; border:1.5px solid ${activeCrew.allAccepted ? '#86efac' : '#fcd34d'}; border-radius:10px; padding:8px 10px; margin-bottom:10px; font-size:0.79rem; color:${activeCrew.allAccepted ? '#14532d' : '#92400e'}; font-weight:700;">
+            ${activeCrew.allAccepted
+              ? `✅ Equipe confirmada: <strong>${escapeHtml(activeCrew.teammates.map(t => t.name).join(' + '))}</strong>.`
+              : `⏳ Convite enviado para: <strong>${escapeHtml(activeCrew.teammates.map(t => `${t.name} (${t.inviteStatus === 'accepted' ? 'aceitou' : 'aguardando aceite'})`).join(' • '))}</strong>.`}
             ${opts.isLoginPrompt ? 'Confirme abaixo para manter ou altere os colegas do plantão.' : ''}
           </div>
         ` : ''}
@@ -3028,11 +3384,11 @@
 
         <div style="display:flex; flex-direction:column; gap:8px; margin-top:12px;">
           <button type="button" class="btn btn-success" id="btn-confirm-crew" ${validation.valid ? '' : 'disabled style="opacity:0.5;cursor:not-allowed;"'}>
-            ✅ Confirmar Equipe e Sincronizar Ficha
+            📨 Enviar Convite e Sincronizar Equipe
           </button>
           <div style="display:flex; gap:8px;">
             ${activeCrew ? `
-              <button type="button" class="btn btn-outline btn-sm" id="btn-clear-crew" style="flex:1;">🔓 Trabalhar Individual</button>
+              <button type="button" class="btn btn-outline btn-sm" id="btn-clear-crew" style="flex:1;">🔓 Encerrar Equipe (Individual)</button>
             ` : ''}
             <button type="button" class="btn btn-secondary btn-sm" id="btn-skip-crew" style="flex:1;">
               ${activeCrew ? 'Fechar' : 'Agora não (Individual)'}
@@ -3073,7 +3429,8 @@
           modal.classList.add('hidden');
           if (activeTab === 'ficha') renderFichaView();
           if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
-            window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true }).catch(() => {});
+            const syncFn = window.SamuStorage.syncCrewRealtimeFast || window.SamuStorage.syncInternalDbWithGitHub;
+            syncFn({ pushChanges: true }).catch(() => {});
           }
           showToast('🔓 Vínculo de equipe encerrado (modo individual).');
         });
@@ -3084,19 +3441,21 @@
         confirmBtn.addEventListener('click', async () => {
           if (!validation.valid) return;
           confirmBtn.disabled = true;
-          confirmBtn.textContent = 'Sincronizando Equipe...';
+          confirmBtn.textContent = '📨 Enviando convite...';
           try {
             if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
               try {
-                await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: false });
+                const pullFn = window.SamuStorage.syncCrewRealtimeFast || window.SamuStorage.syncInternalDbWithGitHub;
+                await pullFn({ pushChanges: false });
               } catch (ePull) {}
             }
 
             const memberUsernames = [currentUser.username].concat(Array.from(selectedSet));
             activeCrew = window.SamuStorage.setActiveCrewForUsers(memberUsernames, currentUser.username);
+            seedCrewNotificationsBaseline();
             updateTopbarCrewButton();
 
-            // Mescla eventual ficha que o colega já esteja preenchendo com os campos locais e já preenche as assinaturas de toda a equipe!
+            // Mescla eventual ficha que já esteja em preenchimento e aplica sua assinatura imediatamente (as dos colegas entram assim que aceitarem!)
             const ws = window.SamuStorage.getCrewWorkspace(activeCrew.crewId);
             if (ws && ws.currentFicha && ws.currentFicha.data) {
               const localHasProgress = hasMeaningfulFichaData(fichaState);
@@ -3121,7 +3480,7 @@
             }
 
             applyCrewToFichaState(fichaState, activeCrew, true);
-            persistFichaDraft();
+            persistFichaDraft({ immediate: true });
             await window.SamuStorage.syncAllCrewDraftsToLocalRecords();
             await refreshDraftCount();
 
@@ -3129,17 +3488,23 @@
             renderActiveView();
 
             if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
-              window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true })
+              const pushFn = window.SamuStorage.syncCrewRealtimeFast || window.SamuStorage.syncInternalDbWithGitHub;
+              pushFn({ pushChanges: true })
                 .then(() => refreshSyncBadge())
                 .catch(() => {});
             }
 
+            const pendingNames = (activeCrew.pendingMembers || []).map(t => t.name).join(' + ');
             const partnerNames = (activeCrew.teammates || []).map(t => t.name).join(' + ');
-            showToast(`✅ Equipe vinculada com ${partnerNames}! Assinaturas preenchidas e ficha sincronizada.`);
+            if (pendingNames) {
+              showToast(`📨 Convite enviado para ${pendingNames}! Vai aparecer na tela dele(s) para aceitar entrar na equipe.`, { isSuccess: true, durationMs: 6000 });
+            } else {
+              showToast(`✅ Equipe confirmada com ${partnerNames}! Assinaturas preenchidas e ficha sincronizada.`, { isSuccess: true });
+            }
           } catch (err) {
             samuAlert(err.message || 'Erro ao vincular equipe.');
             confirmBtn.disabled = false;
-            confirmBtn.textContent = '✅ Confirmar Equipe e Sincronizar Ficha';
+            confirmBtn.textContent = '📨 Enviar Convite e Sincronizar Equipe';
           }
         });
       }
@@ -4974,16 +5339,29 @@
         showToast(`🔔 Há ${pendingCount} cadastro(s) aguardando aprovação na aba "✅ Aprovar"!`);
       }
     }
+    seedCrewNotificationsBaseline();
     renderBottomNav();
     renderActiveView();
     upgradeExistingSignaturesToBlueInk();
     await refreshSyncBadge();
-    triggerBackgroundSync(false);
+    checkAndShowPendingCrewInvite();
 
-    // Toda vez que o Téc. de Enfermagem, Enfermeiro(a) ou Condutor (inclusive híbrido c/ ADM) logar, pergunta com quem está trabalhando no plantão!
-    if (opts.promptCrew && isOperational) {
-      openCrewSelectionModal({ isLoginPrompt: true });
+    // Puxa instantaneamente (< 200ms) o status de Check Lists ativados/desativados e convites de equipe do plantão logo no login!
+    if (window.SamuStorage.syncCrewRealtimeFast && !isRecentlyOfflinePassive()) {
+      window.SamuStorage.syncCrewRealtimeFast({ pushChanges: false })
+        .then(async () => {
+          if (!currentUser) return;
+          renderBottomNav();
+          checkCrewResponseNotifications();
+          checkAndShowPendingCrewInvite();
+          await pullAndApplyCrewFichaChanges({ fromNetwork: true });
+          await refreshDraftCount();
+          await refreshSyncBadge();
+        })
+        .catch(() => {});
     }
+
+    triggerBackgroundSync(false);
   }
 
   function schedulePendingDriveRetry(delayMs) {
@@ -5350,48 +5728,64 @@
 
   function isRecordAllowedForCurrentUser(rec) {
     if (!rec) return false;
-    if (rec.type === 'checklist_condutor') return isChecklistAllowed('condutor', currentUser);
-    if (rec.type === 'checklist_enfermagem') return isChecklistAllowed('enfermagem', currentUser);
+    const isArchivedForAdmin = Boolean(
+      currentUser &&
+      window.SamuStorage.isUserAdmin(currentUser) &&
+      !rec.isDraft &&
+      rec.syncStatus !== 'draft'
+    );
+    if (rec.type === 'checklist_condutor') {
+      return isArchivedForAdmin || isChecklistAllowed('condutor', currentUser);
+    }
+    if (rec.type === 'checklist_enfermagem') {
+      return isArchivedForAdmin || isChecklistAllowed('enfermagem', currentUser);
+    }
     return true;
   }
 
   function getNavTabsForUser(user) {
+    const allowCond = isChecklistAllowed('condutor', user);
+    const allowEnf = isChecklistAllowed('enfermagem', user);
+
     if (window.SamuStorage.isUserAdmin(user)) {
       const pendingUsersCount = window.SamuStorage.getPendingUsers().length;
       if (window.SamuStorage.hasOperationalRole(user)) {
         const isCond = user.role === 'condutor';
-        return [
-          { id: 'ficha', icon: '📋', label: 'Ficha' },
-          isCond
-            ? { id: 'condutor', icon: '🚑', label: 'CK Cond.' }
-            : { id: 'enfermagem', icon: '🩺', label: 'CK Enf.' },
-          isCond
-            ? { id: 'enfermagem', icon: '🩺', label: 'CK Enf.' }
-            : { id: 'condutor', icon: '🚑', label: 'CK Cond.' },
+        const tabs = [{ id: 'ficha', icon: '📋', label: 'Ficha' }];
+        if (isCond) {
+          if (allowCond) tabs.push({ id: 'condutor', icon: '🚑', label: 'CK Cond.' });
+          if (allowEnf) tabs.push({ id: 'enfermagem', icon: '🩺', label: 'CK Enf.' });
+        } else {
+          if (allowEnf) tabs.push({ id: 'enfermagem', icon: '🩺', label: 'CK Enf.' });
+          if (allowCond) tabs.push({ id: 'condutor', icon: '🚑', label: 'CK Cond.' });
+        }
+        tabs.push(
           { id: 'historico', icon: '🔎', label: 'Histórico' },
           { id: 'aprovacoes', icon: '✅', label: 'Aprovar', badge: pendingUsersCount },
           { id: 'admin', icon: '⚙️', label: 'Base/Drive' }
-        ];
+        );
+        return tabs;
       }
-      return [
+      const tabs = [
         { id: 'historico', icon: '🔎', label: 'Histórico' },
         { id: 'aprovacoes', icon: '✅', label: 'Aprovar', badge: pendingUsersCount },
-        { id: 'ficha', icon: '📋', label: 'Ficha' },
-        { id: 'condutor', icon: '🚑', label: 'CK Cond.' },
-        { id: 'enfermagem', icon: '🩺', label: 'CK Enf.' },
-        { id: 'admin', icon: '⚙️', label: 'Base/Drive' }
+        { id: 'ficha', icon: '📋', label: 'Ficha' }
       ];
+      if (allowCond) tabs.push({ id: 'condutor', icon: '🚑', label: 'CK Cond.' });
+      if (allowEnf) tabs.push({ id: 'enfermagem', icon: '🩺', label: 'CK Enf.' });
+      tabs.push({ id: 'admin', icon: '⚙️', label: 'Base/Drive' });
+      return tabs;
     }
     if (user && user.role === 'condutor') {
       const tabs = [{ id: 'ficha', icon: '📋', label: 'Ficha USB' }];
-      if (isChecklistAllowed('condutor', user)) {
+      if (allowCond) {
         tabs.push({ id: 'condutor', icon: '🚑', label: 'Check List' });
       }
       tabs.push({ id: 'historico', icon: '🔎', label: 'Meu Histórico' });
       return tabs;
     }
     const tabs = [{ id: 'ficha', icon: '📋', label: 'Ficha USB' }];
-    if (isChecklistAllowed('enfermagem', user)) {
+    if (allowEnf) {
       tabs.push({ id: 'enfermagem', icon: '🩺', label: 'Check List' });
     }
     tabs.push({ id: 'historico', icon: '🔎', label: 'Meu Histórico' });
@@ -6918,29 +7312,62 @@
     const crewBarHtml = (() => {
       if (!currentUser || !window.SamuStorage.hasOperationalRole(currentUser)) return '';
       activeCrew = window.SamuStorage.getActiveCrewForUser(currentUser.username);
+      const pendingInv = window.SamuStorage.getPendingCrewInviteForUser
+        ? window.SamuStorage.getPendingCrewInviteForUser(currentUser.username)
+        : null;
       updateTopbarCrewButton();
+
+      const inviteBannerHtml = pendingInv
+        ? (() => {
+            const inviterName = pendingInv.invitedByName || pendingInv.invitedBy || 'Colega de plantão';
+            const teamNames = (pendingInv.membersDetailed || []).map(m => m.name).join(' + ');
+            return `
+              <div class="crew-invite-banner">
+                <div style="flex:1; min-width:0;">
+                  <div style="font-size:0.83rem; font-weight:800; color:#78350f;">
+                    🔔 Convite de Equipe: ${escapeHtml(inviterName)} convidou você para o plantão!
+                  </div>
+                  <div style="font-size:0.75rem; color:#92400e; margin-top:2px;">
+                    Equipe: <strong>${escapeHtml(teamNames)}</strong> • Aceite para sincronizar a ficha ao vivo.
+                  </div>
+                </div>
+                <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                  <button type="button" class="btn btn-success btn-sm" id="btn-banner-accept-crew" style="padding:5px 10px; font-size:0.76rem;">✅ Aceitar</button>
+                  <button type="button" class="btn btn-danger btn-sm" id="btn-banner-decline-crew" style="padding:5px 9px; font-size:0.76rem;">❌ Recusar</button>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-banner-view-crew-inv" style="padding:5px 9px; font-size:0.75rem;">👁️ Ver</button>
+                </div>
+              </div>
+            `;
+          })()
+        : '';
+
       if (activeCrew && activeCrew.membersDetailed && activeCrew.membersDetailed.length >= 2) {
         const ws = window.SamuStorage.getCrewWorkspace(activeCrew.crewId);
         const cf = ws && ws.currentFicha;
-        let syncInfo = '✅ Ficha sincronizada e assinaturas da equipe preenchidas';
-        if (cf && cf.updatedByName && cf.updatedAt) {
+        const pendList = Array.isArray(activeCrew.pendingMembers) ? activeCrew.pendingMembers : [];
+        let syncInfo = pendList.length > 0
+          ? `⏳ Aguardando aceite no APK de: ${pendList.map(p => p.name).join(' + ')}`
+          : '✅ Equipe confirmada • Digitação ao vivo e assinaturas sincronizadas';
+        if (pendList.length === 0 && cf && cf.updatedByName && cf.updatedAt) {
           const dt = new Date(cf.updatedAt);
           const hhmm = !isNaN(dt.getTime())
             ? (String(dt.getHours()).padStart(2, '0') + ':' + String(dt.getMinutes()).padStart(2, '0'))
             : '';
-          syncInfo = `🔄 Sincronizada • Última edição: ${cf.updatedByName}${hhmm ? ` às ${hhmm}` : ''}`;
+          syncInfo = `⚡ Tempo real ativo • Última edição: ${cf.updatedByName}${hhmm ? ` às ${hhmm}` : ''}`;
         }
         const membersChips = activeCrew.membersDetailed.map(m => {
           const ic = m.subRole === 'condutor' ? '🚑' : (m.subRole === 'enfermeiro' ? '👩‍⚕️' : '🩺');
-          return `${ic} ${m.name}`;
+          const stSuffix = m.inviteStatus === 'pending' ? ' (⏳ aguardando)' : '';
+          return `${ic} ${m.name}${stSuffix}`;
         }).join('  •  ');
         return `
-          <div class="crew-sync-bar">
-            <div style="flex:1; min-width:210px;">
-              <div style="font-size:0.81rem; font-weight:800; color:#14532d;">
-                👥 Equipe do Plantão (${activeCrew.membersDetailed.length}): ${escapeHtml(membersChips)}
+          ${inviteBannerHtml}
+          <div class="crew-sync-bar" style="${pendList.length > 0 ? 'background:#fffbeb; border-color:#fcd34d;' : ''}">
+            <div style="flex:1; min-width:0;">
+              <div style="font-size:0.81rem; font-weight:800; color:${pendList.length > 0 ? '#92400e' : '#14532d'};">
+                👥 Equipe do Plantão (${activeCrew.acceptedMembers ? activeCrew.acceptedMembers.length : activeCrew.membersDetailed.length}/${activeCrew.membersDetailed.length}): ${escapeHtml(membersChips)}
               </div>
-              <div style="font-size:0.74rem; color:#166534; margin-top:2px;">
+              <div style="font-size:0.74rem; color:${pendList.length > 0 ? '#b45309' : '#166534'}; margin-top:2px;">
                 ${escapeHtml(syncInfo)}
               </div>
             </div>
@@ -6951,14 +7378,17 @@
           </div>
         `;
       }
+      if (inviteBannerHtml) {
+        return inviteBannerHtml;
+      }
       return `
         <div class="crew-sync-bar unpaired">
-          <div style="flex:1; min-width:210px;">
+          <div style="flex:1; min-width:0;">
             <div style="font-size:0.81rem; font-weight:800; color:#9a3412;">
-              👥 Informe com quem você está trabalhando hoje (2 ou até 3 integrantes)
+              👥 Equipe do Plantão (basta definir em 1 celular — o colega recebe o convite para aceitar)
             </div>
             <div style="font-size:0.74rem; color:#7c2d12; margin-top:2px;">
-              Sincroniza a ficha em preenchimento entre vocês e já preenche os nomes, COREN e assinaturas no final!
+              Sincroniza a digitação da ficha em tempo real e já preenche os nomes, COREN e assinaturas no final!
             </div>
           </div>
           <button type="button" class="btn btn-primary btn-sm js-open-crew-modal" style="padding:6px 11px; font-size:0.77rem;">
@@ -7046,6 +7476,33 @@
       });
     });
 
+    const btnBannerAcc = document.getElementById('btn-banner-accept-crew');
+    const btnBannerDec = document.getElementById('btn-banner-decline-crew');
+    const btnBannerView = document.getElementById('btn-banner-view-crew-inv');
+    if (btnBannerAcc || btnBannerDec || btnBannerView) {
+      const pendingInv = (currentUser && window.SamuStorage.getPendingCrewInviteForUser)
+        ? window.SamuStorage.getPendingCrewInviteForUser(currentUser.username)
+        : null;
+      if (btnBannerAcc && pendingInv) {
+        btnBannerAcc.addEventListener('click', async () => {
+          btnBannerAcc.disabled = true;
+          btnBannerAcc.textContent = '⏳...';
+          await acceptOrDeclineCrewInvite(pendingInv, true);
+        });
+      }
+      if (btnBannerDec && pendingInv) {
+        btnBannerDec.addEventListener('click', async () => {
+          btnBannerDec.disabled = true;
+          await acceptOrDeclineCrewInvite(pendingInv, false);
+        });
+      }
+      if (btnBannerView && pendingInv) {
+        btnBannerView.addEventListener('click', () => {
+          openCrewInviteModal(pendingInv);
+        });
+      }
+    }
+
     const btnCrewSyncNow = document.getElementById('btn-crew-sync-now');
     if (btnCrewSyncNow) {
       btnCrewSyncNow.addEventListener('click', async () => {
@@ -7053,14 +7510,18 @@
         btnCrewSyncNow.textContent = '⏳...';
         try {
           if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
-            await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: window.SamuStorage.getGitHubMeta().dirty });
+            const syncFn = window.SamuStorage.syncCrewRealtimeFast || window.SamuStorage.syncInternalDbWithGitHub;
+            await syncFn({ pushChanges: Boolean(crewDirtySinceLastPush || window.SamuStorage.getGitHubMeta().dirty) });
+            crewDirtySinceLastPush = false;
           }
+          checkCrewResponseNotifications();
+          checkAndShowPendingCrewInvite();
           await pullAndApplyCrewFichaChanges({ fromNetwork: true });
           await refreshDraftCount();
           await refreshSyncBadge();
           renderFichaView();
           showToast(navigator.onLine
-            ? '🔄 Ficha da equipe sincronizada com sucesso!'
+            ? '⚡ Ficha da equipe sincronizada em tempo real!'
             : '🔄 Sincronizada na memória interna (sem internet agora).');
         } catch (err) {
           samuAlert('Erro ao sincronizar ficha da equipe: ' + err.message);
@@ -8189,9 +8650,9 @@
    * ========================================================================== */
   function renderCondutorView() {
     if (!isChecklistAllowed('condutor', currentUser)) {
-      activeTab = 'ficha';
+      activeTab = (currentUser && !window.SamuStorage.hasOperationalRole(currentUser)) ? 'historico' : 'ficha';
       renderBottomNav({ skipRedirectRender: true });
-      return renderFichaView();
+      return activeTab === 'historico' ? renderHistoricoView() : renderFichaView();
     }
     const container = document.getElementById('main-view');
     const isAdminUser = window.SamuStorage.isUserAdmin(currentUser);
@@ -8883,9 +9344,9 @@
    * ========================================================================== */
   function renderEnfermagemView() {
     if (!isChecklistAllowed('enfermagem', currentUser)) {
-      activeTab = 'ficha';
+      activeTab = (currentUser && !window.SamuStorage.hasOperationalRole(currentUser)) ? 'historico' : 'ficha';
       renderBottomNav({ skipRedirectRender: true });
-      return renderFichaView();
+      return activeTab === 'historico' ? renderHistoricoView() : renderFichaView();
     }
     const container = document.getElementById('main-view');
     const isAdminUser = window.SamuStorage.isUserAdmin(currentUser);
@@ -10566,7 +11027,7 @@
       <div class="card" id="adm-checklist-modules-card">
         <div class="card-title"><span>🎛️ Ativar / Desativar Check Lists (Motoristas e Enfermagem)</span></div>
         <p style="margin:0 0 12px; font-size:0.83rem; color:var(--muted);">
-          Controle quais Check Lists ficam liberados nos celulares da equipe. Quando <strong>desativado</strong>, o Check List <strong>não aparece para os funcionários que não são ADM</strong> (continua visível apenas para ADM) e sincroniza em tempo real com todos os celulares pelo Google Drive.
+          Controle quais Check Lists ficam ativos no aplicativo. Quando <strong>desativado</strong>, a aba do Check List <strong>some imediatamente do APK para toda a equipe</strong> (inclusive perfis Condutor + ADM / Enfermagem + ADM), podendo ser reativada aqui na aba <strong>⚙️ Base/Drive</strong> a qualquer momento.
         </p>
 
         <div style="display:flex; flex-direction:column; gap:10px;">
@@ -10574,7 +11035,7 @@
             <div>
               <div style="font-weight:800; font-size:0.93rem; color:#0f172a; margin-bottom:4px;">🚑 Check List – Motoristas / Condutores</div>
               <span class="type-badge" style="${modCfg.condutorEnabled ? 'background:#dcfce7; color:#14532d;' : 'background:#fee2e2; color:#991b1b;'}">
-                ${modCfg.condutorEnabled ? '✅ ATIVADO (Visível para Motoristas e ADM)' : '🔒 DESATIVADO (Oculto para funcionários não-ADM)'}
+                ${modCfg.condutorEnabled ? '✅ ATIVADO (Aba visível no APK)' : '🔒 DESATIVADO (Aba oculta em todos os APKs)'}
               </span>
             </div>
             <button type="button" class="btn ${modCfg.condutorEnabled ? 'btn-secondary' : 'btn-success'} btn-sm" id="btn-adm-toggle-ck-cond">
@@ -10586,7 +11047,7 @@
             <div>
               <div style="font-weight:800; font-size:0.93rem; color:#0f172a; margin-bottom:4px;">🩺 Check List – Enfermagem (Técnicos e Enfermeiros)</div>
               <span class="type-badge" style="${modCfg.enfermagemEnabled ? 'background:#dcfce7; color:#14532d;' : 'background:#fee2e2; color:#991b1b;'}">
-                ${modCfg.enfermagemEnabled ? '✅ ATIVADO (Visível para Enfermagem e ADM)' : '🔒 DESATIVADO (Oculto para funcionários não-ADM)'}
+                ${modCfg.enfermagemEnabled ? '✅ ATIVADO (Aba visível no APK)' : '🔒 DESATIVADO (Aba oculta em todos os APKs)'}
               </span>
             </div>
             <button type="button" class="btn ${modCfg.enfermagemEnabled ? 'btn-secondary' : 'btn-success'} btn-sm" id="btn-adm-toggle-ck-enf">
@@ -10877,6 +11338,9 @@
           currentUser && currentUser.username,
           { skipCloudAwait: true }
         );
+        if (window.SamuStorage.syncCrewRealtimeFast) {
+          window.SamuStorage.syncCrewRealtimeFast({ pushChanges: true, forceTryOnline: true }).catch(() => {});
+        }
         renderBottomNav();
         await refreshDraftCount();
         await refreshSyncBadge();
@@ -10884,14 +11348,14 @@
         runBackgroundCloudAction({
           icon: '🚑',
           title: `${nextVal ? 'Ativando' : 'Desativando'} Check List Motoristas...`,
-          detail: 'Sincronizando configuração com todos os celulares pelo Google Drive...',
+          detail: 'Sincronizando configuração em tempo real com todos os celulares (Servidor + Google Drive)...',
           taskFn: () => window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true, forceTryOnline: true }),
           successTitle: nextVal
             ? '✅ Check List Motoristas ATIVADO em todos os aparelhos!'
             : '🔒 Check List Motoristas DESATIVADO em todos os aparelhos!',
           successToast: nextVal
-            ? '✅ Check List dos Motoristas ATIVADO e sincronizado no Google Drive!'
-            : '🔒 Check List dos Motoristas DESATIVADO e sincronizado no Google Drive!'
+            ? '✅ Check List dos Motoristas ATIVADO em todos os APKs!'
+            : '🔒 Check List dos Motoristas DESATIVADO e ocultado em todos os APKs!'
         });
       });
     }
@@ -10906,6 +11370,9 @@
           currentUser && currentUser.username,
           { skipCloudAwait: true }
         );
+        if (window.SamuStorage.syncCrewRealtimeFast) {
+          window.SamuStorage.syncCrewRealtimeFast({ pushChanges: true, forceTryOnline: true }).catch(() => {});
+        }
         renderBottomNav();
         await refreshDraftCount();
         await refreshSyncBadge();
@@ -10913,14 +11380,14 @@
         runBackgroundCloudAction({
           icon: '🩺',
           title: `${nextVal ? 'Ativando' : 'Desativando'} Check List Enfermagem...`,
-          detail: 'Sincronizando configuração com todos os celulares pelo Google Drive...',
+          detail: 'Sincronizando configuração em tempo real com todos os celulares (Servidor + Google Drive)...',
           taskFn: () => window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true, forceTryOnline: true }),
           successTitle: nextVal
             ? '✅ Check List Enfermagem ATIVADO em todos os aparelhos!'
             : '🔒 Check List Enfermagem DESATIVADO em todos os aparelhos!',
           successToast: nextVal
-            ? '✅ Check List da Enfermagem ATIVADO e sincronizado no Google Drive!'
-            : '🔒 Check List da Enfermagem DESATIVADO e sincronizado no Google Drive!'
+            ? '✅ Check List da Enfermagem ATIVADO em todos os APKs!'
+            : '🔒 Check List da Enfermagem DESATIVADO e ocultado em todos os APKs!'
         });
       });
     }

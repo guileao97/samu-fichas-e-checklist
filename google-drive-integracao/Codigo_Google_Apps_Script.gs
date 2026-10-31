@@ -1539,14 +1539,19 @@ function mergeSyncDatabases_(base, incoming) {
   }
   out.patients = patMap;
 
-  // 6. Avarias persistentes por Viatura + Fila de Impressão Remota da Base SAMU (__print_cfg__, __print_agent__, __pjob_00..79)
+  // 6. Avarias persistentes por Viatura + Fila de Impressão Remota da Base SAMU (__print_cfg__, __print_agent__, __pjob_00..79, __modules_cfg__)
   var avMap = Object.assign({}, out.viaturaAvarias || {});
   if (inc.viaturaAvarias && typeof inc.viaturaAvarias === 'object') {
     Object.keys(inc.viaturaAvarias).forEach(function(vKey) {
       var rv = inc.viaturaAvarias[vKey];
       if (!rv || typeof rv !== 'object') return;
       var lv = avMap[vKey];
-      if (!lv || String(rv.updatedAt || '') >= String(lv.updatedAt || '')) {
+      var rRev = Number(rv.revision || 0) || 0;
+      var lRev = lv ? (Number(lv.revision || 0) || 0) : 0;
+      var takeAv = !lv || ((rRev > 0 || lRev > 0)
+        ? (rRev > lRev || (rRev === lRev && String(rv.updatedAt || '') >= String(lv.updatedAt || '')))
+        : (String(rv.updatedAt || '') >= String(lv.updatedAt || '')));
+      if (takeAv) {
         avMap[vKey] = rv;
       }
     });
@@ -1561,7 +1566,12 @@ function mergeSyncDatabases_(base, incoming) {
       var rc = inc.activeCrews[cid];
       if (!rc || !Array.isArray(rc.members)) return;
       var lc = crewsMap[cid];
-      if (!lc || String(rc.updatedAt || '') >= String(lc.updatedAt || '')) {
+      var rRev = Number(rc.revision || 0) || 0;
+      var lRev = lc ? (Number(lc.revision || 0) || 0) : 0;
+      var takeCrew = !lc || ((rRev > 0 || lRev > 0)
+        ? (rRev > lRev || (rRev === lRev && String(rc.updatedAt || '') >= String(lc.updatedAt || '')))
+        : (String(rc.updatedAt || '') >= String(lc.updatedAt || '')));
+      if (takeCrew) {
         crewsMap[cid] = rc;
       }
     });
@@ -1687,7 +1697,12 @@ function handleSyncDatabase_(env, body) {
       var rv = incAv[pk];
       if (!rv || typeof rv !== 'object') continue;
       var lv = curAv[pk];
-      if (!lv || String(rv.updatedAt || '') >= String(lv.updatedAt || '')) {
+      var rRevP = Number(rv.revision || 0) || 0;
+      var lRevP = lv ? (Number(lv.revision || 0) || 0) : 0;
+      var takeFast = !lv || ((rRevP > 0 || lRevP > 0)
+        ? (rRevP > lRevP || (rRevP === lRevP && String(rv.updatedAt || '') >= String(lv.updatedAt || '')))
+        : (String(rv.updatedAt || '') >= String(lv.updatedAt || '')));
+      if (takeFast) {
         curAv[pk] = rv;
       }
     }
