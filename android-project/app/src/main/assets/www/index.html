@@ -4,7 +4,14 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#c8102e" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="SAMU 192" />
   <title>SAMU 192 – Orlândia-SP | Ficha de Atendimento & Check List</title>
+  <link rel="icon" type="image/png" href="icon-samu-192.png" />
+  <link rel="apple-touch-icon" href="icon-samu-192.png" />
+  <link rel="manifest" href="manifest.json" />
   <link rel="stylesheet" href="css/styles.css" />
 </head>
 <body>
@@ -88,6 +95,31 @@
           Após enviar, o Administrador aprova na aba <strong>Aprovar</strong> do APK e seu acesso é liberado automaticamente.
         </p>
       </form>
+
+      <div class="login-web-access-card" id="login-web-access-card">
+        <div class="login-web-access-header">
+          <span class="login-web-badge">🌐 VERSÃO WEB</span>
+          <span class="login-web-devices">Android • iPhone • PC</span>
+        </div>
+        <p class="login-web-desc">
+          Acesse pelo navegador ou compartilhe o link com a equipe:
+        </p>
+        <a
+          href="https://guileao97.github.io/samu-fichas-e-checklist/"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="login-web-url-pill"
+          id="login-web-url-link"
+        >https://guileao97.github.io/samu-fichas-e-checklist/</a>
+        <div class="login-web-actions">
+          <button type="button" class="btn btn-sm login-web-btn-share" id="btn-login-share-web-link">
+            📲 Compartilhar Link
+          </button>
+          <button type="button" class="btn btn-sm login-web-btn-copy" id="btn-login-copy-web-link">
+            📋 Copiar Link
+          </button>
+        </div>
+      </div>
 
       <div id="login-version-footer" style="margin-top: 14px; text-align: center; font-size: 0.74rem; color: var(--muted); font-weight: 700;"></div>
       <div style="margin-top: 6px; text-align: center;">

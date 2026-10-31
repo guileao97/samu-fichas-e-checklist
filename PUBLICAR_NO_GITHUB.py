@@ -50,6 +50,8 @@ STORAGE_JS_FILE = os.path.join(ROOT_DIR, "web-app", "js", "storage.js")
 # Pastas e arquivos incluídos no repositório público de atualização (ZERO base_dados_samu.json e ZERO .jks!)
 INCLUDE_DIRS = ("web-app", "android-project", "google-drive-integracao", "impressora-base-samu", ".github")
 INCLUDE_ROOT_FILES = (
+    "index.html",
+    ".nojekyll",
     "version.json",
     ".gitignore",
     "PUBLICAR_NO_GITHUB.py",
@@ -947,10 +949,25 @@ def main():
             print(f"⚠️ Aviso HTTP {st_pub} ao tornar repositório público automaticamente: {pub_res.get('message', pub_res)}")
             print(f"   Caso necessário, abra https://github.com/{OWNER}/{REPO}/settings -> Danger Zone -> Change visibility -> Make public.")
 
+    # 6.5. Garante que o GitHub Pages esteja ativo para a Versão Web Oficial (Android, iPhone e PC)
+    web_pages_url = f"https://{OWNER}.github.io/{REPO}/"
+    st_pg, pg_info = gh_api("GET", f"/repos/{OWNER}/{REPO}/pages", token)
+    if st_pg == 404:
+        print("🌐 Ativando GitHub Pages para acesso Web (Android, iPhone e PC)...")
+        st_pg_new, pg_new = gh_api("POST", f"/repos/{OWNER}/{REPO}/pages", token, {
+            "source": {"branch": BRANCH, "path": "/"}
+        })
+        if st_pg_new in (200, 201, 202) and isinstance(pg_new, dict) and pg_new.get("html_url"):
+            web_pages_url = pg_new["html_url"]
+            print(f"✅ GitHub Pages ativado com sucesso: {web_pages_url}")
+    elif st_pg == 200 and isinstance(pg_info, dict) and pg_info.get("html_url"):
+        web_pages_url = pg_info["html_url"]
+
     print("\n" + "=" * 72)
     print(f"✅ ATUALIZAÇÃO PUBLICADA COM SUCESSO EM https://github.com/{OWNER}/{REPO} !")
     print(f"   Versão APK : v{local_ver['apkVersionName']} (versionCode {local_ver['apkVersionCode']})")
     print(f"   Revisão OTA: #{local_ver['otaRevision']} (os celulares atualizam sozinhos SEM TOKEN!)")
+    print(f"   Acesso Web : {web_pages_url} (Android, iPhone e PC)")
     print(f"   Sync Dados : Google Drive em Tempo Real (pré-configurado de fábrica no APK)")
     print(f"   Download   : https://github.com/{OWNER}/{REPO}/releases/latest")
     print("=" * 72)

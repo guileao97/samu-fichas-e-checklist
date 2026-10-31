@@ -2223,15 +2223,117 @@
       });
     }
 
+    // Link Oficial da Versão Web (Android, iPhone e PC) na tela de Login e Cadastro
+    const OFFICIAL_WEB_APP_URL = 'https://guileao97.github.io/samu-fichas-e-checklist/';
+    const isNativeApkMode = Boolean(
+      window.AndroidBridge && typeof window.AndroidBridge.getInstalledVersionJson === 'function'
+    );
+
+    const copyTextReliable = async (textToCopy) => {
+      let copied = false;
+      try {
+        if (window.AndroidBridge && typeof window.AndroidBridge.copyText === 'function') {
+          copied = Boolean(window.AndroidBridge.copyText(textToCopy));
+        }
+      } catch (eNativeCopy) {}
+      if (!copied && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        try {
+          await navigator.clipboard.writeText(textToCopy);
+          copied = true;
+        } catch (eClip) {}
+      }
+      if (!copied) {
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = textToCopy;
+          ta.setAttribute('readonly', 'readonly');
+          ta.style.position = 'fixed';
+          ta.style.top = '-9999px';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.focus();
+          ta.select();
+          ta.setSelectionRange(0, textToCopy.length);
+          copied = Boolean(document.execCommand('copy'));
+          ta.remove();
+        } catch (eExec) {}
+      }
+      return copied;
+    };
+
+    const btnCopyWebLink = document.getElementById('btn-login-copy-web-link');
+    if (btnCopyWebLink) {
+      btnCopyWebLink.addEventListener('click', async () => {
+        const ok = await copyTextReliable(OFFICIAL_WEB_APP_URL);
+        if (ok) {
+          const prevLabel = btnCopyWebLink.textContent;
+          btnCopyWebLink.textContent = '✅ Link Copiado!';
+          setTimeout(() => {
+            try { btnCopyWebLink.textContent = prevLabel; } catch (e) {}
+          }, 2200);
+          showToast('✅ Link da versão Web copiado! Cole no WhatsApp para enviar.', { isSuccess: true });
+        } else {
+          samuAlert('Link da Versão Web (copie abaixo):\n\n' + OFFICIAL_WEB_APP_URL);
+        }
+      });
+    }
+
+    const btnShareWebLink = document.getElementById('btn-login-share-web-link');
+    if (btnShareWebLink) {
+      btnShareWebLink.addEventListener('click', async () => {
+        const shareMsg =
+          '🚑 *SAMU 192 – Orlândia-SP | Ficha de Atendimento & Check List (Versão Web)*\n' +
+          'Acesse pelo navegador no Android, iPhone ou Computador:\n' +
+          OFFICIAL_WEB_APP_URL;
+
+        if (window.AndroidBridge && typeof window.AndroidBridge.shareText === 'function') {
+          window.AndroidBridge.shareText(shareMsg, 'Compartilhar Link da Versão Web SAMU 192');
+          return;
+        }
+
+        if (navigator.share) {
+          try {
+            await navigator.share({
+              title: 'SAMU 192 – Orlândia-SP (Versão Web)',
+              text: '🚑 SAMU 192 – Orlândia-SP | Ficha de Atendimento & Check List (Android, iPhone e PC):',
+              url: OFFICIAL_WEB_APP_URL
+            });
+            return;
+          } catch (eShare) {
+            if (eShare && eShare.name === 'AbortError') return;
+          }
+        }
+
+        await copyTextReliable(OFFICIAL_WEB_APP_URL);
+        showToast('📲 Link copiado! Abrindo WhatsApp para compartilhar...', { isSuccess: true });
+        const waUrl = 'https://wa.me/?text=' + encodeURIComponent(shareMsg);
+        const w = window.open(waUrl, '_blank', 'noopener,noreferrer');
+        if (!w && isNativeApkMode) {
+          window.location.href = waUrl;
+        }
+      });
+    }
+
     // Sempre que detectar internet, puxa automaticamente a base de dados do GitHub + verifica atualização automática (OTA / APK)
     const updateLoginVersionFooter = () => {
       const footer = document.getElementById('login-version-footer');
       if (!footer || !window.SamuStorage.getInstalledAppVersion) return;
+      if (!isNativeApkMode) {
+        footer.textContent = '🌐 Versão Web Oficial (Android • iPhone • PC) • Sincronizada em Tempo Real';
+        return;
+      }
       const v = window.SamuStorage.getInstalledAppVersion();
       const repoLabel = (window.SamuStorage.getSettings().githubRepo || 'guileao97/samu-fichas-e-checklist').trim();
       footer.textContent = `📱 Versão v${v.apkVersionName} (Rev #${v.otaRevision}) • Auto-Update: ${repoLabel}`;
     };
     updateLoginVersionFooter();
+
+    if (!isNativeApkMode) {
+      const loginUpdWrap = document.getElementById('btn-login-check-update');
+      if (loginUpdWrap) loginUpdWrap.classList.add('hidden');
+      const topUpdBtn = document.getElementById('btn-top-check-update');
+      if (topUpdBtn) topUpdBtn.classList.add('hidden');
+    }
 
     const showAutoUpdateBanner = (text, buttonLabel, onClickFn) => {
       const banner = document.getElementById('auto-update-banner');

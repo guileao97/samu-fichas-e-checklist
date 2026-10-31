@@ -4,6 +4,7 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -906,6 +907,39 @@ public class MainActivity extends Activity {
                     Toast.makeText(MainActivity.this, "Erro ao enviar foto p/ WhatsApp: " + e.getMessage(), Toast.LENGTH_LONG).show();
                 }
             });
+        }
+
+        @JavascriptInterface
+        public void shareText(final String text, final String chooserTitle) {
+            if (text == null || text.trim().isEmpty()) return;
+            runOnUiThread(() -> {
+                try {
+                    Intent shareIntent = new Intent(Intent.ACTION_SEND);
+                    shareIntent.setType("text/plain");
+                    shareIntent.putExtra(Intent.EXTRA_SUBJECT, "SAMU 192 – Orlândia-SP (Versão Web)");
+                    shareIntent.putExtra(Intent.EXTRA_TEXT, text);
+                    String title = (chooserTitle == null || chooserTitle.trim().isEmpty())
+                            ? "Compartilhar Link da Versão Web SAMU 192"
+                            : chooserTitle;
+                    startActivity(Intent.createChooser(shareIntent, title));
+                } catch (Exception e) {
+                    Toast.makeText(MainActivity.this, "Erro ao compartilhar link: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public boolean copyText(final String text) {
+            if (text == null) return false;
+            runOnUiThread(() -> {
+                try {
+                    ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                    if (cm != null) {
+                        cm.setPrimaryClip(ClipData.newPlainText("SAMU 192 Web", text));
+                    }
+                } catch (Exception ignored) {}
+            });
+            return true;
         }
 
         @JavascriptInterface

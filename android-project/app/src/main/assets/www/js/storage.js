@@ -4291,6 +4291,9 @@
 
     const runCheck = async () => {
       const local = getInstalledAppVersion();
+      if (!local.isNativeApk) {
+        return { status: 'web_browser_mode', local };
+      }
       let remote = null;
       try {
         const verTxt = await fetchGitHubRepoFileText(cfg, 'version.json');
@@ -5111,6 +5114,15 @@
     if (!cleanBase) return null;
     const isLan = isPrivateLanUrl(cleanBase);
     if (!isLan && !isValidTunnelCandidateUrl(cleanBase)) return null;
+    if (
+      !window.AndroidBridge &&
+      typeof window !== 'undefined' &&
+      window.location &&
+      window.location.protocol === 'https:' &&
+      /^http:\/\//i.test(cleanBase)
+    ) {
+      return null;
+    }
     const connMs = timeoutMs || (isLan ? 1050 : 2500);
     const readMs = Math.max(connMs + 450, isLan ? 1600 : 3300);
     const pingUrl = `${cleanBase}/api/ping?_=${Date.now()}`;

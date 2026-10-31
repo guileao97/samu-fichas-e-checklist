@@ -1,0 +1,26 @@
+{
+  "name": "SAMU 192 – Orlândia-SP | Fichas & Check List",
+  "short_name": "SAMU 192",
+  "description": "Ficha de Atendimento USB e Check List Digital Oficial – SAMU 192 Orlândia-SP (Android, iPhone e PC)",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#7f1d1d",
+  "theme_color": "#c8102e",
+  "lang": "pt-BR",
+  "icons": [
+    {
+      "src": "icon-samu-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-samu-192.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
