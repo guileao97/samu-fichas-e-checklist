@@ -1,13 +1,6 @@
 name: Compilar e Publicar APK SAMU 192 Orlandia
 
 on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - 'base_dados_samu.json'
-      - 'github-database/**'
-      - '*.md'
   workflow_dispatch:
 
 concurrency:
@@ -54,13 +47,15 @@ jobs:
             echo "Android SDK 34 e Build-Tools 34.0.0 pre-instalados em $SDK_ROOT."
           fi
 
-      - name: Restaurar certificado de assinatura via GitHub Secret (se configurado)
+      - name: Restaurar certificado oficial de assinatura via GitHub Secret
         env:
           SAMU_KEYSTORE_BASE64: ${{ secrets.SAMU_KEYSTORE_BASE64 }}
         run: |
-          if [[ -n "$SAMU_KEYSTORE_BASE64" ]]; then
-            echo "$SAMU_KEYSTORE_BASE64" | base64 -d > android-project/samu_orlandia_release.jks
+          if [[ -z "$SAMU_KEYSTORE_BASE64" ]]; then
+            echo "ERRO: Secret SAMU_KEYSTORE_BASE64 ausente! Rode PUBLICAR_ATUALIZACAO_GITHUB.bat no PC oficial para sincronizar o certificado unico (evita conflito de assinatura nos celulares)."
+            exit 1
           fi
+          echo "$SAMU_KEYSTORE_BASE64" | base64 -d > android-project/samu_orlandia_release.jks
 
       - name: Compilar e Assinar SAMU_192_Orlandia.apk
         run: |

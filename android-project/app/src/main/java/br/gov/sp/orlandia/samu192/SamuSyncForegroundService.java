@@ -333,10 +333,13 @@ public class SamuSyncForegroundService extends Service {
                                                  final String jobTitle) {
         final Context appCtx = ctx.getApplicationContext();
         sActiveNativeJobs.incrementAndGet();
+        boolean hasAutoPrint = (jsonPayload != null && jsonPayload.contains("\"autoPrintOpts\":{"));
         sCurrentTitle = (jobTitle != null && !jobTitle.trim().isEmpty())
                 ? jobTitle
                 : "☁️ Enviando PDF ao Google Drive...";
-        sCurrentDetail = "Transmitindo PDF oficial e acionando fila da Impressora da Base...";
+        sCurrentDetail = hasAutoPrint
+                ? "Transmitindo PDF oficial e acionando fila da Impressora da Base..."
+                : "Transmitindo PDF oficial para o Google Drive da Central SAMU...";
         if (sCurrentPercent < 45) sCurrentPercent = 55;
         startOrUpdateService(appCtx);
         refreshProgressNotification(appCtx);

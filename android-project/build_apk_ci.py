@@ -170,10 +170,17 @@ def run_step(name, cmd, env=None):
 def ensure_keystore_exists(keytool_exe=None):
     """
     Garante que o certificado fixo samu_orlandia_release.jks exista (gerando-o em
-    diretório temporário ASCII puro caso ainda não exista).
+    diretório temporário ASCII puro caso ainda não exista localmente).
+    Em ambiente CI (GitHub Actions), NUNCA gera certificado aleatório novo para não
+    invalidar a atualização por cima nos celulares já instalados!
     """
     if os.path.isfile(KEYSTORE_PATH) and os.path.getsize(KEYSTORE_PATH) > 100:
         return KEYSTORE_PATH
+    if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
+        raise RuntimeError(
+            "Certificado samu_orlandia_release.jks ausente no GitHub Actions! "
+            "Abortando para nunca gerar assinatura diferente da instalada nos celulares."
+        )
     if not keytool_exe:
         keytool_exe = find_java_tool("keytool")
     tmp_dir = make_ascii_build_dir()

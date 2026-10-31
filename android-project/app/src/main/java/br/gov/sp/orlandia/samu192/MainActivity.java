@@ -2,6 +2,8 @@ package br.gov.sp.orlandia.samu192;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.ClipData;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -70,6 +72,9 @@ public class MainActivity extends Activity {
     private static final String APP_ORIGIN = "https://samu-orlandia.local";
     private static volatile MainActivity sActiveInstance;
     private static volatile boolean sIsAppInForeground = false;
+    private static volatile boolean sPromptedNotifThisProcess = false;
+    private static volatile boolean sPromptedUnknownSourcesThisProcess = false;
+    private static volatile boolean sWaitingUnknownSourcesSettingsReturn = false;
     private static volatile boolean sPromptedBatteryOptThisProcess = false;
     private static volatile long sLastBatteryPromptMs = 0L;
 
@@ -77,6 +82,7 @@ public class MainActivity extends Activity {
     private SamuSqliteDb sqliteDb;
     private ConnectivityManager.NetworkCallback networkCallback;
     private File pendingApkInstallFile;
+    private AlertDialog unknownSourcesDialog;
 
     public static boolean isAppInForeground() {
         return sIsAppInForeground;
@@ -232,24 +238,110 @@ public class MainActivity extends Activity {
         webView.setNetworkAvailable(isDeviceNetworkConnected());
         webView.loadUrl(APP_ORIGIN + "/index.html");
 
-        requestRuntimeNotificationPermissionIfNeeded();
+        scheduleStartupPermissionsCheck(1100L);
+    }
+
+    private void scheduleStartupPermissionsCheck(final long delayMs) {
         new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            if (sActiveInstance != this || !sIsAppInForeground || isFinishing()) return;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && isDestroyed()) return;
+            if (unknownSourcesDialog != null && unknownSourcesDialog.isShowing()) return;
+
+            // 1) Permissão de Notificações no Android 13+ (p/ barra de envio em 2º plano fora do APK)
+            if (Build.VERSION.SDK_INT >= 33 && !sPromptedNotifThisProcess) {
+                try {
+                    if (checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) {
+                        sPromptedNotifThisProcess = true;
+                        requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 1921);
+                        return;
+                    }
+                } catch (Exception ignored) {}
+            }
+
+            // 2) Permissão de Instalar Apps Desconhecidos ("Permitir desta fonte") logo ao instalar/abrir o APK
+            if (!sPromptedUnknownSourcesThisProcess && !canInstallUnknownPackagesInternal()) {
+                sPromptedUnknownSourcesThisProcess = true;
+                promptEnableUnknownAppSourcesDialog();
+                return;
+            }
+
+            // 3) Isenção de Otimização de Bateria (p/ nunca interromper envio ou sincronização em 2º plano)
             if (!sPromptedBatteryOptThisProcess && !isBatteryOptimizationIgnored()) {
                 sPromptedBatteryOptThisProcess = true;
                 sLastBatteryPromptMs = System.currentTimeMillis();
                 requestIgnoreBatteryOptimizationInternal(false);
             }
-        }, 1600L);
+        }, delayMs);
     }
 
-    private void requestRuntimeNotificationPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT >= 33) {
-            try {
-                if (checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) {
-                    requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 1921);
-                }
-            } catch (Exception ignored) {}
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == 1921) {
+            scheduleStartupPermissionsCheck(500L);
         }
+    }
+
+    private boolean canInstallUnknownPackagesInternal() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                return getPackageManager().canRequestPackageInstalls();
+            } catch (Exception e) {
+                return true;
+            }
+        }
+        return true;
+    }
+
+    private void openUnknownAppSourcesSettingsScreen() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            runOnUiThread(() -> {
+                sWaitingUnknownSourcesSettingsReturn = true;
+                Toast.makeText(
+                    MainActivity.this,
+                    "Ative 'Permitir desta fonte' e volte para o aplicativo SAMU 192.",
+                    Toast.LENGTH_LONG
+                ).show();
+                try {
+                    Intent permIntent = new Intent(
+                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:" + getPackageName())
+                    );
+                    startActivity(permIntent);
+                } catch (Exception e1) {
+                    try {
+                        startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES));
+                    } catch (Exception e2) {
+                        try {
+                            startActivity(new Intent(Settings.ACTION_SECURITY_SETTINGS));
+                        } catch (Exception ignored) {}
+                    }
+                }
+            });
+        }
+    }
+
+    private void promptEnableUnknownAppSourcesDialog() {
+        runOnUiThread(() -> {
+            if (isFinishing() || canInstallUnknownPackagesInternal()) return;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && isDestroyed()) return;
+            if (unknownSourcesDialog != null && unknownSourcesDialog.isShowing()) return;
+            try {
+                unknownSourcesDialog = new AlertDialog.Builder(MainActivity.this)
+                    .setTitle("📲 Permitir Atualizações do SAMU 192")
+                    .setMessage(
+                        "Para facilitar as próximas atualizações automáticas direto por dentro do aplicativo, " +
+                        "ative a opção \"Permitir desta fonte\" (Instalar apps desconhecidos) na tela a seguir."
+                    )
+                    .setCancelable(false)
+                    .setPositiveButton("Habilitar Agora", (dialog, which) -> openUnknownAppSourcesSettingsScreen())
+                    .setNegativeButton("Depois", (dialog, which) -> scheduleStartupPermissionsCheck(500L))
+                    .create();
+                unknownSourcesDialog.show();
+            } catch (Exception e) {
+                openUnknownAppSourcesSettingsScreen();
+            }
+        });
     }
 
     private boolean isBatteryOptimizationIgnored() {
@@ -293,8 +385,18 @@ public class MainActivity extends Activity {
         sActiveInstance = this;
         sIsAppInForeground = true;
         SamuSyncForegroundService.onAppForegroundChanged(this, true);
+        if (sWaitingUnknownSourcesSettingsReturn) {
+            sWaitingUnknownSourcesSettingsReturn = false;
+            if (canInstallUnknownPackagesInternal() && (pendingApkInstallFile == null || !pendingApkInstallFile.exists())) {
+                Toast.makeText(
+                    MainActivity.this,
+                    "✅ Permissão para instalar atualizações futuras ativada!",
+                    Toast.LENGTH_SHORT
+                ).show();
+            }
+        }
         if (pendingApkInstallFile != null && pendingApkInstallFile.exists()) {
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || getPackageManager().canRequestPackageInstalls()) {
+            if (canInstallUnknownPackagesInternal()) {
                 File f = pendingApkInstallFile;
                 pendingApkInstallFile = null;
                 launchApkInstaller(f);
@@ -304,6 +406,7 @@ public class MainActivity extends Activity {
             webView.setNetworkAvailable(isDeviceNetworkConnected());
             webView.evaluateJavascript("window.__onAndroidAppResume && window.__onAndroidAppResume();", null);
         }
+        scheduleStartupPermissionsCheck(750L);
     }
 
     @Override
@@ -414,6 +517,8 @@ public class MainActivity extends Activity {
                 Uri contentUri = Uri.parse("content://" + PdfShareProvider.AUTHORITY + "/" + apkFile.getName());
                 Intent installIntent = new Intent(Intent.ACTION_VIEW);
                 installIntent.setDataAndType(contentUri, "application/vnd.android.package-archive");
+                installIntent.setClipData(ClipData.newRawUri("SAMU_192_Orlandia", contentUri));
+                installIntent.putExtra(Intent.EXTRA_NOT_UNKNOWN_SOURCE, true);
                 installIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
                 startActivity(installIntent);
             } catch (Exception e) {
@@ -495,6 +600,12 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        try {
+            if (unknownSourcesDialog != null && unknownSourcesDialog.isShowing()) {
+                unknownSourcesDialog.dismiss();
+            }
+        } catch (Exception ignored) {}
+        unknownSourcesDialog = null;
         if (sIsAppInForeground) {
             sIsAppInForeground = false;
             SamuSyncForegroundService.onAppForegroundChanged(this, false);
@@ -770,6 +881,16 @@ public class MainActivity extends Activity {
                     requestIgnoreBatteryOptimizationInternal(false);
                 }
             }
+        }
+
+        @JavascriptInterface
+        public boolean canInstallUnknownApps() {
+            return canInstallUnknownPackagesInternal();
+        }
+
+        @JavascriptInterface
+        public void requestInstallUnknownAppsPermission() {
+            openUnknownAppSourcesSettingsScreen();
         }
 
         @JavascriptInterface

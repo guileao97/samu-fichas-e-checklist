@@ -18,11 +18,13 @@ Arquitetura Oficial SAMU 192 – Orlândia-SP:
 import argparse
 import base64
 import datetime
+import hashlib
 import importlib.util
 import json
 import os
 import re
 import shutil
+import struct
 import sys
 import time
 import urllib.error
@@ -371,17 +373,171 @@ def load_local_builder_module():
     return mod
 
 
+_P25519 = (1 << 255) - 19
+_A24 = 121665
+
+
+def _x25519(scalar_bytes, u_bytes):
+    b_sc = bytearray(scalar_bytes[:32])
+    b_sc[0] &= 248
+    b_sc[31] &= 127
+    b_sc[31] |= 64
+    k = int.from_bytes(b_sc, "little")
+    u = int.from_bytes(u_bytes[:32], "little") & ((1 << 255) - 1)
+    x_1, x_2, z_2, x_3, z_3, swap = u, 1, 0, u, 1, 0
+    for t in range(254, -1, -1):
+        k_t = (k >> t) & 1
+        swap ^= k_t
+        if swap:
+            x_2, x_3 = x_3, x_2
+            z_2, z_3 = z_3, z_2
+        swap = k_t
+        a = (x_2 + z_2) % _P25519
+        aa = (a * a) % _P25519
+        b = (x_2 - z_2) % _P25519
+        bb = (b * b) % _P25519
+        e = (aa - bb) % _P25519
+        c = (x_3 + z_3) % _P25519
+        d = (x_3 - z_3) % _P25519
+        da = (d * a) % _P25519
+        cb = (c * b) % _P25519
+        x_3 = pow(da + cb, 2, _P25519)
+        z_3 = (x_1 * pow(da - cb, 2, _P25519)) % _P25519
+        x_2 = (aa * bb) % _P25519
+        z_2 = (e * (aa + _A24 * e)) % _P25519
+    if swap:
+        x_2, x_3 = x_3, x_2
+        z_2, z_3 = z_3, z_2
+    return ((x_2 * pow(z_2, _P25519 - 2, _P25519)) % _P25519).to_bytes(32, "little")
+
+
+def _rotl32(v, c):
+    return ((v << c) & 0xFFFFFFFF) | (v >> (32 - c))
+
+
+def _salsa20_quarter(y, a, b, c, d):
+    y[b] ^= _rotl32((y[a] + y[d]) & 0xFFFFFFFF, 7)
+    y[c] ^= _rotl32((y[b] + y[a]) & 0xFFFFFFFF, 9)
+    y[d] ^= _rotl32((y[c] + y[b]) & 0xFFFFFFFF, 13)
+    y[a] ^= _rotl32((y[d] + y[c]) & 0xFFFFFFFF, 18)
+
+
+def _salsa20_core(x_words):
+    y = list(x_words)
+    for _ in range(10):
+        _salsa20_quarter(y, 0, 4, 8, 12)
+        _salsa20_quarter(y, 5, 9, 13, 1)
+        _salsa20_quarter(y, 10, 14, 2, 6)
+        _salsa20_quarter(y, 15, 3, 7, 11)
+        _salsa20_quarter(y, 0, 1, 2, 3)
+        _salsa20_quarter(y, 5, 6, 7, 4)
+        _salsa20_quarter(y, 10, 11, 8, 9)
+        _salsa20_quarter(y, 15, 12, 13, 14)
+    return y
+
+
+def _hsalsa20(key32, in16):
+    c = struct.unpack("<4I", b"expand 32-byte k")
+    k = struct.unpack("<8I", key32)
+    n = struct.unpack("<4I", in16)
+    x = [c[0], k[0], k[1], k[2], k[3], c[1], n[0], n[1], n[2], n[3], c[2], k[4], k[5], k[6], k[7], c[3]]
+    y = _salsa20_core(x)
+    return struct.pack("<8I", y[0], y[5], y[10], y[15], y[6], y[7], y[8], y[9])
+
+
+def _salsa20_xor(key32, nonce8, data, initial_counter=0):
+    c = struct.unpack("<4I", b"expand 32-byte k")
+    k = struct.unpack("<8I", key32)
+    n = struct.unpack("<2I", nonce8)
+    out = bytearray(len(data))
+    counter = initial_counter
+    offset = 0
+    while offset < len(data):
+        x = [
+            c[0], k[0], k[1], k[2], k[3], c[1], n[0], n[1],
+            counter & 0xFFFFFFFF, (counter >> 32) & 0xFFFFFFFF, c[2], k[4], k[5], k[6], k[7], c[3]
+        ]
+        y = _salsa20_core(x)
+        block = struct.pack("<16I", *[(y[i] + x[i]) & 0xFFFFFFFF for i in range(16)])
+        chunk = data[offset:offset + 64]
+        for i, b_val in enumerate(chunk):
+            out[offset + i] = b_val ^ block[i]
+        offset += 64
+        counter += 1
+    return bytes(out)
+
+
+def _poly1305_mac(msg, key32):
+    r = int.from_bytes(key32[:16], "little") & 0x0FFFFFFC0FFFFFFC0FFFFFFC0FFFFFFF
+    s = int.from_bytes(key32[16:32], "little")
+    p = (1 << 130) - 5
+    acc = 0
+    for i in range(0, len(msg), 16):
+        n = int.from_bytes(msg[i:i + 16] + b"\x01", "little")
+        acc = ((acc + n) * r) % p
+    return ((acc + s) & ((1 << 128) - 1)).to_bytes(16, "little")
+
+
+def seal_github_actions_secret(public_key_b64, secret_text):
+    recipient_pk = base64.b64decode(public_key_b64)
+    eph_sk = os.urandom(32)
+    eph_pk = _x25519(eph_sk, (9).to_bytes(32, "little"))
+    shared = _x25519(eph_sk, recipient_pk)
+    box_key = _hsalsa20(shared, b"\x00" * 16)
+    nonce24 = hashlib.blake2b(eph_pk + recipient_pk, digest_size=24).digest()
+    sub2 = _hsalsa20(box_key, nonce24[:16])
+    block0 = _salsa20_xor(sub2, nonce24[16:24], b"\x00" * 64, 0)
+    raw = secret_text.encode("utf-8")
+    ct1 = bytes(a ^ b for a, b in zip(raw[:32], block0[32:64]))
+    ct2 = _salsa20_xor(sub2, nonce24[16:24], raw[32:], 1) if len(raw) > 32 else b""
+    ct = ct1 + ct2
+    return base64.b64encode(eph_pk + _poly1305_mac(ct, block0[:32]) + ct).decode("ascii")
+
+
+def sync_keystore_secret_to_github(token, ks_local_path):
+    """
+    Sincroniza automaticamente o certificado único samu_orlandia_release.jks como Secret criptografado
+    (SAMU_KEYSTORE_BASE64) no GitHub Actions, garantindo que compilação local e compilação na nuvem
+    SEMPRE gerem APKs com 100% a mesma assinatura digital (nunca pedindo p/ desinstalar o antigo!).
+    """
+    if not os.path.isfile(ks_local_path) or os.path.getsize(ks_local_path) < 100:
+        return False
+    try:
+        st_pk, pk_obj = gh_api("GET", f"/repos/{OWNER}/{REPO}/actions/secrets/public-key", token)
+        if st_pk != 200 or not pk_obj.get("key") or not pk_obj.get("key_id"):
+            return False
+        with open(ks_local_path, "rb") as kf:
+            ks_b64 = base64.b64encode(kf.read()).decode("ascii")
+        encrypted_val = seal_github_actions_secret(pk_obj["key"], ks_b64)
+        st_put, _ = gh_api("PUT", f"/repos/{OWNER}/{REPO}/actions/secrets/SAMU_KEYSTORE_BASE64", token, {
+            "encrypted_value": encrypted_val,
+            "key_id": pk_obj["key_id"]
+        })
+        if st_put in (201, 204):
+            print("🔐 Certificado oficial sincronizado nos Secrets do GitHub Actions (SAMU_KEYSTORE_BASE64)!")
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def ensure_local_keystore_ready(token):
     """
-    Garante que o certificado fixo samu_orlandia_release.jks exista APENAS localmente neste PC
-    (nunca sobe .jks para o GitHub público!). Se havia um .jks anterior no GitHub privado,
-    resgata-o localmente antes da limpeza do histórico para manter a mesma assinatura Android
-    nos celulares que já instalaram a versão anterior.
+    Garante que o certificado fixo samu_orlandia_release.jks exista localmente neste PC,
+    faz cópia de segurança permanente no perfil do usuário Windows e sincroniza com o
+    GitHub Actions Secret (SAMU_KEYSTORE_BASE64) sem nunca expor o .jks no repositório público.
     """
     ks_local = os.path.join(ROOT_DIR, "android-project", "samu_orlandia_release.jks")
+    user_backup_dir = os.path.join(os.path.expanduser("~"), ".samu192_orlandia_keystore")
+    ks_backup = os.path.join(user_backup_dir, "samu_orlandia_release.jks")
     ks_repo_path = "android-project/samu_orlandia_release.jks"
     st_ks, ks_meta = gh_api("GET", f"/repos/{OWNER}/{REPO}/contents/{ks_repo_path}?ref={BRANCH}", token)
     ks_was_on_github = (st_ks == 200)
+
+    if not os.path.isfile(ks_local) and os.path.isfile(ks_backup) and os.path.getsize(ks_backup) > 100:
+        os.makedirs(os.path.dirname(ks_local), exist_ok=True)
+        shutil.copy2(ks_backup, ks_local)
+        print("🔑 Certificado oficial restaurado automaticamente do backup seguro deste PC!")
 
     if not os.path.isfile(ks_local):
         if ks_was_on_github and isinstance(ks_meta, dict) and ks_meta.get("content"):
@@ -398,6 +554,15 @@ def ensure_local_keystore_ready(token):
                     bmod.ensure_keystore_exists()
             except Exception:
                 pass
+
+    if os.path.isfile(ks_local) and os.path.getsize(ks_local) > 100:
+        try:
+            os.makedirs(user_backup_dir, exist_ok=True)
+            if not os.path.isfile(ks_backup):
+                shutil.copy2(ks_local, ks_backup)
+        except Exception:
+            pass
+        sync_keystore_secret_to_github(token, ks_local)
 
     return ks_was_on_github
 

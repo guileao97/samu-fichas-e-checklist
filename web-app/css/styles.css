@@ -2186,7 +2186,7 @@ body.bg-sync-docked-draft .quick-draft-bar {
   margin-bottom: 6px;
 }
 
-/* ===================== BOTÃO WHATSAPP REGULAÇÃO MÉDICA ===================== */
+/* ===================== BOTÃO WHATSAPP REGULAÇÃO MÉDICA & SÓ ENVIAR AO DRIVE ===================== */
 .btn-whatsapp {
   background: linear-gradient(135deg, #128c7e 0%, #25d366 100%);
   color: #ffffff;
@@ -2195,6 +2195,17 @@ body.bg-sync-docked-draft .quick-draft-bar {
   box-shadow: 0 3px 10px rgba(18, 140, 126, 0.28);
 }
 .btn-whatsapp:active {
+  transform: scale(0.98);
+}
+
+.btn-drive-only {
+  background: linear-gradient(135deg, #0369a1 0%, #0284c7 100%);
+  color: #ffffff;
+  border: none;
+  font-weight: 800;
+  box-shadow: 0 3px 10px rgba(2, 132, 199, 0.28);
+}
+.btn-drive-only:active {
   transform: scale(0.98);
 }
 

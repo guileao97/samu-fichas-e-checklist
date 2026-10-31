@@ -385,14 +385,15 @@
 
   async function executeBackgroundRecordUploadJob(record, opts, queueText) {
     const label = getRecordDisplayLabel(record);
-    const wantPrint = !opts.skipAutoPrint && Boolean(
+    const forceSkipPrint = Boolean(opts.skipAutoPrint || record.skipAutoPrint);
+    const wantPrint = !forceSkipPrint && Boolean(
       record.pendingAutoPrint ||
       (window.SamuStorage.shouldAutoPrintRecord && window.SamuStorage.shouldAutoPrintRecord(record))
     );
-    const waitingNight = !wantPrint && isDaytimeChecklistWaitingNightPrint(record);
+    const waitingNight = !forceSkipPrint && !wantPrint && isDaytimeChecklistWaitingNightPrint(record);
     const printStagePendingLabel = wantPrint
       ? '🖨️ Impressora Base'
-      : (waitingNight ? '☀️ Aguarda Noturno' : '☁️ Arquivamento');
+      : (forceSkipPrint ? '🚫 Sem Imprimir' : (waitingNight ? '☀️ Aguarda Noturno' : '☁️ Arquivamento'));
 
     try {
       // Etapa 1: Preparação / Mesclagem de turno e geração do PDF 200 DPI em 2º plano
@@ -402,7 +403,9 @@
         title: `Preparando PDF • ${label}`,
         detail: wantPrint
           ? 'Gerando páginas oficiais em 200 DPI p/ Google Drive e Impressora da Base...'
-          : 'Gerando páginas oficiais em 200 DPI em segundo plano...',
+          : (forceSkipPrint
+            ? 'Gerando páginas oficiais em 200 DPI somente p/ Google Drive (sem imprimir)...'
+            : 'Gerando páginas oficiais em 200 DPI em segundo plano...'),
         percent: 16,
         smoothTo: 36,
         queueText,
@@ -438,14 +441,16 @@
 
       const generated = opts.preGeneratedPdf || await window.SamuPDF.generatePdfForRecord(record);
 
-      // Etapa 2: Upload ao Google Drive + Fila de Impressão Automática na Base SAMU
+      // Etapa 2: Upload ao Google Drive + Fila de Impressão Automática na Base SAMU (exceto quando "Só Enviar ao Drive")
       setBgSyncBarState({
         isWorking: true,
         icon: '☁️',
         title: `Enviando ao Google Drive • ${label}`,
         detail: wantPrint
           ? 'Transmitindo PDF p/ Google Drive e acionando Impressora da Base SAMU...'
-          : 'Transmitindo PDF oficial para o Google Drive da Central SAMU...',
+          : (forceSkipPrint
+            ? 'Transmitindo PDF oficial somente p/ o Google Drive (sem imprimir na Base)...'
+            : 'Transmitindo PDF oficial para o Google Drive da Central SAMU...'),
         percent: 44,
         smoothTo: 93,
         queueText,
@@ -457,7 +462,7 @@
       });
 
       const upRes = await window.SamuStorage.uploadRecordToDrive(record, generated.base64, {
-        skipAutoPrint: Boolean(opts.skipAutoPrint)
+        skipAutoPrint: forceSkipPrint
       });
 
       await refreshDraftCount();
@@ -477,14 +482,18 @@
       if (upRes && upRes.synced) {
         const doneTitle = upRes.printQueued
           ? `✅ Enviado ao Drive e Impressora da Base!`
-          : (waitingNight
-            ? `✅ Turno Diurno salvo no Google Drive!`
-            : `✅ PDF enviado ao Google Drive com sucesso!`);
+          : (forceSkipPrint
+            ? `✅ Enviado somente ao Google Drive (sem imprimir)!`
+            : (waitingNight
+              ? `✅ Turno Diurno salvo no Google Drive!`
+              : `✅ PDF enviado ao Google Drive com sucesso!`));
         const doneDetail = upRes.printQueued
           ? `${label} • Salvo no Drive e colocado na fila de impressão da Base SAMU.`
-          : (waitingNight
-            ? `${label} • Imprimirá automaticamente na Base quando o Noturno concluir.`
-            : `${label} • Arquivado com segurança no Google Drive.`);
+          : (forceSkipPrint
+            ? `${label} • Arquivado no Google Drive sem enviar para a impressora da Base.`
+            : (waitingNight
+              ? `${label} • Imprimirá automaticamente na Base quando o Noturno concluir.`
+              : `${label} • Arquivado com segurança no Google Drive.`));
 
         if (!moreInQueue) {
           setBgSyncBarState({
@@ -505,7 +514,7 @@
               {
                 label: upRes.printQueued
                   ? '🖨️ Impressora Base ✓'
-                  : (waitingNight ? '☀️ Aguarda Noturno' : '✅ Concluído'),
+                  : (forceSkipPrint ? '🚫 Sem Imprimir' : (waitingNight ? '☀️ Aguarda Noturno' : '✅ Concluído')),
                 state: 'done'
               }
             ]
@@ -515,9 +524,11 @@
         showToast(
           upRes.printQueued
             ? `✅ ${label} enviado ao Drive e colocado p/ imprimir na Base!`
-            : (waitingNight
-              ? `✅ ${label} salvo no Drive! (Imprimirá na Base após o Noturno)`
-              : `✅ ${label} enviado ao Google Drive com sucesso!`),
+            : (forceSkipPrint
+              ? `✅ ${label} enviado somente ao Google Drive (sem imprimir)!`
+              : (waitingNight
+                ? `✅ ${label} salvo no Drive! (Imprimirá na Base após o Noturno)`
+                : `✅ ${label} enviado ao Google Drive com sucesso!`)),
           {
             isSuccess: true,
             durationMs: 7000,
@@ -534,7 +545,9 @@
         const warnDetail = isOfflineReason
           ? (wantPrint
             ? 'Sem sinal agora: enviará ao Google Drive e imprimirá na Base automaticamente!'
-            : 'Sem sinal agora: enviará ao Google Drive automaticamente assim que conectar!')
+            : (forceSkipPrint
+              ? 'Sem sinal agora: enviará somente ao Google Drive (sem imprimir) quando conectar!'
+              : 'Sem sinal agora: enviará ao Google Drive automaticamente assim que conectar!'))
           : (upRes && upRes.error ? String(upRes.error) : 'Tentando reenviar automaticamente em segundo plano...');
 
         if (!moreInQueue) {
@@ -553,14 +566,16 @@
             stages: [
               { label: '📄 PDF Salvo ✓', state: 'done' },
               { label: '⏳ Fila Google Drive', state: 'queued' },
-              { label: wantPrint ? '⏳ Fila Base' : '🗄️ SQLite Seguro', state: 'queued' }
+              { label: wantPrint ? '⏳ Fila Base' : (forceSkipPrint ? '🚫 Sem Imprimir' : '🗄️ SQLite Seguro'), state: 'queued' }
             ]
           });
         }
 
         showToast(
           isOfflineReason
-            ? `⏳ Sem sinal agora: ${label} salvo na fila (enviará e imprimirá automaticamente)!`
+            ? (forceSkipPrint
+              ? `⏳ Sem sinal agora: ${label} salvo na fila (só Drive, sem imprimir)!`
+              : `⏳ Sem sinal agora: ${label} salvo na fila (enviará automaticamente)!`)
             : `⚠️ ${label} salvo na fila — tentando reenviar em 2º plano...`,
           {
             durationMs: 6500,
@@ -623,6 +638,7 @@
 
         if (!upRes.synced) {
           record.pendingAutoPrint = true;
+          delete record.skipAutoPrint;
           await window.SamuStorage.saveRecordLocal(record, { skipPatientUpsert: true });
           schedulePendingDriveRetry(6000);
           if (bgSendQueue.length === 0) {
@@ -648,6 +664,10 @@
       }
 
       await window.SamuStorage.enqueueRemotePrintJob(record, { trigger: 'manual' });
+      if (record.skipAutoPrint) {
+        delete record.skipAutoPrint;
+        await window.SamuStorage.saveRecordLocal(record, { skipPatientUpsert: true });
+      }
       await refreshSyncBadge();
       if (activeTab === 'historico' && !isUserTypingInInput()) renderHistoricoView();
       if (activeTab === 'admin' && !isUserTypingInInput()) renderAdminView(true);
@@ -2165,9 +2185,8 @@
         previewCurrentRecord.isDraft = false;
         previewCurrentRecord.syncStatus = 'pending';
       }
-      previewCurrentRecord.pendingAutoPrint = window.SamuStorage.shouldAutoPrintRecord
-        ? window.SamuStorage.shouldAutoPrintRecord(previewCurrentRecord)
-        : (previewCurrentRecord.type === 'ficha');
+      previewCurrentRecord.pendingAutoPrint = false;
+      previewCurrentRecord.skipAutoPrint = true;
       if (crewPushTimer) {
         clearTimeout(crewPushTimer);
         crewPushTimer = null;
@@ -2180,6 +2199,7 @@
         : (previewCurrentRecord.type === 'checklist_enfermagem' ? 'enfermagem' : 'ficha');
       enqueueBackgroundRecordSend(previewCurrentRecord, {
         kind: kindMap,
+        skipAutoPrint: true,
         preGeneratedPdf: kindMap === 'ficha' ? previewGeneratedPdf : null
       });
     });
@@ -6712,6 +6732,7 @@
         <button type="button" class="btn btn-secondary js-btn-save-draft" data-draft-kind="ficha">📌 Salvar Rascunho</button>
         <button type="button" class="btn btn-whatsapp js-btn-send-regulacao">📲 Cabeçalho p/ Regulação (WhatsApp)</button>
         <button type="button" class="btn btn-orange" id="btn-preview-ficha">👁️ Visualizar Ficha Oficial (PDF)</button>
+        <button type="button" class="btn btn-drive-only" id="btn-save-drive-noprint-ficha">☁️ Só Enviar ao Drive (Sem Imprimir)</button>
         <button type="button" class="btn btn-success" id="btn-save-send-ficha">💾 Salvar e Enviar PDF ao Google Drive</button>
       </div>
     `;
@@ -7783,8 +7804,8 @@
       await openPdfPreviewModal(tempRecord);
     });
 
-    // Salvar e Enviar PDF ao Google Drive (envia em 2º plano, já abre ficha limpa e coloca p/ imprimir na Base)
-    document.getElementById('btn-save-send-ficha').addEventListener('click', async () => {
+    // Salvar e Enviar PDF ao Google Drive (com ou sem impressão automática na Base, em 2º plano, já abrindo ficha limpa)
+    const submitFichaInBackground = async (skipAutoPrint) => {
       const patCheck = await handlePatientCadastroOnFichaSend(fichaState);
       if (!patCheck.proceed) {
         if (patCheck.action === 'cancel' && fichaStep !== 2) {
@@ -7795,8 +7816,10 @@
         return;
       }
 
-      const btn = document.getElementById('btn-save-send-ficha');
-      btn.disabled = true;
+      const btnSendAndPrint = document.getElementById('btn-save-send-ficha');
+      const btnDriveOnly = document.getElementById('btn-save-drive-noprint-ficha');
+      if (btnSendAndPrint) btnSendAndPrint.disabled = true;
+      if (btnDriveOnly) btnDriveOnly.disabled = true;
       try {
         const prevKmFinal = fichaState.kmFinal ? String(fichaState.kmFinal).trim() : '';
         if (prevKmFinal !== '') {
@@ -7809,9 +7832,15 @@
         record.isDraft = false;
         record.syncStatus = 'pending';
         record._patientCheckedOnSend = true;
-        record.pendingAutoPrint = window.SamuStorage.shouldAutoPrintRecord
-          ? window.SamuStorage.shouldAutoPrintRecord(record)
-          : true;
+        if (skipAutoPrint) {
+          record.pendingAutoPrint = false;
+          record.skipAutoPrint = true;
+        } else {
+          delete record.skipAutoPrint;
+          record.pendingAutoPrint = window.SamuStorage.shouldAutoPrintRecord
+            ? window.SamuStorage.shouldAutoPrintRecord(record)
+            : true;
+        }
 
         if (crewPushTimer) {
           clearTimeout(crewPushTimer);
@@ -7835,13 +7864,20 @@
         renderFichaView();
         window.scrollTo({ top: 0, behavior: 'smooth' });
 
-        // Gera o PDF 200 DPI, envia ao Google Drive e coloca na Impressora da Base em 2º plano sem abrir o PDF na tela
-        enqueueBackgroundRecordSend(record, { kind: 'ficha' });
+        // Gera o PDF 200 DPI e envia ao Google Drive em 2º plano sem abrir o PDF na tela
+        enqueueBackgroundRecordSend(record, { kind: 'ficha', skipAutoPrint: Boolean(skipAutoPrint) });
       } catch (err) {
         samuAlert('Erro ao salvar ficha: ' + err.message);
-        btn.disabled = false;
+        if (btnSendAndPrint) btnSendAndPrint.disabled = false;
+        if (btnDriveOnly) btnDriveOnly.disabled = false;
       }
-    });
+    };
+
+    document.getElementById('btn-save-send-ficha').addEventListener('click', () => submitFichaInBackground(false));
+    const btnDriveNoPrintFicha = document.getElementById('btn-save-drive-noprint-ficha');
+    if (btnDriveNoPrintFicha) {
+      btnDriveNoPrintFicha.addEventListener('click', () => submitFichaInBackground(true));
+    }
   }
 
   function buildFichaRecordObject(id, existing) {
@@ -8125,6 +8161,7 @@
       <div class="sticky-form-actions">
         <button type="button" class="btn btn-secondary js-btn-save-draft" data-draft-kind="condutor">📌 Salvar Rascunho</button>
         <button type="button" class="btn btn-orange" id="btn-preview-condutor">👁️ Visualizar Check List (PDF)</button>
+        <button type="button" class="btn btn-drive-only" id="btn-save-drive-noprint-condutor">☁️ Só Enviar ao Drive (Sem Imprimir)</button>
         <button type="button" class="btn btn-success" id="btn-save-send-condutor">💾 Salvar e Enviar PDF ao Google Drive</button>
       </div>
     `;
@@ -8468,7 +8505,7 @@
       await openPdfPreviewModal(buildCondRecord(editingCondutorId || uid('ckcond')));
     });
 
-    document.getElementById('btn-save-send-condutor').addEventListener('click', async () => {
+    const submitCondutorInBackground = async (skipAutoPrint) => {
       const checkVal = validateCondutorChecklist(d);
       if (!checkVal.valid) {
         condutorValidationActive = true;
@@ -8481,8 +8518,10 @@
         return;
       }
 
-      const btn = document.getElementById('btn-save-send-condutor');
-      btn.disabled = true;
+      const btnSendAndPrint = document.getElementById('btn-save-send-condutor');
+      const btnDriveOnly = document.getElementById('btn-save-drive-noprint-condutor');
+      if (btnSendAndPrint) btnSendAndPrint.disabled = true;
+      if (btnDriveOnly) btnDriveOnly.disabled = true;
       try {
         if (crewPushTimer) {
           clearTimeout(crewPushTimer);
@@ -8509,9 +8548,15 @@
         const record = buildCondRecord(recId, existing);
         record.isDraft = false;
         record.syncStatus = 'pending';
-        record.pendingAutoPrint = window.SamuStorage.shouldAutoPrintRecord
-          ? window.SamuStorage.shouldAutoPrintRecord(record)
-          : false;
+        if (skipAutoPrint) {
+          record.pendingAutoPrint = false;
+          record.skipAutoPrint = true;
+        } else {
+          delete record.skipAutoPrint;
+          record.pendingAutoPrint = window.SamuStorage.shouldAutoPrintRecord
+            ? window.SamuStorage.shouldAutoPrintRecord(record)
+            : false;
+        }
 
         await window.SamuStorage.saveRecordLocal(record);
         await window.SamuStorage.clearDraft(currentUser.username, 'checklist_condutor');
@@ -8528,12 +8573,19 @@
         renderCondutorView();
         window.scrollTo({ top: 0, behavior: 'smooth' });
 
-        enqueueBackgroundRecordSend(record, { kind: 'condutor', isOtherShiftEmpty });
+        enqueueBackgroundRecordSend(record, { kind: 'condutor', isOtherShiftEmpty, skipAutoPrint: Boolean(skipAutoPrint) });
       } catch (err) {
         samuAlert('Erro ao salvar Check List: ' + err.message);
-        btn.disabled = false;
+        if (btnSendAndPrint) btnSendAndPrint.disabled = false;
+        if (btnDriveOnly) btnDriveOnly.disabled = false;
       }
-    });
+    };
+
+    document.getElementById('btn-save-send-condutor').addEventListener('click', () => submitCondutorInBackground(false));
+    const btnDriveNoPrintCond = document.getElementById('btn-save-drive-noprint-condutor');
+    if (btnDriveNoPrintCond) {
+      btnDriveNoPrintCond.addEventListener('click', () => submitCondutorInBackground(true));
+    }
 
     const btnQuickEnCond = document.getElementById('btn-adm-quick-enable-cond');
     if (btnQuickEnCond) {
@@ -8731,6 +8783,7 @@
       <div class="sticky-form-actions">
         <button type="button" class="btn btn-secondary js-btn-save-draft" data-draft-kind="enfermagem">📌 Salvar Rascunho</button>
         <button type="button" class="btn btn-orange" id="btn-preview-enf">👁️ Visualizar Check List (PDF 2 Págs)</button>
+        <button type="button" class="btn btn-drive-only" id="btn-save-drive-noprint-enf">☁️ Só Enviar ao Drive (Sem Imprimir)</button>
         <button type="button" class="btn btn-success" id="btn-save-send-enf">💾 Salvar e Enviar PDF ao Google Drive</button>
       </div>
     `;
@@ -8977,7 +9030,7 @@
       await openPdfPreviewModal(buildEnfRecord(editingEnfermagemId || uid('ckenf')));
     });
 
-    document.getElementById('btn-save-send-enf').addEventListener('click', async () => {
+    const submitEnfermagemInBackground = async (skipAutoPrint) => {
       const checkVal = validateEnfermagemChecklist(d);
       if (!checkVal.valid) {
         enfermagemValidationActive = true;
@@ -8993,8 +9046,10 @@
         return;
       }
 
-      const btn = document.getElementById('btn-save-send-enf');
-      btn.disabled = true;
+      const btnSendAndPrint = document.getElementById('btn-save-send-enf');
+      const btnDriveOnly = document.getElementById('btn-save-drive-noprint-enf');
+      if (btnSendAndPrint) btnSendAndPrint.disabled = true;
+      if (btnDriveOnly) btnDriveOnly.disabled = true;
       try {
         if (crewPushTimer) {
           clearTimeout(crewPushTimer);
@@ -9011,9 +9066,15 @@
         const record = buildEnfRecord(recId, existing);
         record.isDraft = false;
         record.syncStatus = 'pending';
-        record.pendingAutoPrint = window.SamuStorage.shouldAutoPrintRecord
-          ? window.SamuStorage.shouldAutoPrintRecord(record)
-          : false;
+        if (skipAutoPrint) {
+          record.pendingAutoPrint = false;
+          record.skipAutoPrint = true;
+        } else {
+          delete record.skipAutoPrint;
+          record.pendingAutoPrint = window.SamuStorage.shouldAutoPrintRecord
+            ? window.SamuStorage.shouldAutoPrintRecord(record)
+            : false;
+        }
 
         await window.SamuStorage.saveRecordLocal(record);
         await window.SamuStorage.clearDraft(currentUser.username, 'checklist_enfermagem');
@@ -9027,12 +9088,19 @@
         renderEnfermagemView();
         window.scrollTo({ top: 0, behavior: 'smooth' });
 
-        enqueueBackgroundRecordSend(record, { kind: 'enfermagem', isOtherShiftEmpty });
+        enqueueBackgroundRecordSend(record, { kind: 'enfermagem', isOtherShiftEmpty, skipAutoPrint: Boolean(skipAutoPrint) });
       } catch (err) {
         samuAlert('Erro ao salvar Check List de Enfermagem: ' + err.message);
-        btn.disabled = false;
+        if (btnSendAndPrint) btnSendAndPrint.disabled = false;
+        if (btnDriveOnly) btnDriveOnly.disabled = false;
       }
-    });
+    };
+
+    document.getElementById('btn-save-send-enf').addEventListener('click', () => submitEnfermagemInBackground(false));
+    const btnDriveNoPrintEnf = document.getElementById('btn-save-drive-noprint-enf');
+    if (btnDriveNoPrintEnf) {
+      btnDriveNoPrintEnf.addEventListener('click', () => submitEnfermagemInBackground(true));
+    }
 
     const btnQuickEnEnf = document.getElementById('btn-adm-quick-enable-enf');
     if (btnQuickEnEnf) {
@@ -9209,7 +9277,7 @@
         const kindMap = rec.type === 'checklist_condutor'
           ? 'condutor'
           : (rec.type === 'checklist_enfermagem' ? 'enfermagem' : 'ficha');
-        enqueueBackgroundRecordSend(rec, { kind: kindMap });
+        enqueueBackgroundRecordSend(rec, { kind: kindMap, skipAutoPrint: Boolean(rec.skipAutoPrint) });
       });
     });
 
@@ -9408,6 +9476,8 @@
         printBadgeHtml = `<span class="type-badge" style="background:#fef3c7; color:#92400e;">⏳ Fila Impressora Base</span>`;
       } else if (printJob && printJob.status === 'error') {
         printBadgeHtml = `<span class="type-badge" style="background:#fee2e2; color:#991b1b;" title="${escapeHtml(printJob.errorMsg || 'Erro ao imprimir')}">⚠️ Erro Impressão Base</span>`;
+      } else if (rec.skipAutoPrint) {
+        printBadgeHtml = `<span class="type-badge" style="background:#e0f2fe; color:#0369a1;">☁️ Só Drive (Sem Imprimir)</span>`;
       }
     }
     const printBtnLabel = (printJob && printJob.status === 'printed') ? '🖨️ Reimprimir na Base' : '🖨️ Imprimir na Base';
@@ -10125,22 +10195,40 @@
           ${(() => {
             if (!window.AndroidBridge) return '';
             const batFree = window.SamuStorage.isBatteryOptimizationDisabled ? window.SamuStorage.isBatteryOptimizationDisabled() : true;
-            return `<span class="type-badge" style="${batFree ? 'background:#dcfce7; color:#14532d;' : 'background:#fef3c7; color:#92400e;'}">${batFree ? '🔋 2º Plano: Sem Restrição de Bateria' : '⚠️ Bateria: Toque abaixo p/ liberar 2º plano'}</span>`;
+            const unkOk = window.SamuStorage.canInstallUnknownApps ? window.SamuStorage.canInstallUnknownApps() : true;
+            return `
+              <span class="type-badge" style="${batFree ? 'background:#dcfce7; color:#14532d;' : 'background:#fef3c7; color:#92400e;'}">${batFree ? '🔋 2º Plano: Sem Restrição de Bateria' : '⚠️ Bateria: Toque abaixo p/ liberar 2º plano'}</span>
+              <span class="type-badge" style="${unkOk ? 'background:#dcfce7; color:#14532d;' : 'background:#fef3c7; color:#92400e;'}">${unkOk ? '📲 Auto-Update: Fontes Desconhecidas Liberado' : '⚠️ Auto-Update: Toque abaixo p/ liberar Fontes Desconhecidas'}</span>
+            `;
           })()}
         </div>
 
         ${(() => {
           if (!window.AndroidBridge) return '';
+          const unkOk = window.SamuStorage.canInstallUnknownApps ? window.SamuStorage.canInstallUnknownApps() : true;
           const batFree = window.SamuStorage.isBatteryOptimizationDisabled ? window.SamuStorage.isBatteryOptimizationDisabled() : true;
-          if (batFree) return '';
-          return `
-            <div style="background:#fffbeb; border:1.5px solid #f59e0b; border-radius:10px; padding:10px 12px; margin-bottom:12px; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
-              <div style="font-size:0.81rem; color:#78350f; font-weight:700;">
-                🔋 <strong>Garantir Envio Mesmo Fechando o APK:</strong> desative a otimização de bateria deste aparelho para o SAMU 192 nunca ser interrompido em segundo plano.
+          let banners = '';
+          if (!unkOk) {
+            banners += `
+              <div style="background:#eff6ff; border:1.5px solid #0284c7; border-radius:10px; padding:10px 12px; margin-bottom:10px; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+                <div style="font-size:0.81rem; color:#0c4a6e; font-weight:700;">
+                  📲 <strong>Facilitar Atualizações Futuras:</strong> habilite instalar de fontes desconhecidas por este app (<em>Permitir desta fonte</em>) para as próximas versões atualizarem direto com 1 toque.
+                </div>
+                <button type="button" class="btn btn-drive-only btn-sm" id="btn-adm-unknown-sources">📲 Habilitar Fontes Desconhecidas</button>
               </div>
-              <button type="button" class="btn btn-orange btn-sm" id="btn-adm-battery-opt">🔋 Tirar Otimização de Bateria</button>
-            </div>
-          `;
+            `;
+          }
+          if (!batFree) {
+            banners += `
+              <div style="background:#fffbeb; border:1.5px solid #f59e0b; border-radius:10px; padding:10px 12px; margin-bottom:12px; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+                <div style="font-size:0.81rem; color:#78350f; font-weight:700;">
+                  🔋 <strong>Garantir Envio Mesmo Fechando o APK:</strong> desative a otimização de bateria deste aparelho para o SAMU 192 nunca ser interrompido em segundo plano.
+                </div>
+                <button type="button" class="btn btn-orange btn-sm" id="btn-adm-battery-opt">🔋 Tirar Otimização de Bateria</button>
+              </div>
+            `;
+          }
+          return banners;
         })()}
 
         <div class="grid-3">
@@ -10435,6 +10523,13 @@
     if (btnBatteryOpt && window.SamuStorage.requestDisableBatteryOptimization) {
       btnBatteryOpt.addEventListener('click', () => {
         window.SamuStorage.requestDisableBatteryOptimization();
+      });
+    }
+
+    const btnUnknownSources = document.getElementById('btn-adm-unknown-sources');
+    if (btnUnknownSources && window.SamuStorage.requestInstallUnknownAppsPermission) {
+      btnUnknownSources.addEventListener('click', () => {
+        window.SamuStorage.requestInstallUnknownAppsPermission();
       });
     }
 

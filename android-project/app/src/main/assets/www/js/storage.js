@@ -4108,6 +4108,25 @@
     return false;
   }
 
+  function canInstallUnknownApps() {
+    try {
+      if (window.AndroidBridge && typeof window.AndroidBridge.canInstallUnknownApps === 'function') {
+        return Boolean(window.AndroidBridge.canInstallUnknownApps());
+      }
+    } catch (e) {}
+    return true;
+  }
+
+  function requestInstallUnknownAppsPermission() {
+    try {
+      if (window.AndroidBridge && typeof window.AndroidBridge.requestInstallUnknownAppsPermission === 'function') {
+        window.AndroidBridge.requestInstallUnknownAppsPermission();
+        return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+
   function setNativeBackgroundProgress(state) {
     try {
       if (window.AndroidBridge && typeof window.AndroidBridge.setBackgroundSyncProgress === 'function') {
@@ -4998,6 +5017,7 @@
     const clean = Object.assign({}, record);
     delete clean.pendingPdfBase64;
     delete clean.pendingAutoPrint;
+    delete clean.skipAutoPrint;
     delete clean.lastSyncError;
     if (typeof clean.summary === 'string' && clean.summary.length > 1500) {
       clean.summary = clean.summary.slice(0, 1497) + '...';
@@ -5010,11 +5030,15 @@
     const upOpts = (opts && typeof opts === 'object') ? opts : {};
     const settings = getSettings();
     const auth = resolveEffectiveSession(record);
-    const wantAutoPrint = !upOpts.skipAutoPrint && (Boolean(record && record.pendingAutoPrint) || shouldAutoPrintRecord(record));
+    const forceSkipPrint = Boolean(upOpts.skipAutoPrint || (record && record.skipAutoPrint));
+    const wantAutoPrint = !forceSkipPrint && (Boolean(record && record.pendingAutoPrint) || shouldAutoPrintRecord(record));
 
     if (!settings.scriptUrl || !auth) {
       record.syncStatus = 'pending';
-      if (wantAutoPrint) {
+      if (forceSkipPrint) {
+        record.pendingAutoPrint = false;
+        record.skipAutoPrint = true;
+      } else if (wantAutoPrint) {
         record.pendingAutoPrint = true;
       }
       await saveRecordLocal(record, { skipPatientUpsert: true });
@@ -5067,6 +5091,11 @@
         record.syncedAt = res.syncedAt || new Date().toISOString();
         delete record.pendingPdfBase64;
         delete record.pendingAutoPrint;
+        if (forceSkipPrint) {
+          record.skipAutoPrint = true;
+        } else {
+          delete record.skipAutoPrint;
+        }
         delete record.lastSyncError;
         await saveRecordLocal(record, { skipPatientUpsert: true });
 
@@ -5090,7 +5119,7 @@
           scheduleDeferredDirtySync(printQueued ? 4000 : 1200);
         }
 
-        return { synced: true, driveUrl: record.driveUrl, driveFileId: record.driveFileId, printQueued };
+        return { synced: true, driveUrl: record.driveUrl, driveFileId: record.driveFileId, printQueued, skippedAutoPrint: forceSkipPrint };
       } else {
         throw new Error((res && res.error) || 'Falha ao enviar ao Google Drive.');
       }
@@ -5100,7 +5129,10 @@
       record.syncStatus = 'pending';
       record.lastSyncError = errMsg;
       delete record.pendingPdfBase64;
-      if (wantAutoPrint) {
+      if (forceSkipPrint) {
+        record.pendingAutoPrint = false;
+        record.skipAutoPrint = true;
+      } else if (wantAutoPrint) {
         record.pendingAutoPrint = true;
       }
       await saveRecordLocal(record, { skipPatientUpsert: true });
@@ -5208,7 +5240,7 @@
           pdfB64 = generated.base64;
         } catch (eGen) {}
       }
-      const up = await uploadRecordToDrive(item, pdfB64);
+      const up = await uploadRecordToDrive(item, pdfB64, { skipAutoPrint: Boolean(item.skipAutoPrint) });
       if (up.synced) {
         uploadedCount++;
         lastUploadedRecord = item;
@@ -5664,6 +5696,8 @@
     ensureBatteryOptimizationDisabled,
     isBatteryOptimizationDisabled,
     requestDisableBatteryOptimization,
+    canInstallUnknownApps,
+    requestInstallUnknownAppsPermission,
     getLastKmFinal,
     setLastKmFinal,
     lookupCepOnline,
