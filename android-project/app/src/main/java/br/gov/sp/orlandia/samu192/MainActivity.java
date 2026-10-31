@@ -55,17 +55,29 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.Inet4Address;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.NetworkInterface;
 import java.net.Socket;
 import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import javax.net.ssl.SNIHostName;
+import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 
@@ -1084,6 +1096,103 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public void discoverLocalServer(final String reqId) {
+            SamuSyncForegroundService.HTTP_POOL.execute(() -> {
+                try {
+                    List<String> localIpv4s = new ArrayList<>();
+                    Enumeration<NetworkInterface> nets = NetworkInterface.getNetworkInterfaces();
+                    while (nets != null && nets.hasMoreElements()) {
+                        NetworkInterface nif = nets.nextElement();
+                        if (nif == null || !nif.isUp() || nif.isLoopback()) continue;
+                        String nName = nif.getName() != null ? nif.getName().toLowerCase(Locale.US) : "";
+                        if (nName.startsWith("rmnet") || nName.startsWith("ccmni") || nName.startsWith("tun") || nName.startsWith("ppp") || nName.startsWith("dummy")) {
+                            continue;
+                        }
+                        Enumeration<InetAddress> addrs = nif.getInetAddresses();
+                        while (addrs != null && addrs.hasMoreElements()) {
+                            InetAddress addr = addrs.nextElement();
+                            if (!(addr instanceof Inet4Address) || addr.isLoopbackAddress()) continue;
+                            String ip = addr.getHostAddress();
+                            if (ip == null) continue;
+                            if (ip.startsWith("192.168.") || ip.startsWith("10.") || ip.matches("^172\\.(1[6-9]|2\\d|3[0-1])\\..*")) {
+                                if (!localIpv4s.contains(ip)) {
+                                    localIpv4s.add(ip);
+                                }
+                            }
+                        }
+                    }
+
+                    if (localIpv4s.isEmpty()) {
+                        deliverHttpResult(reqId, true, "{\"ok\":false,\"reason\":\"no_wifi_lan\"}");
+                        return;
+                    }
+
+                    final AtomicReference<String> foundHealthJson = new AtomicReference<>(null);
+                    for (String selfIp : localIpv4s) {
+                        if (foundHealthJson.get() != null) break;
+                        int lastDot = selfIp.lastIndexOf('.');
+                        if (lastDot <= 0) continue;
+                        final String prefix = selfIp.substring(0, lastDot + 1);
+                        int selfHost = -1;
+                        try {
+                            selfHost = Integer.parseInt(selfIp.substring(lastDot + 1));
+                        } catch (Exception ignored) {}
+
+                        ExecutorService scanPool = Executors.newFixedThreadPool(42);
+                        for (int h = 1; h <= 254; h++) {
+                            if (h == selfHost) continue;
+                            final String candidateIp = prefix + h;
+                            scanPool.execute(() -> {
+                                if (foundHealthJson.get() != null) return;
+                                Socket s = new Socket();
+                                try {
+                                    s.connect(new InetSocketAddress(candidateIp, 18920), 210);
+                                    if (foundHealthJson.get() != null) return;
+                                    s.setSoTimeout(1200);
+                                    OutputStream os = s.getOutputStream();
+                                    String pingReq = "GET /api/ping HTTP/1.1\r\nHost: " + candidateIp + ":18920\r\nConnection: close\r\n\r\n";
+                                    os.write(pingReq.getBytes(StandardCharsets.US_ASCII));
+                                    os.flush();
+
+                                    String rawResp = readStreamUtf8(s.getInputStream());
+                                    int bodyIdx = rawResp.indexOf("\r\n\r\n");
+                                    String jsonBody = bodyIdx >= 0 ? rawResp.substring(bodyIdx + 4).trim() : rawResp.trim();
+                                    int braceStart = jsonBody.indexOf('{');
+                                    int braceEnd = jsonBody.lastIndexOf('}');
+                                    if (braceStart >= 0 && braceEnd > braceStart) {
+                                        jsonBody = jsonBody.substring(braceStart, braceEnd + 1);
+                                        JSONObject obj = new JSONObject(jsonBody);
+                                        if (obj.optBoolean("ok", false) && (obj.optInt("lanPort", 0) == 18920 || obj.has("sdCard") || obj.optString("service", "").contains("SAMU"))) {
+                                            obj.put("lanUrl", "http://" + candidateIp + ":18920");
+                                            foundHealthJson.compareAndSet(null, obj.toString());
+                                        }
+                                    }
+                                } catch (Exception ignored) {
+                                } finally {
+                                    try { s.close(); } catch (Exception ignored) {}
+                                }
+                            });
+                        }
+                        scanPool.shutdown();
+                        try {
+                            scanPool.awaitTermination(2200, TimeUnit.MILLISECONDS);
+                        } catch (InterruptedException ignored) {}
+                        scanPool.shutdownNow();
+                    }
+
+                    String winner = foundHealthJson.get();
+                    if (winner != null) {
+                        deliverHttpResult(reqId, true, winner);
+                    } else {
+                        deliverHttpResult(reqId, true, "{\"ok\":false,\"reason\":\"not_found_on_lan\"}");
+                    }
+                } catch (Exception e) {
+                    deliverHttpResult(reqId, true, "{\"ok\":false}");
+                }
+            });
+        }
+
+        @JavascriptInterface
         public void wsDisconnect() {
             closeNativeWebSocketInternal();
         }
@@ -1139,6 +1248,13 @@ public class MainActivity extends Activity {
                     if (secure) {
                         SSLSocketFactory sf = (SSLSocketFactory) SSLSocketFactory.getDefault();
                         SSLSocket ssl = (SSLSocket) sf.createSocket(tcp, host, port, true);
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && !host.matches("^\\d+\\.\\d+\\.\\d+\\.\\d+$")) {
+                            try {
+                                SSLParameters sslParams = ssl.getSSLParameters();
+                                sslParams.setServerNames(Collections.singletonList(new SNIHostName(host)));
+                                ssl.setSSLParameters(sslParams);
+                            } catch (Exception ignored) {}
+                        }
                         ssl.startHandshake();
                         sock = ssl;
                     } else {
@@ -1186,7 +1302,8 @@ public class MainActivity extends Activity {
                         else st = 0;
                     }
                     String hdrStr = hdrBuf.toString("UTF-8");
-                    if (!gotEnd || (!hdrStr.startsWith("HTTP/1.1 101") && !hdrStr.startsWith("HTTP/1.0 101"))) {
+                    String hdrUpper = hdrStr.toUpperCase(Locale.US);
+                    if (!gotEnd || (!hdrUpper.startsWith("HTTP/1.1 101") && !hdrUpper.startsWith("HTTP/1.0 101"))) {
                         throw new Exception("Handshake WS recusado");
                     }
 

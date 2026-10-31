@@ -2919,18 +2919,59 @@
     return String(val).trim() !== '';
   }
 
-  function hasMeaningfulFichaProgress(fichaData) {
+  function hasMeaningfulFichaProgress(fichaData, fieldTs) {
+    if (fieldTs && typeof fieldTs === 'object') {
+      const nonSlotKeys = Object.keys(fieldTs).filter(k => (
+        k !== 'enfermagemNome' && k !== 'enfermagemCoren' && k !== 'sigEnfermagem' && k !== 'enfermagemSlot1User' &&
+        k !== 'enfermagem2Nome' && k !== 'enfermagem2Coren' && k !== 'sigEnfermagem2' && k !== 'enfermagemSlot2User' &&
+        k !== 'condutorNome' && k !== 'condutorCpf' && k !== 'sigCondutor' && k !== 'condutorSlot1User' &&
+        k !== 'condutor2Nome' && k !== 'condutor2Cpf' && k !== 'sigCondutor2' && k !== 'condutorSlot2User'
+      ));
+      if (nonSlotKeys.length > 0) return true;
+    }
     if (!fichaData || typeof fichaData !== 'object') return false;
-    const checkKeys = [
-      'numOcorrencia', 'motivoQueixa', 'vitimaNome', 'vitimaCpf', 'vitimaTelefone', 'vitimaEndereco',
-      'svPa', 'svFc', 'svSpo2', 'svDxt', 'relatorioEnfermagem', 'procedimentosTexto',
-      'recebidoPorNome', 'sigHospital', 'sigPacienteRecusa'
+
+    const defaultHosp = String((getSettings().defaultHospital || 'HBSA')).trim().toUpperCase();
+    const customDestino = Boolean(fichaData.destino && String(fichaData.destino).trim().toUpperCase() !== defaultHosp);
+    const lastKm = String(getLastKmFinal() || '').trim();
+    const customKmIni = Boolean(fichaData.kmInicial && String(fichaData.kmInicial).trim() !== lastKm);
+    const customCidade = Boolean(fichaData.vitimaCidade && String(fichaData.vitimaCidade).trim() !== 'Orlândia');
+    const customCep = Boolean(fichaData.vitimaCep && String(fichaData.vitimaCep).trim() !== '14620-000');
+
+    if (
+      customDestino || customKmIni || customCidade || customCep ||
+      fichaData.haQueimaduras === 'SIM' ||
+      fichaData.localOutroCheck || fichaData.tipoOutroCheck || fichaData.situacaoOutroCheck || fichaData.procOutroCheck
+    ) {
+      return true;
+    }
+
+    const textKeys = [
+      'numOcorrencia', 'kmFinal', 'motivoSolicitacao', 'motivoQueixa', 'risco', 'localOutroTexto',
+      'ocorrenciaEndereco', 'ocorrenciaNumero', 'ocorrenciaReferencia', 'ocorrenciaContato',
+      'vitimaNome', 'vitimaIdade', 'vitimaDn', 'vitimaTelefone',
+      'vitimaEndereco', 'vitimaNumero', 'vitimaBairro', 'vitimaNaturalidade',
+      'vitimaPai', 'vitimaMae', 'vitimaCpf', 'vitimaRg', 'vitimaCns',
+      'tipoOutroTexto', 'situacaoOutroTexto', 'descricaoCena', 'queimadurasPorcentagem',
+      'viaAerea', 'respiracao', 'circulacao', 'consciente',
+      'pupilaDirTamanho', 'pupilaDirReativa', 'pupilaEsqTamanho', 'pupilaEsqReativa',
+      'svPa', 'svFc', 'svFr', 'svSat', 'svSpo2', 'svDextro', 'svDxt', 'svTemp',
+      'medicamentosOutro', 'alergiasOutro', 'alergias', 'procOutroTexto', 'procedimentosTexto', 'conduta',
+      'medicoRegulador', 'pertences', 'relatorioEnfermagem',
+      'termoNome', 'termoCpf', 'sigTermo', 'sigPacienteRecusa', 'obsHospital',
+      'recebidoPorNome', 'recebidoCorenCrm', 'sigRecebido', 'sigHospital'
     ];
-    if (checkKeys.some(k => String(fichaData[k] || '').trim() !== '')) return true;
-    if (Array.isArray(fichaData.tipoOcorrencia) && fichaData.tipoOcorrencia.length > 0) return true;
+    if (textKeys.some(k => String(fichaData[k] || '').trim() !== '')) return true;
+
+    const arrayKeys = [
+      'locaisOcorrencia', 'tiposAtendimento', 'tipoOcorrencia', 'situacoesLocal', 'burnZonesSelected',
+      'pele', 'antecedentes', 'medicamentosSelecionados', 'alergiasSelecionadas',
+      'procedimentos', 'termosSelecionados', 'setorRecomendado', 'setorAdmitido'
+    ];
+    if (arrayKeys.some(k => Array.isArray(fichaData[k]) && fichaData[k].length > 0)) return true;
+
     if (fichaData.horarios && typeof fichaData.horarios === 'object') {
-      const hKeys = ['horaChamado', 'saidaBase', 'chegadaLocal', 'saidaLocal', 'chegadaDestino', 'retornoBase'];
-      if (hKeys.some(hk => String(fichaData.horarios[hk] || '').trim() !== '')) return true;
+      if (Object.values(fichaData.horarios).some(v => String(v || '').trim() !== '')) return true;
     }
     return false;
   }
@@ -3135,7 +3176,7 @@
     let carryOverWs = null;
     if (prevInitiatorCrew && prevInitiatorCrew.crewId !== newCrewId) {
       const pWs = sharedMap[prevInitiatorCrew.crewId];
-      if (pWs && pWs.currentFicha && hasMeaningfulFichaProgress(pWs.currentFicha.data)) {
+      if (pWs && pWs.currentFicha && hasMeaningfulFichaProgress(pWs.currentFicha.data, pWs.currentFicha.fieldTs)) {
         carryOverWs = pWs;
       }
     }
@@ -3208,7 +3249,7 @@
     setCrewTeamsMap(crewsMap);
 
     const targetWs = ensureCrewWorkspaceShape(newCrewId, sharedMap[newCrewId]);
-    if (carryOverWs && (!targetWs.currentFicha || !hasMeaningfulFichaProgress(targetWs.currentFicha.data))) {
+    if (carryOverWs && (!targetWs.currentFicha || !hasMeaningfulFichaProgress(targetWs.currentFicha.data, targetWs.currentFicha.fieldTs))) {
       targetWs.currentFicha = JSON.parse(JSON.stringify(carryOverWs.currentFicha));
       targetWs.updatedAt = activeTs;
       sharedMap[newCrewId] = targetWs;
@@ -3332,9 +3373,9 @@
       };
       const sharedMap = getSharedFichasMap();
       const srcWs = sharedMap[cidTarget];
-      if (srcWs && srcWs.currentFicha && hasMeaningfulFichaProgress(srcWs.currentFicha.data)) {
+      if (srcWs && srcWs.currentFicha && hasMeaningfulFichaProgress(srcWs.currentFicha.data, srcWs.currentFicha.fieldTs)) {
         const dstWs = ensureCrewWorkspaceShape(duoId, sharedMap[duoId]);
-        if (!dstWs.currentFicha || !hasMeaningfulFichaProgress(dstWs.currentFicha.data)) {
+        if (!dstWs.currentFicha || !hasMeaningfulFichaProgress(dstWs.currentFicha.data, dstWs.currentFicha.fieldTs)) {
           dstWs.currentFicha = JSON.parse(JSON.stringify(srcWs.currentFicha));
           dstWs.updatedAt = duoTs;
           sharedMap[duoId] = dstWs;
@@ -4587,17 +4628,32 @@
     };
   }
 
-  function ingestDiscoveredServerEndpoint(obj, sourceLabel) {
+  function isValidTunnelCandidateUrl(u) {
+    const clean = normalizeServerBaseUrl(u);
+    if (!clean) return false;
+    if (/\/\/api\.trycloudflare\.com\b/i.test(clean)) return false;
+    return true;
+  }
+
+  function ingestDiscoveredServerEndpoint(obj, sourceLabel, skipAutoProbe) {
     if (!obj || typeof obj !== 'object') return false;
     const lan = normalizeServerBaseUrl(obj.lan_url || obj.lanUrl || (obj.lan_ip ? `http://${obj.lan_ip}:${obj.lan_port || 18920}` : ''));
-    const tun = normalizeServerBaseUrl(obj.tunnel_url || obj.tunnelUrl || '');
-    if (!lan && !tun) return false;
+    const rawTun = normalizeServerBaseUrl(obj.tunnel_url || obj.tunnelUrl || '');
+    const tun = isValidTunnelCandidateUrl(rawTun) ? rawTun : '';
 
     const cur = getStoredServerEndpoints();
-    const changed = (lan && lan !== cur.lanUrl) || (tun && tun !== cur.tunnelUrl);
+    const curTunClean = isValidTunnelCandidateUrl(cur.tunnelUrl) ? cur.tunnelUrl : '';
+    if (!lan && !tun) {
+      if (cur.tunnelUrl && !curTunClean) {
+        saveInternalJson(LS_SERVER_ENDPOINTS, Object.assign({}, cur, { tunnelUrl: '' }));
+      }
+      return false;
+    }
+
+    const changed = Boolean((lan && lan !== cur.lanUrl) || (tun && tun !== curTunClean) || (cur.tunnelUrl !== curTunClean));
     const next = {
       lanUrl: lan || cur.lanUrl || '',
-      tunnelUrl: tun || cur.tunnelUrl || '',
+      tunnelUrl: tun || curTunClean || '',
       wifiSsid: String(obj.wifi_ssid || obj.wifiSsid || cur.wifiSsid || ''),
       sdSummary: String(obj.sd_summary || obj.sdSummary || (obj.sdCard && obj.sdCard.summaryFormatted) || cur.sdSummary || ''),
       version: String(obj.version || cur.version || ''),
@@ -4605,8 +4661,17 @@
       updatedAt: String(obj.updated_at || obj.updatedAt || new Date().toISOString())
     };
     saveInternalJson(LS_SERVER_ENDPOINTS, next);
-    if (changed && !runtimeServerState.activeBaseUrl) {
+
+    if (!runtimeServerState.activeBaseUrl || changed) {
       runtimeServerState.lastProbeAtMs = 0;
+      if (runtimeServerState.activeMode === 'drive_fallback') {
+        runtimeServerState.activeMode = '';
+      }
+      if (!skipAutoProbe && (!runtimeServerState.activeBaseUrl || changed) && !runtimeServerState.ongoingResolve) {
+        setTimeout(() => {
+          resolveActiveServerBaseUrl({ forceProbe: true, allowDiscovery: false }).catch(() => {});
+        }, 15);
+      }
     }
     return changed;
   }
@@ -4626,7 +4691,8 @@
     targetWsUrl: '',
     usingNative: false,
     browserWs: null,
-    reconnectTimer: null
+    reconnectTimer: null,
+    keepAliveTimer: null
   };
 
   function onRealtimeSyncEvent(listener) {
@@ -4647,6 +4713,15 @@
 
   function isRealtimeWsConnected() {
     return Boolean(realtimeWsState.connected && runtimeServerState.activeBaseUrl);
+  }
+
+  function ensureRealtimeWsKeepAliveTimer() {
+    if (realtimeWsState.keepAliveTimer) return;
+    realtimeWsState.keepAliveTimer = setInterval(() => {
+      if (isRealtimeWsConnected()) {
+        sendRealtimeWsJson({ type: 'ping', ts: Date.now() });
+      }
+    }, 22000);
   }
 
   function buildRealtimeWsUrl(baseUrl) {
@@ -4674,7 +4749,7 @@
       if (runtimeServerState.activeBaseUrl && !realtimeWsState.connected && !realtimeWsState.connecting) {
         ensureRealtimeServerWebSocket(runtimeServerState.activeBaseUrl);
       }
-    }, 2500);
+    }, 1800);
   }
 
   function handleIncomingRealtimeWsMessage(rawText) {
@@ -4687,6 +4762,7 @@
     }
     if (!msg || typeof msg !== 'object') return;
     noteNetworkOnline();
+    if (msg.type === 'pong') return;
     if (msg.type === 'fichas_sync' || msg.type === 'welcome') {
       const evPayload = {
         type: msg.type,
@@ -4711,7 +4787,9 @@
       if (evType === 'open') {
         realtimeWsState.connected = true;
         realtimeWsState.connecting = false;
+        ensureRealtimeWsKeepAliveTimer();
         noteNetworkOnline();
+        notifyRealtimeSyncListeners({ type: 'ws_open', event: 'ws_open' });
       } else if (evType === 'message') {
         handleIncomingRealtimeWsMessage(String(payloadStr || ''));
       } else if (evType === 'close' || evType === 'error') {
@@ -4767,6 +4845,7 @@
     }
 
     disconnectRealtimeServerWebSocket();
+    ensureRealtimeWsKeepAliveTimer();
 
     const hasNativeWs = Boolean(
       typeof window !== 'undefined' &&
@@ -4806,7 +4885,9 @@
         if (realtimeWsState.browserWs !== ws) return;
         realtimeWsState.connected = true;
         realtimeWsState.connecting = false;
+        ensureRealtimeWsKeepAliveTimer();
         noteNetworkOnline();
+        notifyRealtimeSyncListeners({ type: 'ws_open', event: 'ws_open' });
       };
       ws.onmessage = (ev) => {
         if (realtimeWsState.browserWs !== ws) return;
@@ -4898,8 +4979,8 @@
     const shouldPush = Boolean(opts.pushChanges);
 
     let srvBase = runtimeServerState.activeBaseUrl;
-    if (!srvBase && runtimeServerState.activeMode !== 'drive_fallback') {
-      srvBase = await resolveActiveServerBaseUrl({ allowDiscovery: false });
+    if (!srvBase) {
+      srvBase = await resolveActiveServerBaseUrl({ allowDiscovery: true });
     }
 
     if (srvBase) {
@@ -4910,6 +4991,11 @@
           clientDb: buildCrewRealtimePatchObject()
         });
         if (sentWs) {
+          setGitHubMeta({
+            dirty: false,
+            lastSyncAt: new Date().toISOString(),
+            lastError: ''
+          });
           return {
             ok: true,
             backend: 'servidor_ws',
@@ -4937,6 +5023,13 @@
               mergeRemoteDatabaseIntoInternal(res.db);
               await purgeDeletedRecordsFromLocalDb();
               await syncAllCrewDraftsToLocalRecords();
+            }
+            if (shouldPush) {
+              setGitHubMeta({
+                dirty: false,
+                lastSyncAt: new Date().toISOString(),
+                lastError: ''
+              });
             }
             return {
               ok: true,
@@ -4983,6 +5076,13 @@
           await purgeDeletedRecordsFromLocalDb();
           await syncAllCrewDraftsToLocalRecords();
         }
+        if (shouldPush) {
+          setGitHubMeta({
+            dirty: false,
+            lastSyncAt: new Date().toISOString(),
+            lastError: ''
+          });
+        }
         return {
           ok: true,
           backend: 'google_drive_fast',
@@ -5010,8 +5110,9 @@
     const cleanBase = normalizeServerBaseUrl(baseUrl);
     if (!cleanBase) return null;
     const isLan = isPrivateLanUrl(cleanBase);
-    const connMs = timeoutMs || (isLan ? 1200 : 2600);
-    const readMs = Math.max(connMs + 500, isLan ? 1800 : 3500);
+    if (!isLan && !isValidTunnelCandidateUrl(cleanBase)) return null;
+    const connMs = timeoutMs || (isLan ? 1050 : 2500);
+    const readMs = Math.max(connMs + 450, isLan ? 1600 : 3300);
     const pingUrl = `${cleanBase}/api/ping?_=${Date.now()}`;
 
     try {
@@ -5040,7 +5141,7 @@
         }
       }
       if (res && res.ok && (res.service || res.sdCard || res.lanPort === 18920 || res.serverMode)) {
-        ingestDiscoveredServerEndpoint(res, isLan ? 'ping_lan' : 'ping_tunnel');
+        ingestDiscoveredServerEndpoint(res, isLan ? 'ping_lan' : 'ping_tunnel', true);
         return {
           ok: true,
           baseUrl: cleanBase,
@@ -5052,9 +5153,63 @@
     return null;
   }
 
+  let ongoingNativeLanScan = null;
+  async function discoverLocalServerOnWifiNative() {
+    if (
+      typeof window === 'undefined' ||
+      !window.AndroidBridge ||
+      typeof window.AndroidBridge.discoverLocalServer !== 'function'
+    ) {
+      return null;
+    }
+    if (ongoingNativeLanScan) {
+      try { return await ongoingNativeLanScan; } catch (e) { return null; }
+    }
+    ongoingNativeLanScan = new Promise((resolve) => {
+      const reqId = 'lan_' + (nativeReqCounter++) + '_' + Date.now();
+      let settled = false;
+      const finish = (val) => {
+        if (settled) return;
+        settled = true;
+        delete pendingNativeCalls[reqId];
+        resolve(val || null);
+      };
+      const timer = setTimeout(() => finish(null), 3200);
+      pendingNativeCalls[reqId] = {
+        resolve: (rawOrObj) => {
+          clearTimeout(timer);
+          try {
+            const parsed = (typeof rawOrObj === 'string') ? JSON.parse(rawOrObj) : rawOrObj;
+            if (parsed && parsed.ok && (parsed.lanUrl || parsed.lan_url || parsed.tunnelUrl || parsed.tunnel_url)) {
+              ingestDiscoveredServerEndpoint(parsed, 'wifi_lan_scan', true);
+              finish(parsed);
+              return;
+            }
+          } catch (e) {}
+          finish(null);
+        },
+        reject: () => {
+          clearTimeout(timer);
+          finish(null);
+        }
+      };
+      try {
+        window.AndroidBridge.discoverLocalServer(reqId);
+      } catch (eCall) {
+        clearTimeout(timer);
+        finish(null);
+      }
+    });
+    try {
+      return await ongoingNativeLanScan;
+    } finally {
+      ongoingNativeLanScan = null;
+    }
+  }
+
   async function discoverServerEndpointsFromGitHub(force) {
     const now = Date.now();
-    if (!force && (now - runtimeServerState.lastDiscoveryAtMs) < 25000) {
+    if (!force && (now - runtimeServerState.lastDiscoveryAtMs) < 12000) {
       return getStoredServerEndpoints();
     }
     runtimeServerState.lastDiscoveryAtMs = now;
@@ -5063,27 +5218,56 @@
     try {
       const av = getViaturaAvariasMap();
       if (av && av[SERVER_CENTRAL_AVARIA_KEY]) {
-        ingestDiscoveredServerEndpoint(av[SERVER_CENTRAL_AVARIA_KEY], 'avarias_cache');
+        ingestDiscoveredServerEndpoint(av[SERVER_CENTRAL_AVARIA_KEY], 'avarias_cache', true);
       }
     } catch (eAv) {}
 
-    // 2. Busca servidor_central.json publicado automaticamente pelo Galaxy A14
-    const rawCandidates = [
-      `https://raw.githubusercontent.com/guileao97/samu-logs-teste/main/servidor_central.json?_=${now}`,
-      `https://raw.githubusercontent.com/guileao97/samu-logs/main/servidor_central.json?_=${now}`
-    ];
-    for (let i = 0; i < rawCandidates.length; i++) {
-      try {
-        const meta = await genericHttpJson('GET', rawCandidates[i], {
-          'X-Samu-Connect-Timeout-Ms': '2500',
-          'X-Samu-Read-Timeout-Ms': '3500'
-        });
-        if (meta && (meta.lan_url || meta.tunnel_url || meta.lan_ip)) {
-          ingestDiscoveredServerEndpoint(meta, 'github_raw');
-          break;
-        }
-      } catch (eGh) {}
+    // 2. Auto-descoberta instantânea (~300ms) na sub-rede Wi-Fi local (porta 18920) sem precisar de internet nem token
+    try {
+      const lanFound = await discoverLocalServerOnWifiNative();
+      if (lanFound && lanFound.ok) {
+        return getStoredServerEndpoints();
+      }
+    } catch (eLan) {}
+
+    // 3. Se houver token GitHub configurado, consulta servidor_central.json
+    const settings = getSettings();
+    const ghToken = String((settings && settings.githubToken) || '').trim();
+    if (ghToken) {
+      const rawCandidates = [
+        `https://raw.githubusercontent.com/guileao97/samu-logs-teste/main/servidor_central.json?_=${now}`,
+        `https://raw.githubusercontent.com/guileao97/samu-logs/main/servidor_central.json?_=${now}`
+      ];
+      for (let i = 0; i < rawCandidates.length; i++) {
+        try {
+          const meta = await genericHttpJson('GET', rawCandidates[i], {
+            'Authorization': `Bearer ${ghToken}`,
+            'X-Samu-Connect-Timeout-Ms': '2200',
+            'X-Samu-Read-Timeout-Ms': '3000'
+          });
+          if (meta && (meta.lan_url || meta.tunnel_url || meta.lan_ip)) {
+            ingestDiscoveredServerEndpoint(meta, 'github_raw', true);
+            break;
+          }
+        } catch (eGh) {}
+      }
     }
+
+    // 4. Em celulares exclusivamente no 4G ainda sem tunnelUrl descoberto, puxa __samu_servidor_central__ publicado no Drive pelo Servidor Central
+    const curAfter = getStoredServerEndpoints();
+    const driveUrl = String((settings && settings.scriptUrl) || '').trim();
+    if (!curAfter.lanUrl && !curAfter.tunnelUrl && driveUrl && !isRecentlyConfirmedOffline()) {
+      try {
+        const drvRes = await apiPostSingleAttempt({
+          action: 'syncDatabase',
+          pushChanges: false
+        }, driveUrl);
+        if (drvRes && drvRes.ok && drvRes.db && typeof drvRes.db === 'object') {
+          mergeRemoteDatabaseIntoInternal(drvRes.db);
+        }
+      } catch (eDrvDisc) {}
+    }
+
     return getStoredServerEndpoints();
   }
 
@@ -5093,9 +5277,10 @@
     const forceProbe = Boolean(o.forceProbe);
 
     if (!forceProbe && runtimeServerState.activeBaseUrl && (now - runtimeServerState.lastProbeAtMs) < 25000) {
+      ensureRealtimeServerWebSocket(runtimeServerState.activeBaseUrl);
       return runtimeServerState.activeBaseUrl;
     }
-    if (!forceProbe && !runtimeServerState.activeBaseUrl && runtimeServerState.activeMode === 'drive_fallback' && (now - runtimeServerState.lastProbeAtMs) < 12000) {
+    if (!forceProbe && !runtimeServerState.activeBaseUrl && runtimeServerState.activeMode === 'drive_fallback' && (now - runtimeServerState.lastProbeAtMs) < 8000) {
       return '';
     }
     if (runtimeServerState.ongoingResolve) {
@@ -5107,7 +5292,7 @@
       const manualUrl = normalizeServerBaseUrl(o.overrideManualUrl !== undefined ? o.overrideManualUrl : settings.serverUrl);
 
       if (manualUrl) {
-        const hitManual = await probeSingleServerBaseUrl(manualUrl, isPrivateLanUrl(manualUrl) ? 1400 : 2800);
+        const hitManual = await probeSingleServerBaseUrl(manualUrl, isPrivateLanUrl(manualUrl) ? 1200 : 2600);
         if (hitManual && hitManual.ok) {
           runtimeServerState.activeBaseUrl = hitManual.baseUrl;
           runtimeServerState.activeMode = hitManual.mode;
@@ -5118,33 +5303,78 @@
         }
       }
 
+      try {
+        const av = getViaturaAvariasMap();
+        if (av && av[SERVER_CENTRAL_AVARIA_KEY]) {
+          ingestDiscoveredServerEndpoint(av[SERVER_CENTRAL_AVARIA_KEY], 'avarias_cache', true);
+        }
+      } catch (e) {}
       let stored = getStoredServerEndpoints();
-      if (!stored.lanUrl && !stored.tunnelUrl) {
-        try {
-          const av = getViaturaAvariasMap();
-          if (av && av[SERVER_CENTRAL_AVARIA_KEY]) {
-            ingestDiscoveredServerEndpoint(av[SERVER_CENTRAL_AVARIA_KEY], 'avarias_cache');
-            stored = getStoredServerEndpoints();
-          }
-        } catch (e) {}
-      }
 
       const tryStoredPair = async (ep) => {
-        if (ep.lanUrl && ep.lanUrl !== manualUrl) {
-          const hitLan = await probeSingleServerBaseUrl(ep.lanUrl, 1200);
-          if (hitLan && hitLan.ok) return hitLan;
+        const lanCand = (ep.lanUrl && ep.lanUrl !== manualUrl) ? ep.lanUrl : '';
+        const tunCand = (ep.tunnelUrl && ep.tunnelUrl !== manualUrl && isValidTunnelCandidateUrl(ep.tunnelUrl)) ? ep.tunnelUrl : '';
+        if (lanCand && !tunCand) {
+          return await probeSingleServerBaseUrl(lanCand, 950);
         }
-        if (ep.tunnelUrl && ep.tunnelUrl !== manualUrl) {
-          const hitTun = await probeSingleServerBaseUrl(ep.tunnelUrl, 2600);
-          if (hitTun && hitTun.ok) return hitTun;
+        if (!lanCand && tunCand) {
+          return await probeSingleServerBaseUrl(tunCand, 2500);
         }
-        return null;
+        if (!lanCand && !tunCand) return null;
+
+        // Sonda LAN Wi-Fi e Túnel 4G em paralelo: prefere LAN na hora se responder, ou assume o Túnel 4G sem esperar timeout da LAN
+        return await new Promise((resolvePair) => {
+          let resolved = false;
+          let lanDone = false;
+          let tunDone = false;
+          let tunHit = null;
+          let graceTimer = null;
+
+          const finishPair = (val) => {
+            if (resolved) return;
+            resolved = true;
+            if (graceTimer) clearTimeout(graceTimer);
+            resolvePair(val || null);
+          };
+
+          probeSingleServerBaseUrl(lanCand, 950).then((resLan) => {
+            lanDone = true;
+            if (resLan && resLan.ok) {
+              finishPair(resLan);
+            } else if (tunHit) {
+              finishPair(tunHit);
+            } else if (tunDone) {
+              finishPair(null);
+            }
+          }).catch(() => {
+            lanDone = true;
+            if (tunHit) finishPair(tunHit);
+            else if (tunDone) finishPair(null);
+          });
+
+          probeSingleServerBaseUrl(tunCand, 2500).then((resTun) => {
+            tunDone = true;
+            if (resTun && resTun.ok) {
+              tunHit = resTun;
+              if (lanDone) {
+                finishPair(resTun);
+              } else {
+                graceTimer = setTimeout(() => finishPair(resTun), 160);
+              }
+            } else if (lanDone) {
+              finishPair(null);
+            }
+          }).catch(() => {
+            tunDone = true;
+            if (lanDone) finishPair(null);
+          });
+        });
       };
 
       let winner = await tryStoredPair(stored);
       if (!winner && o.allowDiscovery !== false) {
-        const fresh = await discoverServerEndpointsFromGitHub(forceProbe);
-        if (fresh.lanUrl !== stored.lanUrl || fresh.tunnelUrl !== stored.tunnelUrl) {
+        const fresh = await discoverServerEndpointsFromGitHub(forceProbe || (!stored.lanUrl && !stored.tunnelUrl));
+        if (fresh.lanUrl !== stored.lanUrl || fresh.tunnelUrl !== stored.tunnelUrl || (!stored.lanUrl && fresh.lanUrl)) {
           winner = await tryStoredPair(fresh);
         }
       }
@@ -5169,6 +5399,22 @@
       return await runtimeServerState.ongoingResolve;
     } finally {
       runtimeServerState.ongoingResolve = null;
+    }
+  }
+
+  async function warmupRealtimeServer(force) {
+    if (isRecentlyConfirmedOffline() && !force) return '';
+    try {
+      const base = await resolveActiveServerBaseUrl({
+        forceProbe: Boolean(force),
+        allowDiscovery: true
+      });
+      if (base) {
+        ensureRealtimeServerWebSocket(base);
+      }
+      return base || '';
+    } catch (e) {
+      return '';
     }
   }
 
@@ -5895,10 +6141,14 @@
       return all;
     }
     const uname = user.username.toLowerCase();
+    const curCrew = getActiveCrewForUser(uname);
+    const curCrewId = (curCrew && curCrew.crewId) || '';
     return all.filter(rec => {
       const isCreator = String(rec.createdBy || '').toLowerCase() === uname;
-      const isCrewMate = rec.type === 'ficha' && Array.isArray(rec.crewMembers) &&
-        rec.crewMembers.some(m => String(m || '').toLowerCase() === uname);
+      const isCrewMate = rec.type === 'ficha' && (
+        (Array.isArray(rec.crewMembers) && rec.crewMembers.some(m => String(m || '').toLowerCase() === uname)) ||
+        (rec.syncStatus === 'draft' && curCrewId && rec.crewId === curCrewId)
+      );
       if (!isCreator && !isCrewMate) return false;
       if (user.role === 'condutor' && rec.type === 'checklist_enfermagem') return false;
       if (user.role === 'enfermagem' && rec.type === 'checklist_condutor') return false;
@@ -6786,6 +7036,7 @@
     onRealtimeSyncEvent,
     ensureRealtimeServerWebSocket,
     isRealtimeWsConnected,
+    warmupRealtimeServer,
     syncCrewRealtimeFast,
     getHospitalReceivers,
     upsertHospitalReceiver,

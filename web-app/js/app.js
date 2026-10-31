@@ -2430,6 +2430,11 @@
       window.SamuStorage.onRealtimeSyncEvent(async (ev) => {
         if (!currentUser) return;
         try {
+          if (ev && ev.type === 'ws_open') {
+            if (crewDirtySinceLastPush) flushCrewCloudPushNow();
+            refreshSyncBadge();
+            return;
+          }
           checkCrewResponseNotifications();
           checkAndShowPendingCrewInvite();
           await pullAndApplyCrewFichaChanges({ fromNetwork: true });
@@ -2441,9 +2446,9 @@
             applySharedDailyToEnfermagemState(enfermagemState, { replaceOtherShift: false });
             if (activeTab === 'enfermagem' && !isUserTypingInInput()) renderEnfermagemView();
           }
-          await refreshDraftCount();
           renderBottomNav();
-          await refreshSyncBadge();
+          refreshDraftCount().catch(() => {});
+          refreshSyncBadge().catch(() => {});
           if (ev && ev.requiresFullPull) {
             pullGitHubWheneverOnline();
           }
@@ -2496,12 +2501,18 @@
     let lastResumeCheckTs = 0;
     const checkOnResumeOrFocus = () => {
       const now = Date.now();
-      if (now - lastResumeCheckTs < 6000) return;
+      if (now - lastResumeCheckTs < 4000) return;
       lastResumeCheckTs = now;
+      if (window.SamuStorage.warmupRealtimeServer) {
+        window.SamuStorage.warmupRealtimeServer(false).catch(() => {});
+      }
       pullGitHubWheneverOnline();
       flushPendingDriveQueueSilently();
     };
     window.__onAndroidNetworkOnline = () => {
+      if (window.SamuStorage.warmupRealtimeServer) {
+        window.SamuStorage.warmupRealtimeServer(true).catch(() => {});
+      }
       refreshSyncBadge();
       pullGitHubWheneverOnline();
       triggerBackgroundSync(false);
@@ -2511,7 +2522,10 @@
       if (!document.hidden) checkOnResumeOrFocus();
     });
 
-    // Consulta inicial ao GitHub/Drive na abertura do APK e checagem periódica automática
+    // Auto-descoberta imediata do Servidor Central (Wi-Fi LAN / Túnel 4G WebSocket) + consulta inicial na abertura do APK
+    if (window.SamuStorage.warmupRealtimeServer) {
+      window.SamuStorage.warmupRealtimeServer(false).catch(() => {});
+    }
     pullGitHubWheneverOnline();
     setInterval(() => {
       if (!document.hidden) {
@@ -2536,22 +2550,19 @@
       const wsLive = Boolean(window.SamuStorage.isRealtimeWsConnected && window.SamuStorage.isRealtimeWsConnected());
       const isOp = window.SamuStorage.hasOperationalRole(currentUser);
       if (wsLive) {
-        // Com WebSocket ativo (< 50ms), faz apenas verificação leve de segurança a cada ~4.8s
-        if (crewTickCounter % 4 !== 0) return;
+        // Com WebSocket ativo (< 50ms), faz apenas verificação leve de segurança a cada ~6s
+        if (crewTickCounter % 5 !== 0) return;
       } else if (!isOp) {
-        if (crewTickCounter % 4 !== 0) return;
-      } else if (!activeCrew || activeTab !== 'ficha') {
-        // Sem equipe ativa ou fora da Ficha: checa a cada ~2.4s p/ detectar convites de plantão e bloqueio de Check List imediatamente!
-        if (crewTickCounter % 2 !== 0) return;
+        if (crewTickCounter % 3 !== 0) return;
       }
       try {
         await window.SamuStorage.syncCrewRealtimeFast({ pushChanges: false });
         checkCrewResponseNotifications();
         checkAndShowPendingCrewInvite();
         await pullAndApplyCrewFichaChanges({ fromNetwork: true });
-        await refreshDraftCount();
         renderBottomNav();
-        await refreshSyncBadge();
+        refreshDraftCount().catch(() => {});
+        refreshSyncBadge().catch(() => {});
       } catch (e) {}
     }, 1200);
 
@@ -2682,14 +2693,16 @@
     } else if (activeCrew && activeCrew.members && activeCrew.members.length >= 2) {
       const accLen = Array.isArray(activeCrew.acceptedMembers) ? activeCrew.acceptedMembers.length : activeCrew.members.length;
       const pendLen = Array.isArray(activeCrew.pendingMembers) ? activeCrew.pendingMembers.length : 0;
-      if (pendLen > 0) {
+      if (accLen >= 2) {
+        btn.classList.add('synced');
+        btn.classList.remove('pending');
+        txt.textContent = pendLen > 0
+          ? `⚡ Equipe (${accLen}/${activeCrew.members.length})`
+          : `👥 Equipe (${accLen})`;
+      } else {
         btn.classList.remove('synced');
         btn.classList.add('pending');
         txt.textContent = `⏳ Equipe (${accLen}/${activeCrew.members.length})`;
-      } else {
-        btn.classList.add('synced');
-        btn.classList.remove('pending');
-        txt.textContent = `👥 Equipe (${accLen})`;
       }
     } else {
       btn.classList.remove('synced');
@@ -2785,10 +2798,11 @@
     if (invModal) invModal.classList.add('hidden');
 
     if (accept) {
-      const updated = window.SamuStorage.respondToCrewInvite(inviteCrew.crewId, currentUser.username, true);
-      activeCrew = window.SamuStorage.getActiveCrewForUser(currentUser.username) || updated;
+      const res = window.SamuStorage.respondToCrewInvite(inviteCrew.crewId, currentUser.username, true);
+      activeCrew = window.SamuStorage.getActiveCrewForUser(currentUser.username) || (res && res.crew) || null;
       updateTopbarCrewButton();
 
+      let pushedViaDraft = false;
       if (activeCrew && fichaState) {
         const ws = window.SamuStorage.getCrewWorkspace(activeCrew.crewId);
         if (ws && ws.currentFicha && ws.currentFicha.data) {
@@ -2814,19 +2828,25 @@
         }
         applyCrewToFichaState(fichaState, activeCrew, true);
         persistFichaDraft({ immediate: true });
+        pushedViaDraft = true;
       }
-      await window.SamuStorage.syncAllCrewDraftsToLocalRecords();
-      await refreshDraftCount();
-      if (!isUserTypingInInput()) {
-        renderActiveView();
-      }
-      if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
+      if (!pushedViaDraft && navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
         window.SamuStorage.syncCrewRealtimeFast({ pushChanges: true })
           .then(() => refreshSyncBadge())
           .catch(() => {});
       }
+      if (!isUserTypingInInput()) {
+        renderActiveView();
+      }
+      window.SamuStorage.syncAllCrewDraftsToLocalRecords()
+        .then(() => refreshDraftCount())
+        .catch(() => {});
       const partnerNames = (activeCrew && activeCrew.teammates ? activeCrew.teammates : []).map(t => t.name).join(' + ');
-      showToast(`✅ Você entrou na Equipe do Plantão${partnerNames ? ` com ${partnerNames}` : ''}! Ficha e assinaturas sincronizadas.`, { isSuccess: true, durationMs: 5500 });
+      const stillPending = (activeCrew && activeCrew.pendingMembers ? activeCrew.pendingMembers : []).map(p => p.name).join(' + ');
+      showToast(
+        `✅ Você entrou na Equipe do Plantão${partnerNames ? ` com ${partnerNames}` : ''}! Sincronismo ao vivo já está ativo${stillPending ? ` (falta aceitar: ${stillPending})` : ''}.`,
+        { isSuccess: true, durationMs: 5500 }
+      );
     } else {
       window.SamuStorage.respondToCrewInvite(inviteCrew.crewId, currentUser.username, false);
       activeCrew = window.SamuStorage.getActiveCrewForUser(currentUser.username);
@@ -3017,15 +3037,13 @@
     crewPushInFlight = true;
     crewDirtySinceLastPush = false;
     crewPushQueuedImmediate = false;
+    let pushRes = null;
     try {
       if (window.SamuStorage.syncCrewRealtimeFast) {
-        await window.SamuStorage.syncCrewRealtimeFast({ pushChanges: true });
+        pushRes = await window.SamuStorage.syncCrewRealtimeFast({ pushChanges: true });
       } else {
-        await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true });
+        pushRes = await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true });
       }
-      await pullAndApplyCrewFichaChanges({ fromNetwork: true });
-      await refreshDraftCount();
-      await refreshSyncBadge();
     } catch (e) {
       crewDirtySinceLastPush = true;
     } finally {
@@ -3035,6 +3053,13 @@
         flushCrewCloudPushNow();
       }
     }
+    if (pushRes && pushRes.pulled) {
+      checkCrewResponseNotifications();
+      checkAndShowPendingCrewInvite();
+      pullAndApplyCrewFichaChanges({ fromNetwork: true }).catch(() => {});
+    }
+    refreshDraftCount().catch(() => {});
+    refreshSyncBadge().catch(() => {});
   }
 
   function flushCrewCloudPushNow() {
@@ -3043,7 +3068,7 @@
     if (!navigator.onLine || !window.SamuStorage.hasGitHubConfigured()) return;
     crewPushTimer = setTimeout(() => {
       runCrewCloudPushNow();
-    }, 30);
+    }, 8);
   }
 
   function scheduleCrewCloudPush(opts) {
@@ -3055,19 +3080,34 @@
     }
     const wsLive = Boolean(window.SamuStorage.isRealtimeWsConnected && window.SamuStorage.isRealtimeWsConnected());
     const srvSnap = window.SamuStorage.getServerStatusSnapshot ? window.SamuStorage.getServerStatusSnapshot() : null;
-    const burstMs = wsLive ? 140 : ((srvSnap && srvSnap.isConnected) ? 220 : 480);
-
+    const srvFast = Boolean(wsLive || (srvSnap && srvSnap.isConnected));
     const now = Date.now();
+
+    if (srvFast) {
+      const burstMs = wsLive ? 90 : 160;
+      if (!crewTypingBurstStartTs) crewTypingBurstStartTs = now;
+      const elapsed = now - crewTypingBurstStartTs;
+      if (elapsed >= burstMs) {
+        flushCrewCloudPushNow();
+        return;
+      }
+      clearTimeout(crewPushTimer);
+      crewPushTimer = setTimeout(() => {
+        runCrewCloudPushNow();
+      }, Math.max(35, burstMs - elapsed));
+      return;
+    }
+
+    // Em contingência Google Drive (sem Servidor Central na rede): evita travar no 1º caractere e envia imediatamente ao pausar 350ms ou trocar de campo/selecionar!
     if (!crewTypingBurstStartTs) crewTypingBurstStartTs = now;
-    const elapsed = now - crewTypingBurstStartTs;
-    if (elapsed >= burstMs) {
+    if ((now - crewTypingBurstStartTs) >= 1400) {
       flushCrewCloudPushNow();
       return;
     }
     clearTimeout(crewPushTimer);
     crewPushTimer = setTimeout(() => {
       runCrewCloudPushNow();
-    }, Math.max(55, burstMs - elapsed));
+    }, 350);
   }
 
   function applyFichaValuesToDomWithoutStealingFocus(activeEl) {
@@ -3124,11 +3164,52 @@
       const burns = Array.isArray(fichaState.burnZonesSelected) ? fichaState.burnZonesSelected : [];
       btn.classList.toggle('active', burns.includes(btn.dataset.burn));
     });
+    const btnDestHbsaLive = document.getElementById('btn-destino-hbsa');
+    const btnDestOutroLive = document.getElementById('btn-destino-outro');
+    if (btnDestHbsaLive || btnDestOutroLive) {
+      const defHosp = (window.SamuStorage.getSettings().defaultHospital || 'HBSA').trim() || 'HBSA';
+      const isDef = String(fichaState.destino || '').trim().toUpperCase() === defHosp.toUpperCase();
+      if (btnDestHbsaLive) btnDestHbsaLive.classList.toggle('selected', isDef);
+      if (btnDestOutroLive) btnDestOutroLive.classList.toggle('selected', !isDef);
+    }
+    container.querySelectorAll('.sig-preview-box[data-sig-target]').forEach(box => {
+      const sk = box.dataset.sigTarget;
+      const sigVal = (sk && fichaState[sk]) || '';
+      const curImg = box.querySelector('img');
+      if (sigVal) {
+        box.classList.add('signed');
+        if (!curImg || curImg.getAttribute('src') !== sigVal) {
+          box.innerHTML = `<img src="${sigVal}" alt="Assinatura" />`;
+          tintRenderedSignatureImages(box);
+        }
+      } else if (curImg) {
+        box.classList.remove('signed');
+        box.innerHTML = `<span>✍️ Assinar</span>`;
+      }
+    });
     if (openSelectBoxKey !== 'med' && document.getElementById('select-box-med')) {
       updateSelectBoxInPlace('med');
     }
     if (openSelectBoxKey !== 'alergia' && document.getElementById('select-box-alergia')) {
       updateSelectBoxInPlace('alergia');
+    }
+    const liveStatusEl = document.getElementById('crew-live-sync-status');
+    if (liveStatusEl && activeCrew && window.SamuStorage.getCrewWorkspace) {
+      const ws = window.SamuStorage.getCrewWorkspace(activeCrew.crewId);
+      const cf = ws && ws.currentFicha;
+      if (cf && cf.updatedByName && cf.updatedAt) {
+        const dt = new Date(cf.updatedAt);
+        const hhmm = !isNaN(dt.getTime())
+          ? (String(dt.getHours()).padStart(2, '0') + ':' + String(dt.getMinutes()).padStart(2, '0'))
+          : '';
+        const pendList = Array.isArray(activeCrew.pendingMembers) ? activeCrew.pendingMembers : [];
+        const accList = Array.isArray(activeCrew.acceptedMembers) ? activeCrew.acceptedMembers : [];
+        if (accList.length >= 2 && pendList.length > 0) {
+          liveStatusEl.textContent = `⚡ Sincronismo ao vivo ATIVO (${accList.map(a => a.name).join(' + ')}) • Última edição: ${cf.updatedByName}${hhmm ? ` às ${hhmm}` : ''} • ⏳ Falta aceitar: ${pendList.map(p => p.name).join(' + ')}`;
+        } else if (accList.length >= 2) {
+          liveStatusEl.textContent = `⚡ Tempo real ativo • Última edição: ${cf.updatedByName}${hhmm ? ` às ${hhmm}` : ''}`;
+        }
+      }
     }
   }
 
@@ -3443,61 +3524,63 @@
           confirmBtn.disabled = true;
           confirmBtn.textContent = '📨 Enviando convite...';
           try {
-            if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
-              try {
-                const pullFn = window.SamuStorage.syncCrewRealtimeFast || window.SamuStorage.syncInternalDbWithGitHub;
-                await pullFn({ pushChanges: false });
-              } catch (ePull) {}
-            }
-
             const memberUsernames = [currentUser.username].concat(Array.from(selectedSet));
             activeCrew = window.SamuStorage.setActiveCrewForUsers(memberUsernames, currentUser.username);
             seedCrewNotificationsBaseline();
             updateTopbarCrewButton();
 
+            let pushedViaDraft = false;
             // Mescla eventual ficha que já esteja em preenchimento e aplica sua assinatura imediatamente (as dos colegas entram assim que aceitarem!)
-            const ws = window.SamuStorage.getCrewWorkspace(activeCrew.crewId);
-            if (ws && ws.currentFicha && ws.currentFicha.data) {
-              const localHasProgress = hasMeaningfulFichaData(fichaState);
-              const localDoc = localHasProgress
-                ? {
-                    sessionId: currentCrewSessionId || ws.currentFicha.sessionId,
-                    recordId: editingFichaId || '',
-                    isLoadedRecord: currentCrewIsLoadedRecord,
-                    updatedAt: new Date().toISOString(),
-                    updatedBy: currentUser.username,
-                    updatedByName: currentUser.name,
-                    fieldTs: currentFichaFieldTs,
-                    data: fichaState
-                  }
-                : null;
-              const merged = window.SamuStorage.mergeSharedFichaDocs(localDoc, ws.currentFicha, ws.closedSessions);
-              if (merged && merged.data) {
-                fichaState = normalizeFichaData(merged.data);
-                editingFichaId = merged.recordId || null;
-                resetFichaSyncTracking(fichaState, merged.sessionId, merged.fieldTs, merged.isLoadedRecord);
+            if (fichaState) {
+              const ws = window.SamuStorage.getCrewWorkspace(activeCrew.crewId);
+              if (ws && ws.currentFicha && ws.currentFicha.data) {
+                const localHasProgress = hasMeaningfulFichaData(fichaState);
+                const localDoc = localHasProgress
+                  ? {
+                      sessionId: currentCrewSessionId || ws.currentFicha.sessionId,
+                      recordId: editingFichaId || '',
+                      isLoadedRecord: currentCrewIsLoadedRecord,
+                      updatedAt: new Date().toISOString(),
+                      updatedBy: currentUser.username,
+                      updatedByName: currentUser.name,
+                      fieldTs: currentFichaFieldTs,
+                      data: fichaState
+                    }
+                  : null;
+                const merged = window.SamuStorage.mergeSharedFichaDocs(localDoc, ws.currentFicha, ws.closedSessions);
+                if (merged && merged.data) {
+                  fichaState = normalizeFichaData(merged.data);
+                  editingFichaId = merged.recordId || null;
+                  resetFichaSyncTracking(fichaState, merged.sessionId, merged.fieldTs, merged.isLoadedRecord);
+                }
               }
-            }
 
-            applyCrewToFichaState(fichaState, activeCrew, true);
-            persistFichaDraft({ immediate: true });
-            await window.SamuStorage.syncAllCrewDraftsToLocalRecords();
-            await refreshDraftCount();
+              applyCrewToFichaState(fichaState, activeCrew, true);
+              persistFichaDraft({ immediate: true });
+              pushedViaDraft = true;
+            }
 
             modal.classList.add('hidden');
             renderActiveView();
 
-            if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
+            if (!pushedViaDraft && navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
               const pushFn = window.SamuStorage.syncCrewRealtimeFast || window.SamuStorage.syncInternalDbWithGitHub;
               pushFn({ pushChanges: true })
                 .then(() => refreshSyncBadge())
                 .catch(() => {});
             }
 
+            window.SamuStorage.syncAllCrewDraftsToLocalRecords()
+              .then(() => refreshDraftCount())
+              .catch(() => {});
+
             const pendingNames = (activeCrew.pendingMembers || []).map(t => t.name).join(' + ');
             const partnerNames = (activeCrew.teammates || []).map(t => t.name).join(' + ');
-            if (pendingNames) {
-              showToast(`📨 Convite enviado para ${pendingNames}! Vai aparecer na tela dele(s) para aceitar entrar na equipe.`, { isSuccess: true, durationMs: 6000 });
+            const accCount = (activeCrew.acceptedMembers || []).length;
+            if (pendingNames && accCount >= 2) {
+              showToast(`⚡ Sincronismo já ativo com ${partnerNames}! Convite enviado na hora para ${pendingNames}.`, { isSuccess: true, durationMs: 6000 });
+            } else if (pendingNames) {
+              showToast(`📨 Convite enviado na hora para ${pendingNames}! Você já pode ir preenchendo a ficha normalmente.`, { isSuccess: true, durationMs: 6000 });
             } else {
               showToast(`✅ Equipe confirmada com ${partnerNames}! Assinaturas preenchidas e ficha sincronizada.`, { isSuccess: true });
             }
@@ -5346,7 +5429,10 @@
     await refreshSyncBadge();
     checkAndShowPendingCrewInvite();
 
-    // Puxa instantaneamente (< 200ms) o status de Check Lists ativados/desativados e convites de equipe do plantão logo no login!
+    // Conecta WebSocket do Servidor Central (Wi-Fi LAN / Túnel 4G) e puxa instantaneamente status de Check Lists e convites de equipe!
+    if (window.SamuStorage.warmupRealtimeServer && !isRecentlyOfflinePassive()) {
+      window.SamuStorage.warmupRealtimeServer(false).catch(() => {});
+    }
     if (window.SamuStorage.syncCrewRealtimeFast && !isRecentlyOfflinePassive()) {
       window.SamuStorage.syncCrewRealtimeFast({ pushChanges: false })
         .then(async () => {
@@ -6166,7 +6252,7 @@
           editingFichaId = rec.id;
           fichaStep = 1;
           resetFichaSyncTracking(fichaState, 'sf_rec_' + rec.id, {}, true);
-          persistFichaDraft();
+          persistFichaDraft({ immediate: true });
           activeTab = 'ficha';
         } else if (rec.type === 'checklist_condutor') {
           condutorState = Object.assign(createEmptyCondutor(), rec.data || {});
@@ -7344,30 +7430,45 @@
       if (activeCrew && activeCrew.membersDetailed && activeCrew.membersDetailed.length >= 2) {
         const ws = window.SamuStorage.getCrewWorkspace(activeCrew.crewId);
         const cf = ws && ws.currentFicha;
+        const accList = Array.isArray(activeCrew.acceptedMembers) ? activeCrew.acceptedMembers : activeCrew.membersDetailed;
+        const accLen = accList.length;
+        const totalLen = activeCrew.membersDetailed.length;
         const pendList = Array.isArray(activeCrew.pendingMembers) ? activeCrew.pendingMembers : [];
-        let syncInfo = pendList.length > 0
-          ? `⏳ Aguardando aceite no APK de: ${pendList.map(p => p.name).join(' + ')}`
-          : '✅ Equipe confirmada • Digitação ao vivo e assinaturas sincronizadas';
-        if (pendList.length === 0 && cf && cf.updatedByName && cf.updatedAt) {
+        const isLiveActive = accLen >= 2;
+
+        let lastEditText = '';
+        if (cf && cf.updatedByName && cf.updatedAt) {
           const dt = new Date(cf.updatedAt);
           const hhmm = !isNaN(dt.getTime())
             ? (String(dt.getHours()).padStart(2, '0') + ':' + String(dt.getMinutes()).padStart(2, '0'))
             : '';
-          syncInfo = `⚡ Tempo real ativo • Última edição: ${cf.updatedByName}${hhmm ? ` às ${hhmm}` : ''}`;
+          lastEditText = ` • Última edição: ${cf.updatedByName}${hhmm ? ` às ${hhmm}` : ''}`;
         }
+
+        let syncInfo = '';
+        if (isLiveActive && pendList.length > 0) {
+          syncInfo = `⚡ Sincronismo ao vivo ATIVO (${accList.map(a => a.name).join(' + ')})${lastEditText} • ⏳ Falta aceitar: ${pendList.map(p => p.name).join(' + ')}`;
+        } else if (isLiveActive) {
+          syncInfo = lastEditText
+            ? `⚡ Tempo real ativo${lastEditText}`
+            : '⚡ Tempo real ativo • Digitação ao vivo e assinaturas sincronizadas';
+        } else {
+          syncInfo = `⏳ Aguardando aceite de: ${pendList.map(p => p.name).join(' + ')} • ⚡ Tudo que você digitar já fica salvo e sincroniza assim que entrarem!`;
+        }
+
         const membersChips = activeCrew.membersDetailed.map(m => {
           const ic = m.subRole === 'condutor' ? '🚑' : (m.subRole === 'enfermeiro' ? '👩‍⚕️' : '🩺');
-          const stSuffix = m.inviteStatus === 'pending' ? ' (⏳ aguardando)' : '';
+          const stSuffix = m.inviteStatus === 'pending' ? ' (⏳ falta aceitar)' : '';
           return `${ic} ${m.name}${stSuffix}`;
         }).join('  •  ');
         return `
           ${inviteBannerHtml}
-          <div class="crew-sync-bar" style="${pendList.length > 0 ? 'background:#fffbeb; border-color:#fcd34d;' : ''}">
+          <div class="crew-sync-bar" style="${!isLiveActive ? 'background:#fffbeb; border-color:#fcd34d;' : ''}">
             <div style="flex:1; min-width:0;">
-              <div style="font-size:0.81rem; font-weight:800; color:${pendList.length > 0 ? '#92400e' : '#14532d'};">
-                👥 Equipe do Plantão (${activeCrew.acceptedMembers ? activeCrew.acceptedMembers.length : activeCrew.membersDetailed.length}/${activeCrew.membersDetailed.length}): ${escapeHtml(membersChips)}
+              <div style="font-size:0.81rem; font-weight:800; color:${!isLiveActive ? '#92400e' : '#14532d'};">
+                ${isLiveActive ? '⚡ Equipe Sincronizada' : '👥 Equipe do Plantão'} (${accLen}/${totalLen}): ${escapeHtml(membersChips)}
               </div>
-              <div style="font-size:0.74rem; color:${pendList.length > 0 ? '#b45309' : '#166534'}; margin-top:2px;">
+              <div id="crew-live-sync-status" style="font-size:0.74rem; color:${!isLiveActive ? '#b45309' : '#166534'}; margin-top:2px;">
                 ${escapeHtml(syncInfo)}
               </div>
             </div>
@@ -7444,6 +7545,40 @@
     bindQuickDraftBarEvents(container);
     bindStepPillsHorizontalScroll(container);
     ensureOutsideSelectBoxCloseListener();
+
+    // Sincronismo imediato garantido toda vez que o profissional sair/trocar de caixa de texto (focusout), pressionar Enter/Tab ou alterar qualquer seleção (change)
+    if (!container.__fichaDelegatedInstantSyncBound) {
+      container.__fichaDelegatedInstantSyncBound = true;
+      container.addEventListener('focusout', (e) => {
+        if (activeTab !== 'ficha') return;
+        const t = e && e.target;
+        if (!t || !t.tagName) return;
+        const tag = t.tagName;
+        if ((tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') && crewDirtySinceLastPush) {
+          flushCrewCloudPushNow();
+        }
+      });
+      container.addEventListener('change', (e) => {
+        if (activeTab !== 'ficha') return;
+        const t = e && e.target;
+        if (!t || !t.tagName) return;
+        const tag = t.tagName;
+        if (tag === 'SELECT' || tag === 'INPUT' || tag === 'TEXTAREA') {
+          if (crewDirtySinceLastPush) {
+            flushCrewCloudPushNow();
+          }
+        }
+      });
+      container.addEventListener('keydown', (e) => {
+        if (activeTab !== 'ficha' || !e) return;
+        const t = e.target;
+        if (!t || !t.tagName) return;
+        const isJumpKey = e.key === 'Tab' || (e.key === 'Enter' && t.tagName !== 'TEXTAREA');
+        if (isJumpKey && crewDirtySinceLastPush) {
+          flushCrewCloudPushNow();
+        }
+      });
+    }
 
     container.querySelectorAll('.step-pill').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -7540,7 +7675,7 @@
       }
       if (activeCrew) {
         window.SamuStorage.closeCrewCurrentSession(activeCrew.crewId, currentCrewSessionId, 'reset', editingFichaId || '', prevKmFinal, false);
-        scheduleCrewCloudPush();
+        scheduleCrewCloudPush({ immediate: true });
       }
       editingFichaId = null;
       manualShowSecondEnf = false;
@@ -7560,7 +7695,7 @@
           fichaState.kmInicial = lk;
           const kmInp = document.getElementById('inp-km-inicial');
           if (kmInp) kmInp.value = lk;
-          persistFichaDraft();
+          persistFichaDraft({ immediate: true });
           showToast(`KM Inicial preenchido com ${lk}!`);
         }
       });
@@ -7741,7 +7876,7 @@
             const saved = window.SamuStorage.saveEditedPatientInInternalDb(digits, payload);
             cpfAutoFilledFromSaved = digits;
             fichaState._cpfAutoFilled = digits;
-            persistFichaDraft();
+            persistFichaDraft({ immediate: true });
             refreshCpfManageSlot();
             showToast(`✅ Dados pessoais de "${saved.vitimaNome}" salvos no CPF e sincronizados!`);
           } catch (err) {
@@ -7779,21 +7914,28 @@
         }
       });
       el.addEventListener('change', () => {
-        if (el.tagName === 'SELECT' || el.type === 'date' || el.type === 'time' || crewDirtySinceLastPush) {
+        if (el.tagName === 'SELECT' || el.type === 'date' || el.type === 'time' || el.type === 'checkbox' || el.type === 'radio' || crewDirtySinceLastPush) {
           flushCrewCloudPushNow();
         }
       });
     };
 
-    const persistTypedFieldWithJumpCheck = (fieldKey) => {
+    const persistTypedFieldWithJumpCheck = (fieldKey, forceImmediate) => {
       const switchedBox = Boolean(lastTypedFichaFieldId && lastTypedFichaFieldId !== fieldKey);
       lastTypedFichaFieldId = fieldKey;
-      persistFichaDraft(switchedBox ? { immediate: true } : undefined);
+      persistFichaDraft((switchedBox || forceImmediate) ? { immediate: true } : undefined);
     };
 
     // Inputs simples
     container.querySelectorAll('[data-f]').forEach(inp => {
       const fieldKey = 'f:' + inp.dataset.f;
+      const isDiscreteControl = Boolean(
+        inp.tagName === 'SELECT' ||
+        inp.type === 'date' ||
+        inp.type === 'time' ||
+        inp.type === 'checkbox' ||
+        inp.type === 'radio'
+      );
       bindFieldJumpInstantSync(inp, fieldKey);
       if (inp.dataset.f === 'vitimaTelefone' || inp.dataset.f === 'ocorrenciaContato') {
         inp.addEventListener('blur', () => {
@@ -7820,7 +7962,7 @@
           }
         });
       }
-      inp.addEventListener('input', () => {
+      const handleSimpleFieldMutation = (forceImm) => {
         const key = inp.dataset.f;
         let val = inp.value;
 
@@ -7829,7 +7971,7 @@
           val = formatTempCelsius(val, prevVal, false);
           inp.value = val;
           fichaState.svTemp = val;
-          persistTypedFieldWithJumpCheck(fieldKey);
+          persistTypedFieldWithJumpCheck(fieldKey, forceImm);
           return;
         }
 
@@ -7840,7 +7982,7 @@
           if (key === 'vitimaTelefone') {
             refreshVictimPhoneKindBadge(val);
           }
-          persistTypedFieldWithJumpCheck(fieldKey);
+          persistTypedFieldWithJumpCheck(fieldKey, forceImm);
           return;
         }
 
@@ -7853,7 +7995,7 @@
           if (curDigits.length === 8 && curDigits !== prevDigits) {
             executeCepLookup(false);
           }
-          persistTypedFieldWithJumpCheck(fieldKey);
+          persistTypedFieldWithJumpCheck(fieldKey, forceImm);
           return;
         }
 
@@ -7881,7 +8023,7 @@
               executeCpfLookup(false);
             }
           }
-          persistTypedFieldWithJumpCheck(fieldKey);
+          persistTypedFieldWithJumpCheck(fieldKey, forceImm);
           return;
         }
 
@@ -7919,8 +8061,13 @@
             if (ageEl) ageEl.value = fichaState.vitimaIdade;
           }
         }
-        persistTypedFieldWithJumpCheck(fieldKey);
-      });
+        persistTypedFieldWithJumpCheck(fieldKey, forceImm);
+      };
+
+      inp.addEventListener('input', () => handleSimpleFieldMutation(isDiscreteControl));
+      if (isDiscreteControl) {
+        inp.addEventListener('change', () => handleSimpleFieldMutation(true));
+      }
     });
 
     // Caixa composta de PA (Pressão Arterial): [ 120 ] x [ 80 ] -> salva "120 x 80"
@@ -8221,7 +8368,11 @@
       bindFieldJumpInstantSync(inp, fieldKey);
       inp.addEventListener('input', () => {
         fichaState.horarios[inp.dataset.horario] = inp.value;
-        persistTypedFieldWithJumpCheck(fieldKey);
+        persistTypedFieldWithJumpCheck(fieldKey, false);
+      });
+      inp.addEventListener('change', () => {
+        fichaState.horarios[inp.dataset.horario] = inp.value;
+        persistTypedFieldWithJumpCheck(fieldKey, true);
       });
     });
     container.querySelectorAll('[data-now]').forEach(btn => {
@@ -8346,7 +8497,7 @@
         const defHosp = (window.SamuStorage.getSettings().defaultHospital || 'HBSA').trim() || 'HBSA';
         if (String(fichaState.destino || '').trim().toUpperCase() === defHosp.toUpperCase()) {
           fichaState.destino = '';
-          persistFichaDraft();
+          persistFichaDraft({ immediate: true });
           if (inpFichaDestino) inpFichaDestino.value = '';
         }
         if (btnDestHbsa) btnDestHbsa.classList.remove('selected');
@@ -8384,7 +8535,7 @@
         activeCrew = currentUser ? window.SamuStorage.getActiveCrewForUser(currentUser.username) : null;
         if (activeCrew) {
           applyCrewToFichaState(fichaState, activeCrew, true);
-          persistFichaDraft();
+          persistFichaDraft({ immediate: true });
           renderFichaView();
           showToast('✅ Nomes, COREN e assinaturas da equipe reaplicados!');
         }
@@ -8398,7 +8549,7 @@
         if (currentUser) {
           fichaState.enfermagemNome = currentUser.name || fichaState.enfermagemNome;
           fichaState.enfermagemCoren = currentUser.coren || currentUser.councilId || '';
-          persistFichaDraft();
+          persistFichaDraft({ immediate: true });
           renderFichaView();
           showToast('✅ Nome e COREN preenchidos pelo seu login!');
         }
@@ -8412,6 +8563,7 @@
         const val = String(inpMedicoReg.value || '').trim();
         if (val.length >= 3 && window.SamuStorage.upsertMedicoRegulador) {
           window.SamuStorage.upsertMedicoRegulador({ nome: val });
+          persistFichaDraft({ immediate: true });
           renderFichaView();
         }
       });
@@ -8426,7 +8578,7 @@
           return;
         }
         window.SamuStorage.upsertMedicoRegulador({ nome });
-        persistFichaDraft();
+        persistFichaDraft({ immediate: true });
         renderFichaView();
         showToast(`✅ Médico Regulador salvo para selecionar com 1 toque nas próximas fichas!`);
       });
@@ -8580,6 +8732,7 @@
         await window.SamuStorage.saveRecordLocal(record, { skipPatientUpsert: true });
         if (activeCrew) {
           window.SamuStorage.closeCrewCurrentSession(activeCrew.crewId, currentCrewSessionId, 'submitted', recId, prevKmFinal, false);
+          flushCrewCloudPushNow();
         }
         await window.SamuStorage.clearDraft(currentUser.username, 'ficha');
 
@@ -8618,6 +8771,9 @@
     const crewObj = (currentUser && window.SamuStorage.hasOperationalRole(currentUser))
       ? window.SamuStorage.getActiveCrewForUser(currentUser.username)
       : null;
+    const acceptedNames = (crewObj && Array.isArray(crewObj.acceptedMembers) && crewObj.acceptedMembers.length > 0)
+      ? crewObj.acceptedMembers.map(m => m.username)
+      : null;
 
     return {
       id,
@@ -8628,9 +8784,11 @@
       createdByName: (existing && existing.createdByName) ? existing.createdByName : currentUser.name,
       createdByRole: (existing && existing.createdByRole) ? existing.createdByRole : currentUser.role,
       crewId: (crewObj && crewObj.crewId) || (existing && existing.crewId) || '',
-      crewMembers: (crewObj && Array.isArray(crewObj.members))
-        ? crewObj.members.slice()
-        : ((existing && Array.isArray(existing.crewMembers)) ? existing.crewMembers : [currentUser.username]),
+      crewMembers: acceptedNames
+        ? acceptedNames
+        : ((crewObj && Array.isArray(crewObj.members))
+          ? crewObj.members.slice()
+          : ((existing && Array.isArray(existing.crewMembers)) ? existing.crewMembers : [currentUser.username])),
       patientName: d.vitimaNome || 'Paciente não identificado',
       patientCpf: d.vitimaCpf || '',
       risk: d.risco || '',
@@ -10067,7 +10225,7 @@
           editingFichaId = rec.id;
           fichaStep = 1;
           resetFichaSyncTracking(fichaState, 'sf_rec_' + rec.id, {}, true);
-          persistFichaDraft();
+          persistFichaDraft({ immediate: true });
           activeTab = 'ficha';
         } else if (rec.type === 'checklist_condutor') {
           condutorState = Object.assign(createEmptyCondutor(), rec.data || {});
