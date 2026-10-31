@@ -535,6 +535,49 @@
     return clean;
   }
 
+  function normPersonNameForMatch(s) {
+    return String(s || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function findUserCpfByUsernameOrName(username, fullName) {
+    const uname = String(username || '').trim().toLowerCase();
+    const normName = normPersonNameForMatch(fullName);
+    if (!uname && !normName) return '';
+
+    const extractFormattedCpf = (u) => {
+      if (!u || !u.cpf) return '';
+      const digits = String(u.cpf).replace(/\D+/g, '');
+      if (digits.length === 11) return formatCpf(digits);
+      return String(u.cpf).trim();
+    };
+
+    const users = getLocalUsers();
+    const sess = getSession();
+    const pool = sess ? users.concat([sess]) : users;
+
+    if (normName) {
+      const byExactName = pool.find(u => normPersonNameForMatch(u && u.name) === normName && extractFormattedCpf(u));
+      if (byExactName) return extractFormattedCpf(byExactName);
+    }
+
+    if (uname) {
+      const byUser = pool.find(u => String((u && u.username) || '').toLowerCase() === uname && extractFormattedCpf(u));
+      if (byUser) {
+        const uNorm = normPersonNameForMatch(byUser.name);
+        if (!normName || uNorm === normName || (normName.length >= 4 && (uNorm.includes(normName) || normName.includes(uNorm)))) {
+          return extractFormattedCpf(byUser);
+        }
+      }
+    }
+
+    return '';
+  }
+
   function upsertLocalUser(userObj, skipDirty) {
     const users = getLocalUsers();
     const uname = String((userObj && userObj.username) || '').trim().toLowerCase();
@@ -1573,6 +1616,17 @@
         ? await compressSignatureDataUrlForShare(d.sigAbastecimento, uname)
         : (prev.sigAbastecimento || '');
 
+      const diurnoUserEff = isDiurno ? uname : String(prev.diurnoUsername || d.diurnoUsername || '');
+      const noturnoUserEff = !isDiurno ? uname : String(prev.noturnoUsername || d.noturnoUsername || '');
+      const condDiurnoNameEff = isDiurno ? String(d.condutorDiurno || '') : String(d.condutorDiurno || prev.condutorDiurno || '');
+      const condNoturnoNameEff = !isDiurno ? String(d.condutorNoturno || '') : String(d.condutorNoturno || prev.condutorNoturno || '');
+      const condDiurnoCpfEff = isDiurno
+        ? String(d.condutorDiurnoCpf || findUserCpfByUsernameOrName(diurnoUserEff, condDiurnoNameEff) || '')
+        : String(d.condutorDiurnoCpf || prev.condutorDiurnoCpf || findUserCpfByUsernameOrName(diurnoUserEff, condDiurnoNameEff) || '');
+      const condNoturnoCpfEff = !isDiurno
+        ? String(d.condutorNoturnoCpf || findUserCpfByUsernameOrName(noturnoUserEff, condNoturnoNameEff) || '')
+        : String(d.condutorNoturnoCpf || prev.condutorNoturnoCpf || findUserCpfByUsernameOrName(noturnoUserEff, condNoturnoNameEff) || '');
+
       const nextEntry = {
         key: slotKey,
         slotKey,
@@ -1581,10 +1635,12 @@
         date: String(d.data),
         viaturaId: String(d.viaturaId || 'master_29'),
         outraPlaca: String(d.outraPlaca || ''),
-        diurnoUsername: isDiurno ? uname : String(prev.diurnoUsername || ''),
-        noturnoUsername: !isDiurno ? uname : String(prev.noturnoUsername || ''),
-        condutorDiurno: isDiurno ? String(d.condutorDiurno || '') : String(d.condutorDiurno || prev.condutorDiurno || ''),
-        condutorNoturno: !isDiurno ? String(d.condutorNoturno || '') : String(d.condutorNoturno || prev.condutorNoturno || ''),
+        diurnoUsername: diurnoUserEff,
+        noturnoUsername: noturnoUserEff,
+        condutorDiurno: condDiurnoNameEff,
+        condutorNoturno: condNoturnoNameEff,
+        condutorDiurnoCpf: condDiurnoCpfEff,
+        condutorNoturnoCpf: condNoturnoCpfEff,
         itensDiurno: (isDiurno || (d.itensDiurno && Object.keys(d.itensDiurno).length > 0))
           ? Object.assign({}, prev.itensDiurno || {}, d.itensDiurno || {})
           : (prev.itensDiurno || {}),
@@ -2487,6 +2543,7 @@
         role: uObj.role,
         subRole,
         roleLabel: getUserRoleLabel(uObj),
+        cpf: uObj.cpf || '',
         coren: uObj.role === 'enfermagem' ? (uObj.coren || uObj.councilId || '') : '',
         savedSignature: getSavedSignature(uObj.username) || uObj.savedSignature || ''
       };
@@ -4507,35 +4564,155 @@
     return resp.json();
   }
 
+  function httpGetJsonWithTimeout(url, timeoutMs) {
+    const ms = timeoutMs || 4500;
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          reject(new Error('Tempo esgotado na consulta de CEP.'));
+        }
+      }, ms);
+      httpGetJson(url).then(
+        (res) => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            resolve(res);
+          }
+        },
+        (err) => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            reject(err);
+          }
+        }
+      );
+    });
+  }
+
+  function parseCepApiPayload(obj, cep8) {
+    if (!obj || typeof obj !== 'object') return null;
+    if (obj.erro === true || obj.erro === 'true' || obj.ok === false) return null;
+    if (obj.errors || (typeof obj.status === 'number' && obj.status >= 400) || obj.code === 'not_found' || obj.type === 'service_error') return null;
+
+    const trimStr = (v) => String(v || '').trim();
+    const awesomeStreet = (obj.address_type || obj.address_name)
+      ? `${trimStr(obj.address_type)} ${trimStr(obj.address_name)}`.trim()
+      : '';
+    const endereco = trimStr(obj.logradouro || obj.street || obj.address || awesomeStreet);
+    const bairro = trimStr(obj.bairro || obj.neighborhood || obj.district);
+    const cidade = trimStr(obj.localidade || obj.city);
+    const uf = trimStr(obj.uf || obj.state);
+    const complemento = trimStr(obj.complemento || obj.complement);
+
+    if (!cidade && !endereco && !bairro) return null;
+    return {
+      cep: `${cep8.slice(0, 5)}-${cep8.slice(5)}`,
+      endereco,
+      bairro,
+      cidade,
+      uf,
+      complemento
+    };
+  }
+
+  function lookupCepFromLocalPatients(cep8) {
+    if (!cep8 || cep8.length !== 8 || cep8.endsWith('000')) return null;
+    try {
+      const map = getInternalPatientsMap();
+      const entries = Object.values(map || {});
+      let best = null;
+      for (const p of entries) {
+        if (!p) continue;
+        const pCep = String(p.vitimaCep || '').replace(/\D+/g, '');
+        if (pCep !== cep8) continue;
+        const bairro = String(p.vitimaBairro || '').trim();
+        const endereco = String(p.vitimaEndereco || '').trim();
+        const cidade = String(p.vitimaCidade || '').trim();
+        if (bairro || endereco) {
+          best = {
+            cep: `${cep8.slice(0, 5)}-${cep8.slice(5)}`,
+            endereco,
+            bairro,
+            cidade: cidade || 'Orlândia',
+            uf: 'SP',
+            complemento: ''
+          };
+          if (bairro && endereco) return best;
+        }
+      }
+      return best;
+    } catch (e) {
+      return null;
+    }
+  }
+
   async function lookupCepOnline(rawCep) {
     const cep = String(rawCep || '').replace(/\D+/g, '');
     if (cep.length !== 8) throw new Error('CEP deve ter 8 dígitos.');
-    if (!navigator.onLine) throw new Error('Sem conexão Wi-Fi/4G para buscar o CEP.');
+
+    const localMatch = lookupCepFromLocalPatients(cep);
+    if (!navigator.onLine) {
+      if (localMatch) return localMatch;
+      throw new Error('Sem conexão Wi-Fi/4G para buscar o CEP.');
+    }
+
+    const merged = {
+      cep: `${cep.slice(0, 5)}-${cep.slice(5)}`,
+      endereco: '',
+      bairro: '',
+      cidade: '',
+      uf: '',
+      complemento: ''
+    };
+    let foundAny = false;
+
+    const absorb = (parsed) => {
+      if (!parsed) return;
+      foundAny = true;
+      if (!merged.endereco && parsed.endereco) merged.endereco = parsed.endereco;
+      if (!merged.bairro && parsed.bairro) merged.bairro = parsed.bairro;
+      if (!merged.cidade && parsed.cidade) merged.cidade = parsed.cidade;
+      if (!merged.uf && parsed.uf) merged.uf = parsed.uf;
+      if (!merged.complemento && parsed.complemento) merged.complemento = parsed.complemento;
+    };
 
     try {
-      const via = await httpGetJson(`https://viacep.com.br/ws/${cep}/json/`);
-      if (via && !via.erro) {
-        return {
-          cep: via.cep || `${cep.slice(0, 5)}-${cep.slice(5)}`,
-          endereco: via.logradouro || '',
-          bairro: via.bairro || '',
-          cidade: via.localidade || '',
-          uf: via.uf || '',
-          complemento: via.complemento || ''
-        };
+      const via = await httpGetJsonWithTimeout(`https://viacep.com.br/ws/${cep}/json/`, 3800);
+      absorb(parseCepApiPayload(via, cep));
+      if (merged.cidade && merged.endereco && merged.bairro) {
+        return merged;
       }
     } catch (e1) {}
 
-    const br = await httpGetJson(`https://brasilapi.com.br/api/cep/v1/${cep}`);
-    if (br && (br.street || br.city)) {
-      return {
-        cep: `${cep.slice(0, 5)}-${cep.slice(5)}`,
-        endereco: br.street || '',
-        bairro: br.neighborhood || '',
-        cidade: br.city || '',
-        uf: br.state || '',
-        complemento: ''
-      };
+    // Enriquecimento multi-provedor quando ViaCEP falha ou devolve bairro/rua em branco
+    const fallbackUrls = [
+      `https://brasilapi.com.br/api/cep/v2/${cep}`,
+      `https://cep.awesomeapi.com.br/json/${cep}`,
+      `https://opencep.com/v1/${cep}`,
+      `https://cdn.apicep.com/file/apicep/${cep.slice(0, 5)}-${cep.slice(5)}.json`,
+      `https://brasilapi.com.br/api/cep/v1/${cep}`
+    ];
+
+    const settled = await Promise.allSettled(
+      fallbackUrls.map(u => httpGetJsonWithTimeout(u, 4500))
+    );
+    for (const item of settled) {
+      if (item.status === 'fulfilled' && item.value) {
+        absorb(parseCepApiPayload(item.value, cep));
+        if (merged.cidade && merged.endereco && merged.bairro) break;
+      }
+    }
+
+    if (localMatch) {
+      absorb(localMatch);
+    }
+
+    if (foundAny && (merged.cidade || merged.endereco || merged.bairro)) {
+      return merged;
     }
     throw new Error('CEP não encontrado.');
   }
@@ -4658,6 +4835,7 @@
     getUserRoleIcon,
     getLocalUsers,
     setLocalUsers,
+    findUserCpfByUsernameOrName,
     upsertLocalUser,
     deleteLocalUser,
     getPendingUsers,

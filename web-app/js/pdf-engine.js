@@ -170,6 +170,20 @@
     ctx.restore();
   }
 
+  function formatDriverCpfLine(explicitCpf, slotUsername, driverFullName) {
+    let raw = String(explicitCpf || '').trim();
+    if (!raw && (slotUsername || driverFullName) && window.SamuStorage && window.SamuStorage.findUserCpfByUsernameOrName) {
+      raw = String(window.SamuStorage.findUserCpfByUsernameOrName(slotUsername, driverFullName) || '').trim();
+    }
+    if (!raw) return '';
+    const digits = raw.replace(/\D+/g, '');
+    if (digits.length === 11) {
+      return `CPF: ${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6, 9)}-${digits.slice(9, 11)}`;
+    }
+    const cleaned = raw.replace(/^cpf\s*[:.-]?\s*/i, '').trim();
+    return cleaned ? `CPF: ${cleaned}` : '';
+  }
+
   /* ==========================================================================
    * 1. RENDERIZADOR OFICIAL: FICHA DE ATENDIMENTO USB (2 PÁGINAS A4 RETRATO)
    * ========================================================================== */
@@ -622,7 +636,7 @@
       { label: 'FR', val: d.svFr },
       { label: 'SAT', val: d.svSat },
       { label: 'DEXTRO', val: d.svDextro },
-      { label: 'TEMP.', val: d.svTemp }
+      { label: 'TEMP.', val: String(d.svTemp || '').replace('.', ',') }
     ];
     for (let i = 0; i < 6; i++) {
       const sx = M + svStart + i * svW;
@@ -1029,11 +1043,17 @@
       }
     }
 
-    // Coluna Condutor Socorrista SAMU (suporta 1 Condutor ou 2 Condutores no plantão)
+    // Coluna Condutor Socorrista SAMU (suporta 1 Condutor ou 2 Condutores no plantão, com CPF abaixo do nome)
     const condBodyTop = y2 + 38;
     const condBodyBottom = y2 + footH;
     const condColW = fc[4] - fc[3];
     const condCenterX = M + (fc[3] + fc[4]) / 2;
+    const cond1CpfLine = (d.condutorNome || d.condutorCpf)
+      ? formatDriverCpfLine(d.condutorCpf, d.condutorSlot1User, d.condutorNome)
+      : '';
+    const cond2CpfLine = (d.condutor2Nome || d.condutor2Cpf)
+      ? formatDriverCpfLine(d.condutor2Cpf, d.condutorSlot2User, d.condutor2Nome)
+      : '';
     const hasCond2 = Boolean(
       String(d.condutor2Nome || '').trim() ||
       sigCond2Img
@@ -1048,26 +1068,35 @@
       g2.stroke();
 
       if (sigCondImg) {
-        drawSignatureFit(g2, sigCondImg, M + fc[3] + 14, condBodyTop + 4, condColW - 28, Math.max(38, halfCondH - 28));
+        drawSignatureFit(g2, sigCondImg, M + fc[3] + 14, condBodyTop + 4, condColW - 28, Math.max(34, halfCondH - (cond1CpfLine ? 42 : 28)));
       }
       g2.textAlign = 'center';
       if (d.condutorNome) {
-        fitTextInk(g2, d.condutorNome, condCenterX, midCondY - 9, condColW - 14, 'bold 16px Arial, sans-serif');
+        fitTextInk(g2, d.condutorNome, condCenterX, cond1CpfLine ? (midCondY - 21) : (midCondY - 9), condColW - 14, 'bold 15px Arial, sans-serif');
+      }
+      if (cond1CpfLine) {
+        fitTextInk(g2, cond1CpfLine, condCenterX, midCondY - 5, condColW - 14, '14px Arial, sans-serif');
       }
 
       if (sigCond2Img) {
-        drawSignatureFit(g2, sigCond2Img, M + fc[3] + 14, midCondY + 4, condColW - 28, Math.max(38, halfCondH - 28));
+        drawSignatureFit(g2, sigCond2Img, M + fc[3] + 14, midCondY + 4, condColW - 28, Math.max(34, halfCondH - (cond2CpfLine ? 42 : 28)));
       }
       if (d.condutor2Nome) {
-        fitTextInk(g2, d.condutor2Nome, condCenterX, condBodyBottom - 9, condColW - 14, 'bold 16px Arial, sans-serif');
+        fitTextInk(g2, d.condutor2Nome, condCenterX, cond2CpfLine ? (condBodyBottom - 21) : (condBodyBottom - 9), condColW - 14, 'bold 15px Arial, sans-serif');
+      }
+      if (cond2CpfLine) {
+        fitTextInk(g2, cond2CpfLine, condCenterX, condBodyBottom - 5, condColW - 14, '14px Arial, sans-serif');
       }
     } else {
       if (sigCondImg) {
-        drawSignatureFit(g2, sigCondImg, M + fc[3] + 16, y2 + 48, condColW - 32, footH - 110);
+        drawSignatureFit(g2, sigCondImg, M + fc[3] + 16, y2 + 48, condColW - 32, footH - (cond1CpfLine ? 115 : 110));
       }
       g2.textAlign = 'center';
       if (d.condutorNome) {
-        fitTextInk(g2, d.condutorNome, condCenterX, y2 + footH - 22, condColW - 16, 'bold 18px Arial, sans-serif');
+        fitTextInk(g2, d.condutorNome, condCenterX, cond1CpfLine ? (y2 + footH - 38) : (y2 + footH - 22), condColW - 16, 'bold 18px Arial, sans-serif');
+      }
+      if (cond1CpfLine) {
+        fitTextInk(g2, cond1CpfLine, condCenterX, y2 + footH - 14, condColW - 16, '17px Arial, sans-serif');
       }
     }
     g2.textAlign = 'left';
@@ -1285,23 +1314,36 @@
     g.moveTo(M + halfW, sigAreaY + sigBoxH); g.lineTo(M + CW, sigAreaY + sigBoxH);
     g.stroke();
 
+    const diurnoCpfLine = d.condutorDiurno
+      ? formatDriverCpfLine(d.condutorDiurnoCpf, d.diurnoUsername, d.condutorDiurno)
+      : '';
+    const noturnoCpfLine = d.condutorNoturno
+      ? formatDriverCpfLine(d.condutorNoturnoCpf, d.noturnoUsername, d.condutorNoturno)
+      : '';
+
     g.font = 'bold 21px Arial, sans-serif';
     g.textAlign = 'center';
     g.fillText('Assinatura do Condutor Diurno', M + halfW + halfW / 2, sigAreaY + 34);
     if (sigDiurnoImg) {
-      drawSignatureFit(g, sigDiurnoImg, M + halfW + 40, sigAreaY + 48, halfW - 80, sigBoxH - 95);
+      drawSignatureFit(g, sigDiurnoImg, M + halfW + 40, sigAreaY + 46, halfW - 80, sigBoxH - (diurnoCpfLine ? 110 : 95));
     }
     if (d.condutorDiurno) {
-      fillTextInk(g, d.condutorDiurno, M + halfW + halfW / 2, sigAreaY + sigBoxH - 16, 'bold 18px Arial, sans-serif');
+      fitTextInk(g, d.condutorDiurno, M + halfW + halfW / 2, sigAreaY + sigBoxH - (diurnoCpfLine ? 34 : 16), halfW - 36, 'bold 18px Arial, sans-serif');
+    }
+    if (diurnoCpfLine) {
+      fitTextInk(g, diurnoCpfLine, M + halfW + halfW / 2, sigAreaY + sigBoxH - 12, halfW - 36, '17px Arial, sans-serif');
     }
 
     g.font = 'bold 21px Arial, sans-serif';
     g.fillText('Assinatura do Condutor Noturno', M + halfW + halfW / 2, sigAreaY + sigBoxH + 34);
     if (sigNoturnoImg) {
-      drawSignatureFit(g, sigNoturnoImg, M + halfW + 40, sigAreaY + sigBoxH + 48, halfW - 80, sigBoxH - 95);
+      drawSignatureFit(g, sigNoturnoImg, M + halfW + 40, sigAreaY + sigBoxH + 46, halfW - 80, sigBoxH - (noturnoCpfLine ? 110 : 95));
     }
     if (d.condutorNoturno) {
-      fillTextInk(g, d.condutorNoturno, M + halfW + halfW / 2, sigAreaY + sigBoxH * 2 - 16, 'bold 18px Arial, sans-serif');
+      fitTextInk(g, d.condutorNoturno, M + halfW + halfW / 2, sigAreaY + sigBoxH * 2 - (noturnoCpfLine ? 34 : 16), halfW - 36, 'bold 18px Arial, sans-serif');
+    }
+    if (noturnoCpfLine) {
+      fitTextInk(g, noturnoCpfLine, M + halfW + halfW / 2, sigAreaY + sigBoxH * 2 - 12, halfW - 36, '17px Arial, sans-serif');
     }
     g.textAlign = 'left';
 

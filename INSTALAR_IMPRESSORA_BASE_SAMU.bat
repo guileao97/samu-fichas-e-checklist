@@ -2,11 +2,11 @@
 setlocal
 set "SAMU_BAT=%~f0"
 set "SAMU_SRC_DIR=%~dp0"
-title SAMU 192 - Orlandia-SP ^| Instalador do Servidor de Impressao da Base
+title SAMU 192 - Orlandia-SP ^| Instalador do Servidor de Impressao da Base v1.0.7
 color 0F
 
 echo ============================================================================
-echo   SAMU 192 - ORLANDIA-SP ^| IMPRESSORA AUTOMATICA DA BASE - VIA INTERNET/4G
+echo   SAMU 192 - ORLANDIA-SP ^| IMPRESSORA AUTOMATICA DA BASE - v1.0.7 TURBO
 echo ============================================================================
 echo.
 
@@ -24,7 +24,107 @@ if exist "%CS_FILE%" del /f /q "%CS_FILE%" >nul 2>&1
 echo [1/4] Extraindo codigo nativo do Servidor de Impressao SAMU 192...
 certutil -f -decode "%SAMU_BAT%" "%CS_FILE%" >nul 2>&1
 if exist "%CS_FILE%" goto :LOCATE_CSC
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$lines = [IO.File]::ReadAllLines($env:SAMU_BAT, [Text.Encoding]::UTF8); $idx = [Array]::IndexOf($lines, '
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$m1 = '-----BEGIN ' + 'CERTIFICATE-----'; $m2 = '-----END ' + 'CERTIFICATE-----'; $lines = [IO.File]::ReadAllLines($env:SAMU_BAT, [Text.Encoding]::UTF8); $idx = [Array]::IndexOf($lines, $m1); $end = [Array]::IndexOf($lines, $m2); if ($idx -lt 0 -or $end -le $idx) { exit 1 }; $b64 = ($lines[($idx+1)..($end-1)] -join ''); [IO.File]::WriteAllBytes($env:CS_FILE, [Convert]::FromBase64String($b64))" >nul 2>&1
+if not exist "%CS_FILE%" goto :TRY_PREBUILT_EXE
+
+:LOCATE_CSC
+set "CSC_EXE=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+set "FW_DIR=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319"
+if exist "%CSC_EXE%" goto :CHECK_WINMD
+set "CSC_EXE=%WINDIR%\Microsoft.NET\Framework\v4.0.30319\csc.exe"
+set "FW_DIR=%WINDIR%\Microsoft.NET\Framework\v4.0.30319"
+if not exist "%CSC_EXE%" goto :TRY_PREBUILT_EXE
+
+:CHECK_WINMD
+set "WINMD_DIR=%WINDIR%\System32\WinMetadata"
+if not exist "%WINMD_DIR%\Windows.Data.winmd" goto :ERR_WIN10
+
+set "FAC_PREFIX=%FW_DIR%"
+if exist "%FW_DIR%\System.Runtime.dll" goto :STOP_OLD_INSTANCE
+if exist "%FW_DIR%\Facades\System.Runtime.dll" set "FAC_PREFIX=%FW_DIR%\Facades"
+
+:STOP_OLD_INSTANCE
+taskkill /F /IM "Servidor_Impressora_Base_SAMU.exe" >nul 2>&1
+ping 127.0.0.1 -n 2 >nul 2>&1
+if exist "%EXE_FILE%" del /f /q "%EXE_FILE%" >nul 2>&1
+if exist "%EXE_FILE%" ping 127.0.0.1 -n 2 >nul 2>&1
+if exist "%EXE_FILE%" del /f /q "%EXE_FILE%" >nul 2>&1
+
+echo [2/4] Compilando aplicativo nativo do Windows v1.0.7 - Modo Turbo...
+"%CSC_EXE%" /nologo /target:winexe /optimize+ /out:"%EXE_FILE%" /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll /r:"%FW_DIR%\System.Runtime.WindowsRuntime.dll" /r:"%FAC_PREFIX%\System.Runtime.dll" /r:"%FAC_PREFIX%\System.Runtime.InteropServices.WindowsRuntime.dll" /r:"%WINMD_DIR%\Windows.Data.winmd" /r:"%WINMD_DIR%\Windows.Foundation.winmd" /r:"%WINMD_DIR%\Windows.Storage.winmd" "%CS_FILE%"
+if errorlevel 1 goto :TRY_PREBUILT_EXE
+if not exist "%EXE_FILE%" goto :TRY_PREBUILT_EXE
+goto :SETUP_AUTOSTART
+
+:TRY_PREBUILT_EXE
+taskkill /F /IM "Servidor_Impressora_Base_SAMU.exe" >nul 2>&1
+if exist "%SAMU_SRC_DIR%impressora-base-samu\Servidor_Impressora_Base_SAMU.exe" copy /Y "%SAMU_SRC_DIR%impressora-base-samu\Servidor_Impressora_Base_SAMU.exe" "%EXE_FILE%" >nul 2>&1
+if exist "%SAMU_SRC_DIR%Servidor_Impressora_Base_SAMU.exe" copy /Y "%SAMU_SRC_DIR%Servidor_Impressora_Base_SAMU.exe" "%EXE_FILE%" >nul 2>&1
+if not exist "%EXE_FILE%" goto :ERR_COMPILE
+
+:SETUP_AUTOSTART
+echo [3/4] Configurando inicializacao automatica com o Windows e atalho...
+set "STARTUP_CMD=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\SAMU192_Impressora_Base.cmd"
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "SAMU192_Impressora_Base" /t REG_SZ /d "\"%EXE_FILE%\" --minimized" /f >nul 2>&1
+if errorlevel 1 goto :FALLBACK_STARTUP_CMD
+if exist "%STARTUP_CMD%" del /f /q "%STARTUP_CMD%" >nul 2>&1
+goto :LAUNCH_SERVER
+
+:FALLBACK_STARTUP_CMD
+echo @echo off> "%STARTUP_CMD%"
+echo start "" "%EXE_FILE%" --minimized>> "%STARTUP_CMD%"
+
+:LAUNCH_SERVER
+echo [4/4] Iniciando Servidor de Impressao da Base SAMU 192...
+start "" "%EXE_FILE%" --install "--url=%SCRIPT_URL%"
+ping 127.0.0.1 -n 3 >nul 2>&1
+
+tasklist /FI "IMAGENAME eq Servidor_Impressora_Base_SAMU.exe" 2>nul | find /I "Servidor_Impressora_Base_SAMU.exe" >nul 2>&1
+if errorlevel 1 goto :WARN_NOT_RUNNING
+
+echo.
+echo ============================================================================
+echo   [SUCESSO] O SERVIDOR DE IMPRESSAO DA BASE SAMU 192 JA ESTA FUNCIONANDO!
+echo ============================================================================
+echo   1. A janela vermelha "SAMU 192 - IMPRESSORA AUTOMATICA DA BASE" ja abriu
+echo      na tela e o icone vermelho com cruz branca esta perto do relogio!
+echo   2. Atalho criado na Area de Trabalho: "Impressora Base SAMU 192"
+echo   3. Inicializacao automatica ATIVADA: quando o computador reiniciar ou
+echo      ligar, o servidor liga sozinho automaticamente junto com o Windows!
+echo   4. No APK/Celular, abra a aba Base/Drive para ver o status VERDE ONLINE.
+echo ============================================================================
+echo.
+echo Pressione qualquer tecla para fechar esta janela preta de instalacao...
+pause >nul
+exit /b 0
+
+:WARN_NOT_RUNNING
+echo.
+echo [AVISO] O instalador terminou, mas o processo nao apareceu ativo ainda.
+echo Tente abrir pelo atalho "Impressora Base SAMU 192" na Area de Trabalho.
+if exist "%LOG_FILE%" type "%LOG_FILE%"
+echo.
+pause
+exit /b 1
+
+:ERR_MKDIR
+echo.
+echo [ERRO] Nao foi possivel criar a pasta %INSTALL_DIR%.
+pause
+exit /b 1
+
+:ERR_WIN10
+echo.
+echo [ERRO] Este recurso requer Windows 10 ou Windows 11 - suporte nativo PDF.
+pause
+exit /b 1
+
+:ERR_COMPILE
+echo.
+echo [ERRO] Falha ao compilar Servidor_Impressora_Base_SAMU.exe neste computador.
+pause
+exit /b 1
+
 -----BEGIN CERTIFICATE-----
 dXNpbmcgU3lzdGVtOwp1c2luZyBTeXN0ZW0uQ29sbGVjdGlvbnM7CnVzaW5nIFN5c3RlbS5Db2xs
 ZWN0aW9ucy5HZW5lcmljOwp1c2luZyBTeXN0ZW0uRGlhZ25vc3RpY3M7CnVzaW5nIFN5c3RlbS5E

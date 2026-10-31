@@ -212,6 +212,20 @@
     return ` x ${d}`;
   }
 
+  function formatTempCelsius(raw, prevVal, finalizeOnBlur) {
+    const str = String(raw == null ? '' : raw);
+    const prev = String(prevVal == null ? '' : prevVal);
+    const digits = str.replace(/\D+/g, '').slice(0, 3);
+    if (!digits) return '';
+    if (digits.length === 1) return digits;
+    if (digits.length === 2) {
+      if (finalizeOnBlur) return `${digits},0`;
+      const isAddingSep = str.length > prev.length && /[,.]$/.test(str.trim());
+      return isAddingSep ? `${digits},` : digits;
+    }
+    return `${digits.slice(0, 2)},${digits.slice(2, 3)}`;
+  }
+
   function applyCrewToFichaState(targetFicha, crew, forceReplaceSlots) {
     if (!targetFicha || !crew) return targetFicha;
 
@@ -273,6 +287,10 @@
       if (forceReplaceSlots || !targetFicha.condutorNome) {
         targetFicha.condutorNome = c1.name;
       }
+      const c1Cpf = c1.cpf || (window.SamuStorage.findUserCpfByUsernameOrName ? window.SamuStorage.findUserCpfByUsernameOrName(c1.username, c1.name) : '') || '';
+      if (forceReplaceSlots || !targetFicha.condutorCpf) {
+        targetFicha.condutorCpf = c1Cpf;
+      }
       targetFicha.condutorSlot1User = c1.username;
       if (prevCond1User === c1.username && prevCond1Sig) {
         targetFicha.sigCondutor = prevCond1Sig;
@@ -287,6 +305,10 @@
       if (forceReplaceSlots || !targetFicha.condutor2Nome) {
         targetFicha.condutor2Nome = c2.name;
       }
+      const c2Cpf = c2.cpf || (window.SamuStorage.findUserCpfByUsernameOrName ? window.SamuStorage.findUserCpfByUsernameOrName(c2.username, c2.name) : '') || '';
+      if (forceReplaceSlots || !targetFicha.condutor2Cpf) {
+        targetFicha.condutor2Cpf = c2Cpf;
+      }
       targetFicha.condutorSlot2User = c2.username;
       if (prevCond2User === c2.username && prevCond2Sig) {
         targetFicha.sigCondutor2 = prevCond2Sig;
@@ -297,6 +319,7 @@
       }
     } else if (forceReplaceSlots) {
       targetFicha.condutor2Nome = '';
+      targetFicha.condutor2Cpf = '';
       targetFicha.sigCondutor2 = '';
       targetFicha.condutorSlot2User = '';
     }
@@ -319,7 +342,6 @@
       locaisOcorrencia: [],
       localOutroCheck: false,
       localOutroTexto: '',
-      ocorrenciaCep: '',
       ocorrenciaEndereco: '',
       ocorrenciaNumero: '',
       ocorrenciaReferencia: '',
@@ -424,10 +446,12 @@
       enfermagemSlot2User: '',
 
       condutorNome: isCond ? currentUser.name : '',
+      condutorCpf: isCond ? (currentUser.cpf || (window.SamuStorage.findUserCpfByUsernameOrName ? window.SamuStorage.findUserCpfByUsernameOrName(currentUser.username, currentUser.name) : '')) : '',
       sigCondutor: isCond ? savedSig : '',
       condutorSlot1User: isCond ? currentUser.username : '',
 
       condutor2Nome: '',
+      condutor2Cpf: '',
       sigCondutor2: '',
       condutorSlot2User: ''
     };
@@ -482,6 +506,9 @@
         merged.svPa = `${paP.sys} x ${paP.dia}`;
       }
     }
+    if (merged.svTemp) {
+      merged.svTemp = formatTempCelsius(merged.svTemp, '', true);
+    }
 
     // Setor Recomendado e Setor Admitido aceitam apenas 1 seleção por vez
     ['setorRecomendado', 'setorAdmitido'].forEach(sk => {
@@ -495,6 +522,17 @@
         merged[sk] = [];
       }
     });
+
+    if (merged.condutorCpf) {
+      merged.condutorCpf = window.SamuStorage.formatCpf(merged.condutorCpf);
+    } else if ((merged.condutorSlot1User || merged.condutorNome) && window.SamuStorage.findUserCpfByUsernameOrName) {
+      merged.condutorCpf = window.SamuStorage.findUserCpfByUsernameOrName(merged.condutorSlot1User, merged.condutorNome) || '';
+    }
+    if (merged.condutor2Cpf) {
+      merged.condutor2Cpf = window.SamuStorage.formatCpf(merged.condutor2Cpf);
+    } else if ((merged.condutorSlot2User || merged.condutor2Nome) && window.SamuStorage.findUserCpfByUsernameOrName) {
+      merged.condutor2Cpf = window.SamuStorage.findUserCpfByUsernameOrName(merged.condutorSlot2User, merged.condutor2Nome) || '';
+    }
 
     return merged;
   }
@@ -547,13 +585,17 @@
 
     if (replaceOtherShift) {
       if (!isDiurno) {
+        d.diurnoUsername = '';
         d.condutorDiurno = '';
+        d.condutorDiurnoCpf = '';
         d.itensDiurno = {};
         d.obsDiurno = '';
         d.sigCondutorDiurno = '';
         d.avariasDiurno = [];
       } else {
+        d.noturnoUsername = '';
         d.condutorNoturno = '';
+        d.condutorNoturnoCpf = '';
         d.itensNoturno = {};
         d.obsNoturno = '';
         d.sigCondutorNoturno = '';
@@ -577,8 +619,15 @@
       if (shared.itensDiurno && Object.keys(shared.itensDiurno).length > 0) {
         d.itensDiurno = Object.assign({}, shared.itensDiurno, d.itensDiurno || {});
       }
+      if (shared.diurnoUsername && (!d.diurnoUsername || replaceOtherShift)) {
+        d.diurnoUsername = shared.diurnoUsername;
+      }
       if (shared.condutorDiurno && (!d.condutorDiurno || replaceOtherShift)) {
         d.condutorDiurno = shared.condutorDiurno;
+      }
+      const resolvedDiurnoCpf = shared.condutorDiurnoCpf || (window.SamuStorage.findUserCpfByUsernameOrName ? window.SamuStorage.findUserCpfByUsernameOrName(shared.diurnoUsername || d.diurnoUsername, d.condutorDiurno) : '');
+      if (resolvedDiurnoCpf && (!d.condutorDiurnoCpf || replaceOtherShift)) {
+        d.condutorDiurnoCpf = resolvedDiurnoCpf;
       }
       if (shared.obsDiurno && (!d.obsDiurno || replaceOtherShift)) {
         d.obsDiurno = shared.obsDiurno;
@@ -602,8 +651,15 @@
       if (shared.itensNoturno && Object.keys(shared.itensNoturno).length > 0) {
         d.itensNoturno = Object.assign({}, shared.itensNoturno, d.itensNoturno || {});
       }
+      if (shared.noturnoUsername && (!d.noturnoUsername || replaceOtherShift)) {
+        d.noturnoUsername = shared.noturnoUsername;
+      }
       if (shared.condutorNoturno && (!d.condutorNoturno || replaceOtherShift)) {
         d.condutorNoturno = shared.condutorNoturno;
+      }
+      const resolvedNoturnoCpf = shared.condutorNoturnoCpf || (window.SamuStorage.findUserCpfByUsernameOrName ? window.SamuStorage.findUserCpfByUsernameOrName(shared.noturnoUsername || d.noturnoUsername, d.condutorNoturno) : '');
+      if (resolvedNoturnoCpf && (!d.condutorNoturnoCpf || replaceOtherShift)) {
+        d.condutorNoturnoCpf = resolvedNoturnoCpf;
       }
       if (shared.obsNoturno && (!d.obsNoturno || replaceOtherShift)) {
         d.obsNoturno = shared.obsNoturno;
@@ -717,6 +773,10 @@
     const h = new Date().getHours();
     const isDiurno = (h >= 6 && h < 18);
     const uname = currentUser ? currentUser.name : '';
+    const ulogin = currentUser ? currentUser.username : '';
+    const ucpf = currentUser
+      ? (currentUser.cpf || (window.SamuStorage.findUserCpfByUsernameOrName ? window.SamuStorage.findUserCpfByUsernameOrName(currentUser.username, currentUser.name) : ''))
+      : '';
     const savedSig = currentUser ? window.SamuStorage.getSavedSignature(currentUser.username) : '';
 
     const blankCond = {
@@ -724,8 +784,12 @@
       turnoAtivo: isDiurno ? 'DIURNO' : 'NOTURNO',
       viaturaId: 'master_29',
       outraPlaca: '',
+      diurnoUsername: isDiurno ? ulogin : '',
+      noturnoUsername: !isDiurno ? ulogin : '',
       condutorDiurno: isDiurno ? uname : '',
       condutorNoturno: !isDiurno ? uname : '',
+      condutorDiurnoCpf: isDiurno ? ucpf : '',
+      condutorNoturnoCpf: !isDiurno ? ucpf : '',
       abastRealizado: '',
       abastLitros: '',
       abastHora: '',
@@ -2874,13 +2938,10 @@
       const calc = calcAgeFromDn(dnInp.value);
       if (calc) ageInp.value = calc;
     });
-    cepInp.addEventListener('input', () => {
-      cepInp.value = formatCep(cepInp.value);
-    });
-    cepBtn.addEventListener('click', async () => {
+    const runCatPatCepLookup = async (manualClick) => {
       const d8 = String(cepInp.value || '').replace(/\D+/g, '');
       if (d8.length !== 8) {
-        samuAlert('Digite os 8 números do CEP.');
+        if (manualClick) samuAlert('Digite os 8 números do CEP.');
         return;
       }
       cepBtn.disabled = true;
@@ -2888,16 +2949,36 @@
       try {
         const res = await window.SamuStorage.lookupCepOnline(d8);
         cepInp.value = res.cep || cepInp.value;
-        if (res.cidade) document.getElementById('cat-pat-mun').value = res.cidade;
-        if (res.bairro) document.getElementById('cat-pat-area').value = res.bairro;
-        if (res.endereco) document.getElementById('cat-pat-loc1').value = res.endereco;
-        document.getElementById('cat-pat-loc2').focus();
+        const munEl = document.getElementById('cat-pat-mun');
+        const areaEl = document.getElementById('cat-pat-area');
+        const loc1El = document.getElementById('cat-pat-loc1');
+        const loc2El = document.getElementById('cat-pat-loc2');
+        if (res.cidade && munEl) munEl.value = res.cidade;
+        if (res.bairro && areaEl) areaEl.value = res.bairro;
+        if (res.endereco && loc1El) loc1El.value = res.endereco;
+        if (res.endereco && loc2El) loc2El.focus();
       } catch (err) {
-        samuAlert(err.message || 'Não foi possível consultar o CEP online.');
+        if (manualClick) {
+          samuAlert(err.message || 'Não foi possível consultar o CEP online.');
+        }
       } finally {
         cepBtn.disabled = false;
         cepBtn.textContent = '🔍 CEP';
       }
+    };
+    let lastAutoCatCep = String(cepInp.value || '').replace(/\D+/g, '');
+    cepInp.addEventListener('input', () => {
+      cepInp.value = formatCep(cepInp.value);
+      const curDigits = String(cepInp.value || '').replace(/\D+/g, '');
+      if (curDigits.length === 8 && curDigits !== lastAutoCatCep) {
+        lastAutoCatCep = curDigits;
+        runCatPatCepLookup(false);
+      } else if (curDigits.length < 8) {
+        lastAutoCatCep = curDigits;
+      }
+    });
+    cepBtn.addEventListener('click', () => {
+      runCatPatCepLookup(true);
     });
 
     document.getElementById('form-cat-patient').addEventListener('submit', (e) => {
@@ -4887,15 +4968,7 @@
             <input type="text" placeholder="Se outro local, especifique aqui..." data-f="localOutroTexto" value="${escapeHtml(d.localOutroTexto)}" />
           </div>
 
-          <div class="grid-cep-addr">
-            <div class="field field-full-phone">
-              <label>C&#8204;EP do Local (Wi-Fi/4G)</label>
-              <div class="input-action-row">
-                <input type="text" inputmode="numeric" id="f-occ-cod" autocomplete="off" placeholder="00000&#8204;-000" data-f="ocorrenciaCep" value="${escapeHtml(d.ocorrenciaCep || '')}" />
-                <button type="button" class="btn-lookup" id="btn-lookup-occ-cep">🔍 C&#8204;EP</button>
-              </div>
-              <div id="occ-cep-hint" class="field-hint"></div>
-            </div>
+          <div class="grid-addr-num">
             <div class="field">
               <label>Endere&#8204;ço da Ocorrência</label>
               <input type="text" id="f-occ-loc1" autocomplete="off" placeholder="R&#8204;ua / Aveni&#8204;da / Rodov&#8204;ia" data-f="ocorrenciaEndereco" value="${escapeHtml(d.ocorrenciaEndereco)}" />
@@ -5164,7 +5237,7 @@
             <div class="field"><label>FR (irpm)</label><input type="text" inputmode="numeric" placeholder="Ex: 18" data-f="svFr" value="${escapeHtml(d.svFr)}" /></div>
             <div class="field"><label>SAT (%)</label><input type="text" placeholder="Ex: 98%" data-f="svSat" value="${escapeHtml(d.svSat)}" /></div>
             <div class="field"><label>DEXTRO (mg/dL)</label><input type="text" placeholder="Ex: 105" data-f="svDextro" value="${escapeHtml(d.svDextro)}" /></div>
-            <div class="field"><label>TEMP. (°C)</label><input type="text" placeholder="Ex: 36,5" data-f="svTemp" value="${escapeHtml(d.svTemp)}" /></div>
+            <div class="field"><label>TEMP. (ºC)</label><input type="text" inputmode="decimal" autocomplete="off" placeholder="00,0 (Ex: 36,0)" data-f="svTemp" value="${escapeHtml(d.svTemp)}" /></div>
           </div>
 
           <div class="section-subtitle">Pele</div>
@@ -5258,8 +5331,8 @@
                 boxKey: 'medico',
                 items: medicoItems,
                 selectedSummary: selectedMedSummary,
-                placeholderText: '👨‍⚕️ Toque para selecionar Médico Regulador salvo...',
-                emptyTriggerText: '👨‍⚕️ Nenhum médico salvo ainda (digite abaixo p/ salvar)',
+                placeholderText: '👨‍⚕️ Selecionar médico salvo...',
+                emptyTriggerText: '👨‍⚕️ Nenhum médico salvo',
                 searchPlaceholder: '🔎 Buscar médico regulador na lista...',
                 emptyListText: 'Nenhum médico regulador salvo ainda. Ao preencher no campo abaixo, o nome fica salvo automaticamente para selecionar nas próximas fichas!',
                 filterQuery: medicoFilterQuery,
@@ -5357,41 +5430,44 @@
           </div>
 
           <div class="grid-2" style="margin-top:12px;">
-            <div style="border:1px solid #e2e8f0; border-radius:12px; padding:12px;">
+            <div style="border:1px solid #e2e8f0; border-radius:12px; padding:12px; min-width:0; overflow:hidden;">
               <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; flex-wrap:wrap;">
                 <strong style="font-size:0.86rem; color:var(--samu-red-dark);">RECEBIDO POR (HOSPITAL)</strong>
-                <small style="color:var(--muted); font-size:0.72rem; font-weight:700;">Salva automático p/ próximas fichas</small>
+                <small style="color:var(--muted); font-size:0.72rem; font-weight:700;">Salva automático</small>
               </div>
-              ${(() => {
-                const savedReceivers = window.SamuStorage.getHospitalReceivers();
-                const curRecLow = String(d.recebidoPorNome || '').trim().toLowerCase();
-                let selectedRecSummary = '';
-                const recItems = savedReceivers.map(r => {
-                  const isSel = Boolean(curRecLow && curRecLow === String(r.nome || '').trim().toLowerCase());
-                  const lbl = `👤 ${r.nome}${r.corenCrm ? ' • ' + r.corenCrm : ''}`;
-                  if (isSel && !selectedRecSummary) {
-                    selectedRecSummary = lbl;
-                  }
-                  return {
-                    id: r.id,
-                    label: lbl,
-                    searchBlob: `${r.nome || ''} ${r.corenCrm || ''} ${r.hospital || ''}`,
-                    isSelected: isSel
-                  };
-                });
-                return renderSingleSavedSelectBoxHtml({
-                  boxKey: 'receiver',
-                  items: recItems,
-                  selectedSummary: selectedRecSummary,
-                  placeholderText: '👤 Toque para selecionar Recebedor salvo (preenche e assina)...',
-                  emptyTriggerText: '👤 Nenhum recebedor salvo ainda (preencha abaixo p/ salvar)',
-                  searchPlaceholder: '🔎 Buscar recebedor por nome ou COREN/CRM...',
-                  emptyListText: 'Nenhum recebedor salvo ainda. Ao preencher Nome e COREN/CRM abaixo, ficará salvo automaticamente para só assinar nas próximas fichas!',
-                  filterQuery: receiverFilterQuery,
-                  pickAttr: 'pick-receiver'
-                });
-              })()}
-              <div class="field" style="margin-top:6px;">
+              <div class="field" style="margin-top:8px; margin-bottom:8px;">
+                <label>Recebedor Salvo</label>
+                ${(() => {
+                  const savedReceivers = window.SamuStorage.getHospitalReceivers();
+                  const curRecLow = String(d.recebidoPorNome || '').trim().toLowerCase();
+                  let selectedRecSummary = '';
+                  const recItems = savedReceivers.map(r => {
+                    const isSel = Boolean(curRecLow && curRecLow === String(r.nome || '').trim().toLowerCase());
+                    const lbl = `👤 ${r.nome}${r.corenCrm ? ' • ' + r.corenCrm : ''}`;
+                    if (isSel && !selectedRecSummary) {
+                      selectedRecSummary = lbl;
+                    }
+                    return {
+                      id: r.id,
+                      label: lbl,
+                      searchBlob: `${r.nome || ''} ${r.corenCrm || ''} ${r.hospital || ''}`,
+                      isSelected: isSel
+                    };
+                  });
+                  return renderSingleSavedSelectBoxHtml({
+                    boxKey: 'receiver',
+                    items: recItems,
+                    selectedSummary: selectedRecSummary,
+                    placeholderText: '👤 Selecionar recebedor salvo...',
+                    emptyTriggerText: '👤 Nenhum recebedor salvo',
+                    searchPlaceholder: '🔎 Buscar recebedor por nome ou COREN/CRM...',
+                    emptyListText: 'Nenhum recebedor salvo ainda. Ao preencher Nome e COREN/CRM abaixo, ficará salvo automaticamente para só assinar nas próximas fichas!',
+                    filterQuery: receiverFilterQuery,
+                    pickAttr: 'pick-receiver'
+                  });
+                })()}
+              </div>
+              <div class="field">
                 <label>No&#8204;me do Profissional</label>
                 <input type="text" id="f-rec-prof" autocomplete="off" placeholder="Quem recebeu o paciente no hospital" data-f="recebidoPorNome" value="${escapeHtml(d.recebidoPorNome)}" />
               </div>
@@ -5407,7 +5483,7 @@
               </div>
             </div>
 
-            <div style="border:1px solid #e2e8f0; border-radius:12px; padding:12px;">
+            <div style="border:1px solid #e2e8f0; border-radius:12px; padding:12px; min-width:0; overflow:hidden;">
               ${(() => {
                 const hasSecondEnf = Boolean(
                   manualShowSecondEnf ||
@@ -5480,9 +5556,15 @@
                     ${!hasSecondCond ? `<button type="button" class="btn btn-outline btn-sm" id="btn-add-second-cond" style="padding:2px 8px; font-size:0.71rem;">+ 2º Condutor</button>` : ''}
                   </div>
                 </div>
-                <div class="field" style="margin-top:8px;">
-                  <label>${hasSecondCond ? '1º Condutor Socorrista' : 'Nome do Condutor Socorrista'}</label>
-                  <input type="text" data-f="condutorNome" value="${escapeHtml(d.condutorNome)}" />
+                <div class="grid-2" style="margin-top:8px;">
+                  <div class="field">
+                    <label>${hasSecondCond ? '1º Condutor Socorrista' : 'Nome do Condutor Socorrista'}</label>
+                    <input type="text" data-f="condutorNome" value="${escapeHtml(d.condutorNome)}" />
+                  </div>
+                  <div class="field">
+                    <label>C&#8204;PF do Condutor</label>
+                    <input type="text" id="f-cond1-doc" inputmode="numeric" maxlength="14" autocomplete="off" placeholder="000.000&#8204;.000-00" data-f="condutorCpf" value="${escapeHtml(d.condutorCpf || '')}" />
+                  </div>
                 </div>
                 <div class="sig-preview-box ${d.sigCondutor ? 'signed' : ''}" data-sig-target="sigCondutor" data-sig-personal="1" data-sig-user="${escapeHtml(cond1Owner)}" data-sig-title="Assinatura – ${escapeHtml(d.condutorNome || 'Condutor Socorrista (SAMU)')}">
                   ${d.sigCondutor ? `<img src="${d.sigCondutor}" alt="Assinatura Condutor" />` : `<span>✍️ Assinar (${escapeHtml(d.condutorNome || 'Condutor Socorrista')})</span>`}
@@ -5492,9 +5574,15 @@
                   <div class="sub-slot-divider">
                     <span>🚑 2º Condutor Socorrista (Equipe em 3)</span>
                   </div>
-                  <div class="field">
-                    <label>2º Condutor Socorrista</label>
-                    <input type="text" data-f="condutor2Nome" placeholder="Nome do 2º Condutor Socorrista" value="${escapeHtml(d.condutor2Nome || '')}" />
+                  <div class="grid-2">
+                    <div class="field">
+                      <label>2º Condutor Socorrista</label>
+                      <input type="text" data-f="condutor2Nome" placeholder="Nome do 2º Condutor Socorrista" value="${escapeHtml(d.condutor2Nome || '')}" />
+                    </div>
+                    <div class="field">
+                      <label>2º C&#8204;PF do Condutor</label>
+                      <input type="text" id="f-cond2-doc" inputmode="numeric" maxlength="14" autocomplete="off" placeholder="000.000&#8204;.000-00" data-f="condutor2Cpf" value="${escapeHtml(d.condutor2Cpf || '')}" />
+                    </div>
                   </div>
                   <div class="sig-preview-box ${d.sigCondutor2 ? 'signed' : ''}" data-sig-target="sigCondutor2" data-sig-personal="1" data-sig-user="${escapeHtml(cond2Owner)}" data-sig-title="Assinatura – ${escapeHtml(d.condutor2Nome || '2º Condutor Socorrista (SAMU)')}">
                     ${d.sigCondutor2 ? `<img src="${d.sigCondutor2}" alt="Assinatura 2º Condutor" />` : `<span>✍️ Assinar (${escapeHtml(d.condutor2Nome || '2º Condutor Socorrista')})</span>`}
@@ -5705,73 +5793,62 @@
       });
     }
 
-    //Funções auxiliares de consulta online de CEP e CPF (em Wi-Fi / 4G)
-    const executeCepLookup = async (mode, manualClick) => {
-      const isOcc = mode === 'occ';
-      const inp = document.getElementById(isOcc ? 'f-occ-cod' : 'f-vit-cod');
-      const btn = document.getElementById(isOcc ? 'btn-lookup-occ-cep' : 'btn-lookup-vit-cep');
-      const hint = document.getElementById(isOcc ? 'occ-cep-hint' : 'cep-lookup-hint');
-      if (!inp) return;
-      const digits = String(inp.value || '').replace(/\D+/g, '');
+    // Funções auxiliares de consulta online de CEP e CPF nos Dados da Vítima (em Wi-Fi / 4G)
+    const executeCepLookup = async (manualClick) => {
+      const inpId = 'f-vit-cod';
+      const btnId = 'btn-lookup-vit-cep';
+      const hintId = 'cep-lookup-hint';
+      const inpBefore = document.getElementById(inpId);
+      const btnBefore = document.getElementById(btnId);
+      const hintBefore = document.getElementById(hintId);
+      if (!inpBefore) return;
+      const digits = String(inpBefore.value || '').replace(/\D+/g, '');
       if (digits.length !== 8) {
-        if (manualClick && hint) hint.innerHTML = '<span class="hint-warn">⚠️ Digite os 8 números do CEP.</span>';
+        if (manualClick && hintBefore) hintBefore.innerHTML = '<span class="hint-warn">⚠️ Digite os 8 números do CEP.</span>';
         return;
       }
-      if (btn) { btn.disabled = true; btn.textContent = '⏳...'; }
-      if (hint) hint.innerHTML = '<span style="color:var(--muted);">🌐 Buscando CEP online...</span>';
+      if (btnBefore) { btnBefore.disabled = true; btnBefore.textContent = '⏳...'; }
+      if (hintBefore) hintBefore.innerHTML = '<span style="color:var(--muted);">🌐 Buscando CEP e bairro...</span>';
       try {
         const res = await window.SamuStorage.lookupCepOnline(digits);
-        if (isOcc) {
-          fichaState.ocorrenciaCep = res.cep;
-          inp.value = res.cep;
-          if (res.endereco) {
-            fichaState.ocorrenciaEndereco = res.endereco;
-            const endEl = document.getElementById('f-occ-loc1');
-            if (endEl) endEl.value = res.endereco;
-          }
-          if (res.bairro && !fichaState.ocorrenciaReferencia) {
-            fichaState.ocorrenciaReferencia = 'Bairro ' + res.bairro;
-            const refEl = document.getElementById('f-occ-obs1');
-            if (refEl) refEl.value = fichaState.ocorrenciaReferencia;
-          }
-          persistFichaDraft({ immediate: true });
-          if (hint) {
-            hint.innerHTML = res.endereco
-              ? `<span class="hint-ok">✅ ${escapeHtml(res.endereco)} (${escapeHtml(res.cidade)}-${escapeHtml(res.uf)})</span>`
-              : `<span class="hint-ok">✅ CEP geral de ${escapeHtml(res.cidade)}-${escapeHtml(res.uf)} confirmado! Digite a rua.</span>`;
-          }
-          const numEl = document.getElementById('f-occ-loc2');
-          if (res.endereco && numEl) numEl.focus();
-        } else {
-          fichaState.vitimaCep = res.cep;
-          inp.value = res.cep;
-          if (res.cidade) {
-            fichaState.vitimaCidade = res.cidade;
-            const cidEl = document.getElementById('f-vit-mun');
-            if (cidEl) cidEl.value = res.cidade;
-          }
-          if (res.bairro) {
-            fichaState.vitimaBairro = res.bairro;
-            const baiEl = document.getElementById('f-vit-area');
-            if (baiEl) baiEl.value = res.bairro;
-          }
-          if (res.endereco) {
-            fichaState.vitimaEndereco = res.endereco;
-            const endEl = document.getElementById('f-vit-loc1');
-            if (endEl) endEl.value = res.endereco;
-          }
-          persistFichaDraft({ immediate: true });
-          if (hint) {
-            hint.innerHTML = res.endereco
-              ? `<span class="hint-ok">✅ Endereço puxado: ${escapeHtml(res.endereco)}</span>`
-              : `<span class="hint-ok">✅ CEP único de ${escapeHtml(res.cidade)}-${escapeHtml(res.uf)}. Informe o bairro e rua.</span>`;
-          }
-          const numEl = document.getElementById('f-vit-loc2');
-          if (res.endereco && numEl) numEl.focus();
+        const inp = document.getElementById(inpId);
+        const hint = document.getElementById(hintId);
+        const cityUf = [res.cidade, res.uf].filter(Boolean).join('-');
+        const summaryParts = [res.endereco, res.bairro ? `Bairro ${res.bairro}` : ''].filter(Boolean);
+        fichaState.vitimaCep = res.cep;
+        if (inp) inp.value = res.cep;
+        if (res.cidade) {
+          fichaState.vitimaCidade = res.cidade;
+          const cidEl = document.getElementById('f-vit-mun');
+          if (cidEl) cidEl.value = res.cidade;
         }
+        if (res.bairro) {
+          fichaState.vitimaBairro = res.bairro;
+          const baiEl = document.getElementById('f-vit-area');
+          if (baiEl) baiEl.value = res.bairro;
+        }
+        if (res.endereco) {
+          fichaState.vitimaEndereco = res.endereco;
+          const endEl = document.getElementById('f-vit-loc1');
+          if (endEl) endEl.value = res.endereco;
+        }
+        persistFichaDraft({ immediate: true });
+        if (hint) {
+          hint.innerHTML = summaryParts.length > 0
+            ? `<span class="hint-ok">✅ ${escapeHtml(summaryParts.join(' • '))}${cityUf ? ` (${escapeHtml(cityUf)})` : ''}</span>`
+            : `<span class="hint-ok">✅ CEP geral de ${escapeHtml(cityUf || 'cidade')} (sem bairro/rua específica nos Correios).</span>`;
+        }
+        const numEl = document.getElementById('f-vit-loc2');
+        if (res.endereco && numEl) numEl.focus();
       } catch (err) {
-        if (hint) hint.innerHTML = `<span class="hint-warn">⚠️ ${escapeHtml(err.message || 'Não foi possível puxar o CEP.')}</span>`;
+        const hint = document.getElementById(hintId);
+        if (hint && (manualClick || navigator.onLine)) {
+          hint.innerHTML = `<span class="hint-warn">⚠️ ${escapeHtml(err.message || 'Não foi possível puxar o CEP.')}</span>`;
+        } else if (hint) {
+          hint.innerHTML = '';
+        }
       } finally {
+        const btn = document.getElementById(btnId);
         if (btn) { btn.disabled = false; btn.textContent = '🔍 CEP'; }
       }
     };
@@ -5900,11 +5977,8 @@
     };
     bindCpfManageSlotEvents();
 
-    const btnOccCep = document.getElementById('btn-lookup-occ-cep');
-    if (btnOccCep) btnOccCep.addEventListener('click', () => executeCepLookup('occ', true));
-
     const btnVitCep = document.getElementById('btn-lookup-vit-cep');
-    if (btnVitCep) btnVitCep.addEventListener('click', () => executeCepLookup('vitima', true));
+    if (btnVitCep) btnVitCep.addEventListener('click', () => executeCepLookup(true));
 
     const btnCpfLookup = document.getElementById('btn-lookup-cpf');
     if (btnCpfLookup) btnCpfLookup.addEventListener('click', () => executeCpfLookup(true));
@@ -5954,9 +6028,28 @@
           }
         });
       }
+      if (inp.dataset.f === 'svTemp') {
+        inp.addEventListener('blur', () => {
+          const formatted = formatTempCelsius(inp.value, inp.value, true);
+          if (formatted !== inp.value) {
+            inp.value = formatted;
+            fichaState.svTemp = formatted;
+            persistFichaDraft({ immediate: true });
+          }
+        });
+      }
       inp.addEventListener('input', () => {
         const key = inp.dataset.f;
         let val = inp.value;
+
+        if (key === 'svTemp') {
+          const prevVal = String(fichaState.svTemp || '');
+          val = formatTempCelsius(val, prevVal, false);
+          inp.value = val;
+          fichaState.svTemp = val;
+          persistTypedFieldWithJumpCheck(fieldKey);
+          return;
+        }
 
         if (key === 'vitimaTelefone' || (key === 'ocorrenciaContato' && /^\s*[\d()\s+-]*\s*$/.test(String(val || '')))) {
           val = formatPhoneBR(val, false);
@@ -5969,20 +6062,20 @@
           return;
         }
 
-        if (key === 'ocorrenciaCep' || key === 'vitimaCep') {
+        if (key === 'vitimaCep') {
           const prevDigits = String(fichaState[key] || '').replace(/\D+/g, '');
           val = formatCep(val);
           inp.value = val;
           fichaState[key] = val;
           const curDigits = val.replace(/\D+/g, '');
-          if (curDigits.length === 8 && curDigits !== prevDigits && navigator.onLine) {
-            executeCepLookup(key === 'ocorrenciaCep' ? 'occ' : 'vitima', false);
+          if (curDigits.length === 8 && curDigits !== prevDigits) {
+            executeCepLookup(false);
           }
           persistTypedFieldWithJumpCheck(fieldKey);
           return;
         }
 
-        if (key === 'vitimaCpf' || key === 'termoCpf') {
+        if (key === 'vitimaCpf' || key === 'termoCpf' || key === 'condutorCpf' || key === 'condutor2Cpf') {
           const prevDigits = String(fichaState[key] || '').replace(/\D+/g, '');
           val = window.SamuStorage.formatCpf(val);
           inp.value = val;
@@ -6011,6 +6104,15 @@
         }
 
         fichaState[key] = val;
+        if ((key === 'condutorNome' || key === 'condutor2Nome') && window.SamuStorage.findUserCpfByUsernameOrName) {
+          const matchedCpf = window.SamuStorage.findUserCpfByUsernameOrName('', val);
+          if (matchedCpf) {
+            const cpfKey = key === 'condutorNome' ? 'condutorCpf' : 'condutor2Cpf';
+            const docEl = document.getElementById(key === 'condutorNome' ? 'f-cond1-doc' : 'f-cond2-doc');
+            fichaState[cpfKey] = matchedCpf;
+            if (docEl) docEl.value = matchedCpf;
+          }
+        }
         if (key === 'localOutroTexto') fichaState.localOutroCheck = Boolean(val.trim());
         if (key === 'tipoOutroTexto') fichaState.tipoOutroCheck = Boolean(val.trim());
         if (key === 'situacaoOutroTexto') fichaState.situacaoOutroCheck = Boolean(val.trim());
@@ -7061,12 +7163,23 @@
     document.getElementById('cond-turno').addEventListener('change', e => {
       d.turnoAtivo = e.target.value;
       const mySavedSig = currentUser ? (window.SamuStorage.getSavedSignature(currentUser.username) || '') : '';
+      const myCpf = currentUser
+        ? (currentUser.cpf || (window.SamuStorage.findUserCpfByUsernameOrName ? window.SamuStorage.findUserCpfByUsernameOrName(currentUser.username, currentUser.name) : ''))
+        : '';
       if (d.turnoAtivo === 'DIURNO' && currentUser) {
-        if (!d.condutorDiurno) d.condutorDiurno = currentUser.name;
+        if (!d.condutorDiurno) {
+          d.condutorDiurno = currentUser.name;
+          d.diurnoUsername = currentUser.username;
+          d.condutorDiurnoCpf = myCpf;
+        }
         if (!d.sigCondutorDiurno && mySavedSig) d.sigCondutorDiurno = mySavedSig;
       }
       if (d.turnoAtivo === 'NOTURNO' && currentUser) {
-        if (!d.condutorNoturno) d.condutorNoturno = currentUser.name;
+        if (!d.condutorNoturno) {
+          d.condutorNoturno = currentUser.name;
+          d.noturnoUsername = currentUser.username;
+          d.condutorNoturnoCpf = myCpf;
+        }
         if (!d.sigCondutorNoturno && mySavedSig) d.sigCondutorNoturno = mySavedSig;
       }
       if (!editingCondutorId) {
@@ -7106,8 +7219,22 @@
       });
     }
 
-    document.getElementById('cond-nome-diurno').addEventListener('input', e => { d.condutorDiurno = e.target.value; saveCondDraft(); refreshCondValidationInPlace(); });
-    document.getElementById('cond-nome-noturno').addEventListener('input', e => { d.condutorNoturno = e.target.value; saveCondDraft(); refreshCondValidationInPlace(); });
+    document.getElementById('cond-nome-diurno').addEventListener('input', e => {
+      d.condutorDiurno = e.target.value;
+      if (window.SamuStorage.findUserCpfByUsernameOrName) {
+        d.condutorDiurnoCpf = window.SamuStorage.findUserCpfByUsernameOrName(d.diurnoUsername, d.condutorDiurno) || '';
+      }
+      saveCondDraft();
+      refreshCondValidationInPlace();
+    });
+    document.getElementById('cond-nome-noturno').addEventListener('input', e => {
+      d.condutorNoturno = e.target.value;
+      if (window.SamuStorage.findUserCpfByUsernameOrName) {
+        d.condutorNoturnoCpf = window.SamuStorage.findUserCpfByUsernameOrName(d.noturnoUsername, d.condutorNoturno) || '';
+      }
+      saveCondDraft();
+      refreshCondValidationInPlace();
+    });
 
     container.querySelectorAll('[data-abast-choice]').forEach(btn => {
       btn.addEventListener('click', () => {

@@ -332,28 +332,37 @@ body.sim-phone-mode .btn-logout { padding: 5px 8px; font-size: 0.74rem; }
 }
 
 /* ===================== FORMULÁRIOS E BOTÕES ===================== */
-.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-.grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
-.grid-2-compact { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.grid-date-kms { display: grid; grid-template-columns: 185px 1fr 1fr; gap: 10px; }
-.grid-cep-addr { display: grid; grid-template-columns: 240px 1fr 130px; gap: 10px; }
-.grid-cpf-docs { display: grid; grid-template-columns: 260px 1fr 1fr; gap: 10px; }
-.grid-cep-city { display: grid; grid-template-columns: 240px 1fr 1fr; gap: 10px; }
-.grid-dn-age { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.grid-dn-age-cnt { display: grid; grid-template-columns: 185px 140px 1fr; gap: 10px; }
-.grid-addr-num { display: grid; grid-template-columns: 1fr 140px; gap: 10px; }
-.grid-burns-footer { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: end; width: 100%; }
-.grid-vitals { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-.grid-abast { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-.grid-enf-header { display: grid; grid-template-columns: 175px 160px 1fr 190px; gap: 10px; }
+.grid-2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.grid-4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.grid-2-compact { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+.grid-date-kms { display: grid; grid-template-columns: 185px minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+.grid-cep-addr { display: grid; grid-template-columns: 240px minmax(0, 1fr) 130px; gap: 10px; }
+.grid-cpf-docs { display: grid; grid-template-columns: 260px minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+.grid-cep-city { display: grid; grid-template-columns: 240px minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+.grid-dn-age { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+.grid-dn-age-cnt { display: grid; grid-template-columns: 185px 140px minmax(0, 1fr); gap: 10px; }
+.grid-addr-num { display: grid; grid-template-columns: minmax(0, 1fr) 140px; gap: 10px; }
+.grid-burns-footer { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 10px; align-items: end; width: 100%; }
+.grid-vitals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.grid-abast { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.grid-enf-header { display: grid; grid-template-columns: 175px 160px minmax(0, 1fr) 190px; gap: 10px; }
+
+.grid-2 > *, .grid-3 > *, .grid-4 > *, .grid-2-compact > *,
+.grid-date-kms > *, .grid-cep-addr > *, .grid-cpf-docs > *,
+.grid-cep-city > *, .grid-dn-age > *, .grid-dn-age-cnt > *,
+.grid-addr-num > *, .grid-burns-footer > *, .grid-vitals > *,
+.grid-abast > *, .grid-enf-header > * {
+  min-width: 0;
+  max-width: 100%;
+}
 
 /* Celulares reais (<= 680px) E modo celular do simulador PC (430px) */
 @media (max-width: 680px) {
-  .grid-2, .grid-3, .grid-4, .grid-enf-header, .grid-2-mobile-1 { grid-template-columns: 1fr; }
-  .grid-date-kms, .grid-cpf-docs, .grid-cep-city, .grid-abast, .grid-vitals, .grid-burns-footer { grid-template-columns: 1fr 1fr; }
-  .grid-cep-addr, .grid-addr-num { grid-template-columns: 1fr 112px; }
-  .grid-dn-age, .grid-dn-age-cnt { grid-template-columns: 1.35fr 0.85fr; }
+  .grid-2, .grid-3, .grid-4, .grid-enf-header, .grid-2-mobile-1 { grid-template-columns: minmax(0, 1fr); }
+  .grid-date-kms, .grid-cpf-docs, .grid-cep-city, .grid-abast, .grid-vitals, .grid-burns-footer { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .grid-cep-addr, .grid-addr-num { grid-template-columns: minmax(0, 1fr) 112px; }
+  .grid-dn-age, .grid-dn-age-cnt { grid-template-columns: minmax(0, 1.35fr) minmax(0, 0.85fr); }
   .field-full-phone { grid-column: 1 / -1; }
 }
 
@@ -362,7 +371,7 @@ body.sim-phone-mode .grid-3,
 body.sim-phone-mode .grid-4,
 body.sim-phone-mode .grid-enf-header,
 body.sim-phone-mode .grid-2-mobile-1 {
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
 }
 body.sim-phone-mode .grid-date-kms,
 body.sim-phone-mode .grid-cpf-docs,
@@ -370,15 +379,15 @@ body.sim-phone-mode .grid-cep-city,
 body.sim-phone-mode .grid-abast,
 body.sim-phone-mode .grid-vitals,
 body.sim-phone-mode .grid-burns-footer {
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
 body.sim-phone-mode .grid-cep-addr,
 body.sim-phone-mode .grid-addr-num {
-  grid-template-columns: 1fr 112px;
+  grid-template-columns: minmax(0, 1fr) 112px;
 }
 body.sim-phone-mode .grid-dn-age,
 body.sim-phone-mode .grid-dn-age-cnt {
-  grid-template-columns: 1.35fr 0.85fr;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 0.85fr);
 }
 body.sim-phone-mode .field-full-phone {
   grid-column: 1 / -1;
@@ -388,7 +397,7 @@ body.sim-phone-mode .field-full-phone {
   .grid-2-compact, .grid-date-kms, .grid-cpf-docs, .grid-cep-city,
   .grid-cep-addr, .grid-addr-num, .grid-dn-age, .grid-dn-age-cnt, .grid-burns-footer,
   .grid-vitals, .grid-abast {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -1315,8 +1324,12 @@ body.sim-phone-mode .btn-now {
 
 /* ===================== CAIXA DE SELEÇÃO (MEDICAMENTOS E ALERGIAS) ===================== */
 .select-box-wrap {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   border: 1.5px solid var(--border);
-  border-radius: 11px;
+  border-radius: 10px;
   background: #ffffff;
   margin-bottom: 9px;
   overflow: hidden;
@@ -1330,18 +1343,23 @@ body.sim-phone-mode .btn-now {
 
 .select-box-trigger {
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  box-sizing: border-box;
   border: none;
   background: #ffffff;
-  padding: 11px 13px;
+  padding: 8px 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   cursor: pointer;
   text-align: left;
   font-family: inherit;
-  font-size: 0.94rem;
+  font-size: 0.9rem;
   color: var(--text);
+  overflow: hidden;
 }
 
 .select-box-trigger:active {
@@ -1349,7 +1367,7 @@ body.sim-phone-mode .btn-now {
 }
 
 .select-box-summary {
-  flex: 1;
+  flex: 1 1 0%;
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
@@ -1374,12 +1392,12 @@ body.sim-phone-mode .btn-now {
 
 .select-box-chevron {
   flex-shrink: 0;
-  font-size: 0.82rem;
-  font-weight: 900;
+  font-size: 0.76rem;
+  font-weight: 800;
   color: #475569;
   background: #f1f5f9;
-  padding: 4px 8px;
-  border-radius: 7px;
+  padding: 3px 7px;
+  border-radius: 6px;
   transition: transform 0.15s;
 }
 
