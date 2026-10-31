@@ -11,11 +11,13 @@ O **Google Drive / Google Apps Script** cuida automaticamente de:
 
 ## Como Atualizar o Script no Google Apps Script (quando houver melhoria no `Codigo_Google_Apps_Script.gs`)
 
+> **Atalho em 1 clique no Windows:** dê dois cliques em [`ATUALIZAR_GOOGLE_APPS_SCRIPT.bat`](./ATUALIZAR_GOOGLE_APPS_SCRIPT.bat) — ele já copia todo o código `v4` automaticamente para o seu `Ctrl + V` e abre o painel `https://script.google.com`!
+
 1. Acesse **https://script.google.com** na conta Google da base e abra o projeto **`SAMU 192 Orlandia`**.
-2. Apague o código antigo do editor, copie **todo o conteúdo** de [`Codigo_Google_Apps_Script.gs`](./Codigo_Google_Apps_Script.gs) e cole no editor.
+2. Clique dentro do editor, pressione **`Ctrl + A`** e depois **`Ctrl + V`** (para colar todo o conteúdo de [`Codigo_Google_Apps_Script.gs`](./Codigo_Google_Apps_Script.gs)).
 3. Pressione **`Ctrl + S`** (Salvar).
 4. No canto superior direito, clique em **Implantar** -> **Gerenciar implantações**.
-5. Clique no ícone de **Lápis (`✏️` Editar)**, em **Versão** selecione **`Nova versão`** e clique em **Implantar** (isso mantém exatamente a mesma URL `/exec` já gravada de fábrica no APK!).
+5. Clique no ícone de **Lápis (`✏️` Editar)**, em **Versão** selecione **`Nova versão`** e clique em **Implantar** (isso mantém exatamente a mesma URL `/exec` já gravada de fábrica no APK e no PC da Base!).
 
 ---
 

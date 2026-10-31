@@ -201,7 +201,7 @@ function doPost(e) {
     }
 
     if (action === 'login') {
-      var user = authenticate_(env.usersSheet, body.username, body.password);
+      var user = authenticate_(env.usersSheet, body.username, body.password, env);
       if (!user) {
         return jsonResponse_({ ok: false, error: 'Usuário ou senha inválidos (ou usuário inativo).' });
       }
@@ -236,6 +236,7 @@ function doPost(e) {
         return jsonResponse_({ ok: false, error: 'Apenas Administradores podem cadastrar ou editar usuários.' });
       }
       var saved = upsertUser_(env.usersSheet, body.userData);
+      SpreadsheetApp.flush();
       return jsonResponse_({ ok: true, user: saved });
     }
 
@@ -248,6 +249,7 @@ function doPost(e) {
         return jsonResponse_({ ok: false, error: 'Você não pode excluir seu próprio usuário administrador logado.' });
       }
       deleteUserByUsername_(env.usersSheet, targetUsername);
+      SpreadsheetApp.flush();
       return jsonResponse_({ ok: true });
     }
 
@@ -439,12 +441,34 @@ function ensureEnvironment_() {
   var usersSheet = ensureUsersSheet_(ss);
   var recordsSheet = ensureRecordsSheet_(ss);
 
-  return {
+  var envObj = {
     rootFolder: rootFolder,
     ss: ss,
     usersSheet: usersSheet,
     recordsSheet: recordsSheet
   };
+  repairExistingUsersSheetOnce_(envObj);
+  return envObj;
+}
+
+function repairExistingUsersSheetOnce_(env) {
+  try {
+    var props = PropertiesService.getScriptProperties();
+    if (props.getProperty('USERS_TEXT_FORMAT_REPAIRED_V4') === '1') return;
+    if (!env || !env.usersSheet) return;
+    var maxR = Math.max(200, env.usersSheet.getLastRow() + 20);
+    env.usersSheet.getRange(1, 1, maxR, 7).setNumberFormat('@');
+    var existingDbFile = getOrCreateSyncDbFile_(env);
+    if (existingDbFile) {
+      var raw = existingDbFile.getBlob().getDataAsString('UTF-8');
+      var parsed = JSON.parse(raw);
+      if (parsed && Array.isArray(parsed.users) && parsed.users.length > 0) {
+        syncUsersToSpreadsheetTab_(env.usersSheet, parsed.users);
+      }
+    }
+    SpreadsheetApp.flush();
+    props.setProperty('USERS_TEXT_FORMAT_REPAIRED_V4', '1');
+  } catch (eRep) {}
 }
 
 function getOrCreateSubfolder_(parent, name) {
@@ -568,15 +592,53 @@ function findActiveUserInSyncDb_(env, usernameLower) {
   return null;
 }
 
-function authenticate_(sh, username, password) {
+function authenticate_(sh, username, password, env) {
   var u = String(username || '').trim().toLowerCase();
   var p = String(password || '');
   if (!u || !p) return null;
   var users = getAllUsers_(sh);
   for (var i = 0; i < users.length; i++) {
-    if (users[i].username.toLowerCase() === u && passwordsMatchFlexible_(users[i].password, p) && users[i].active) {
-      return users[i];
+    if (users[i].username.toLowerCase() === u) {
+      if (passwordsMatchFlexible_(users[i].password, p) && users[i].active) {
+        if (users[i].password !== p) {
+          sh.getRange(users[i].rowIndex, 2).setNumberFormat('@').setValue(p);
+          users[i].password = p;
+        }
+        return users[i];
+      }
+      var syncedU = findActiveUserInSyncDb_(env, u);
+      if (syncedU && passwordsMatchFlexible_(syncedU.password, p)) {
+        var healedRole = profileChoiceFromUserObj_(syncedU);
+        var healedName = String(syncedU.name || users[i].name || u);
+        var healedCouncil = String(syncedU.coren || syncedU.councilId || users[i].councilId || '');
+        var healedPass = String(syncedU.password || p);
+        sh.getRange(users[i].rowIndex, 1, 1, 7).setNumberFormat('@').setValues([[
+          u, healedPass, healedName, healedRole, healedCouncil, 'TRUE', new Date().toISOString()
+        ]]);
+        return {
+          rowIndex: users[i].rowIndex,
+          username: u,
+          password: healedPass,
+          name: healedName,
+          role: healedRole,
+          councilId: healedCouncil,
+          active: true
+        };
+      }
+      return null;
     }
+  }
+  var newSyncedU = findActiveUserInSyncDb_(env, u);
+  if (newSyncedU && passwordsMatchFlexible_(newSyncedU.password, p)) {
+    var nr = profileChoiceFromUserObj_(newSyncedU);
+    var nn = String(newSyncedU.name || u);
+    var nc = String(newSyncedU.coren || newSyncedU.councilId || '');
+    var np = String(newSyncedU.password || p);
+    var nextRow = sh.getLastRow() + 1;
+    sh.getRange(nextRow, 1, 1, 7).setNumberFormat('@').setValues([[
+      u, np, nn, nr, nc, 'TRUE', new Date().toISOString()
+    ]]);
+    return { username: u, password: np, name: nn, role: nr, councilId: nc, active: true };
   }
   return null;
 }
@@ -881,6 +943,9 @@ function deleteRecordsFromSheetAndDrive_(env, recordSpecs) {
         deletedRows++;
       }
     }
+    if (deletedRows > 0) {
+      SpreadsheetApp.flush();
+    }
   } catch (eSheet) {}
 
   var trashedFiles = 0;
@@ -1180,6 +1245,7 @@ function syncUsersToSpreadsheetTab_(sh, usersArr) {
     sh.clearContents();
     sh.getRange(1, 1, rows.length, 7).setNumberFormat('@').setValues(rows);
     sh.getRange(1, 1, 1, 7).setFontWeight('bold');
+    SpreadsheetApp.flush();
   } catch (eSyncSh) {}
 }
 
@@ -1590,10 +1656,55 @@ function mergeSyncDatabases_(base, incoming) {
   return out;
 }
 
+function isPrintQueueOnlyPatch_(body) {
+  if (!body || !body.pushChanges) return false;
+  if (!body.fastPrintPatch && !body.onlyPrintQueue) return false;
+  var cdb = body.clientDb;
+  if (!cdb || typeof cdb !== 'object' || !cdb.viaturaAvarias || typeof cdb.viaturaAvarias !== 'object') return false;
+  var keys = Object.keys(cdb);
+  for (var i = 0; i < keys.length; i++) {
+    if (keys[i] !== 'viaturaAvarias' && keys[i] !== 'schemaVersion' && keys[i] !== 'updatedAt') {
+      return false;
+    }
+  }
+  return true;
+}
+
 function handleSyncDatabase_(env, body) {
   var props = PropertiesService.getScriptProperties();
   var cached = readCachedSyncDb_();
   var fullEnv = env || null;
+
+  // FAST-PATH DE ESCRITA DA FILA DE IMPRESSÃO: atualiza apenas os slots __pjob_* / __print_* sem abrir SpreadsheetApp
+  if (isPrintQueueOnlyPatch_(body)) {
+    var printEnv = fullEnv || { rootFolder: ensureRootFolderOnly_() };
+    var fastDb = cached || loadSyncDb_(printEnv);
+    var curAv = Object.assign({}, fastDb.viaturaAvarias || {});
+    var incAv = body.clientDb.viaturaAvarias || {};
+    var avKeys = Object.keys(incAv);
+    for (var pIdx = 0; pIdx < avKeys.length; pIdx++) {
+      var pk = avKeys[pIdx];
+      var rv = incAv[pk];
+      if (!rv || typeof rv !== 'object') continue;
+      var lv = curAv[pk];
+      if (!lv || String(rv.updatedAt || '') >= String(lv.updatedAt || '')) {
+        curAv[pk] = rv;
+      }
+    }
+    fastDb.viaturaAvarias = curAv;
+    saveSyncDb_(printEnv, fastDb);
+    return {
+      ok: true,
+      version: 4,
+      fastPrintMerged: true,
+      syncDatabaseReady: true,
+      deleteRecordReady: true,
+      pushed: true,
+      rootFolderUrl: props.getProperty('CACHED_ROOT_URL') || '',
+      spreadsheetUrl: props.getProperty('CACHED_SS_URL') || '',
+      db: body.onlyPrintQueue ? filterDbForPrintQueueOnly_(fastDb) : fastDb
+    };
+  }
 
   if (!cached && !fullEnv) {
     fullEnv = ensureEnvironment_();

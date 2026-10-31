@@ -183,7 +183,8 @@ def verify_and_embed_drive_script_url(interactive=True):
         print(f"☁️ Verificando conexão com Google Drive ({script_url[:62]}...)...")
         ok, info = ping_drive_script(script_url)
         if ok and info.get("syncDatabaseReady") is True and info.get("deleteRecordReady") is True:
-            print("✅ Google Drive v3 ativo e confirmado automaticamente (zero ação manual necessária)!")
+            ver_num = info.get("version", 3)
+            print(f"✅ Google Drive v{ver_num} ativo e confirmado automaticamente (zero ação manual necessária)!")
         elif ok:
             print("✅ Google Drive conectado (URL ativa incorporada automaticamente no aplicativo)!")
         else:
