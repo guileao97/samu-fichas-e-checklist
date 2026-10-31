@@ -479,6 +479,18 @@ public class SamuSyncForegroundService extends Service {
                 recObj.put("driveUrl", driveUrl);
                 recObj.put("driveFileId", driveFileId);
                 recObj.put("syncedAt", syncedAt);
+                if (res.optBoolean("serverStored", false) || res.optBoolean("storedOnServer", false)) {
+                    recObj.put("serverStored", true);
+                    recObj.put("storedOnServer", true);
+                }
+                String srvFolder = res.optString("serverFolder", "");
+                if (!srvFolder.isEmpty()) {
+                    recObj.put("serverFolder", srvFolder);
+                }
+                String drvBackupSt = res.optString("driveBackupStatus", "");
+                if (!drvBackupSt.isEmpty()) {
+                    recObj.put("driveBackupStatus", drvBackupSt);
+                }
                 recObj.remove("pendingPdfBase64");
                 recObj.remove("pendingAutoPrint");
                 recObj.remove("lastSyncError");
@@ -522,10 +534,20 @@ public class SamuSyncForegroundService extends Service {
         byte[] payloadBytes = (body != null) ? body.getBytes(StandardCharsets.UTF_8) : new byte[0];
 
         for (int hop = 0; hop < 6; hop++) {
-            HttpURLConnection conn = (HttpURLConnection) new URL(currentUrl).openConnection();
+            URL parsedUrl = new URL(currentUrl);
+            String hostLow = (parsedUrl.getHost() != null) ? parsedUrl.getHost().toLowerCase(Locale.US) : "";
+            boolean isPrivateLan = hostLow.startsWith("192.168.")
+                || hostLow.startsWith("10.")
+                || hostLow.startsWith("127.")
+                || "localhost".equals(hostLow)
+                || hostLow.matches("^172\\.(1[6-9]|2[0-9]|3[0-1])\\..*");
+            boolean isFastPing = currentUrl.contains("/api/ping");
+
+            int connectTimeoutMs = isPrivateLan ? (isFastPing ? 1200 : 2200) : (isFastPing ? 2600 : 25000);
+            int readTimeoutMs = isPrivateLan ? (isFastPing ? 1800 : 35000) : (isFastPing ? 3500 : 75000);
+
+            HttpURLConnection conn = (HttpURLConnection) parsedUrl.openConnection();
             conn.setInstanceFollowRedirects(false);
-            conn.setConnectTimeout(25000);
-            conn.setReadTimeout(75000);
             conn.setRequestMethod(method);
             conn.setRequestProperty("User-Agent", "SAMU192-Orlandia-APK/1.1");
             conn.setRequestProperty("Accept", "application/json, text/plain, */*");
@@ -537,12 +559,22 @@ public class SamuSyncForegroundService extends Service {
                 while (keys.hasNext()) {
                     String k = keys.next();
                     String v = hdrs.optString(k, "");
+                    if ("x-samu-connect-timeout-ms".equalsIgnoreCase(k)) {
+                        try { connectTimeoutMs = Math.max(400, Integer.parseInt(v.trim())); } catch (Exception ignored) {}
+                        continue;
+                    }
+                    if ("x-samu-read-timeout-ms".equalsIgnoreCase(k)) {
+                        try { readTimeoutMs = Math.max(600, Integer.parseInt(v.trim())); } catch (Exception ignored) {}
+                        continue;
+                    }
                     if (!v.isEmpty()) {
                         conn.setRequestProperty(k, v);
                         if ("content-type".equalsIgnoreCase(k)) hasCustomContentType = true;
                     }
                 }
             }
+            conn.setConnectTimeout(connectTimeoutMs);
+            conn.setReadTimeout(readTimeoutMs);
 
             if ("POST".equals(method) || "PUT".equals(method) || "PATCH".equals(method)) {
                 conn.setDoOutput(true);

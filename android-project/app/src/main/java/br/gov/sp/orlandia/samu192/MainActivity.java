@@ -164,6 +164,9 @@ public class MainActivity extends Activity {
         settings.setBuiltInZoomControls(false);
         settings.setDisplayZoomControls(false);
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        }
 
         webView.addJavascriptInterface(new AndroidBridge(), "AndroidBridge");
 
@@ -579,7 +582,7 @@ public class MainActivity extends Activity {
         if (webView != null) {
             webView.evaluateJavascript(
                 "(function(){ " +
-                "  var ids = ['samu-dialog-modal','samu-sig-modal','drafts-modal','regulacao-photo-modal','pdf-preview-modal'];" +
+                "  var ids = ['samu-dialog-modal','samu-sig-modal','drafts-modal','regulacao-photo-modal','pdf-preview-modal','server-explorer-modal','drive-explorer-modal'];" +
                 "  for (var i = 0; i < ids.length; i++) {" +
                 "    var el = document.getElementById(ids[i]);" +
                 "    if (el && !el.classList.contains('hidden')) { el.classList.add('hidden'); return 'closed'; }" +

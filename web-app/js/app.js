@@ -632,7 +632,7 @@
           record.syncStatus = 'pending';
         }
         generated = generated || await window.SamuPDF.generatePdfForRecord(record);
-        const upRes = await window.SamuStorage.uploadRecordToDrive(record, generated.base64, { skipAutoPrint: true });
+        const upRes = await window.SamuStorage.uploadRecordToDrive(record, generated.base64, { skipAutoPrint: true, forceDirectDrive: true });
         await refreshDraftCount();
         await refreshSyncBadge();
 
@@ -4275,7 +4275,256 @@
     return { proceed: true, action: 'kept_existing' };
   }
 
-  /* ===================== VISUALIZADOR INTERNO DE PASTAS E PLANILHA DE CONTROLE (SEM PEDIR CONTA GOOGLE) ===================== */
+  /* ===================== VISUALIZADOR INTERNO DE PASTAS (SERVIDOR A14 512GB SD + GOOGLE DRIVE) E PLANILHA DE CONTROLE ===================== */
+  function ensureServerExplorerModal() {
+    let modal = document.getElementById('server-explorer-modal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'server-explorer-modal';
+      modal.className = 'sig-modal hidden';
+      modal.style.zIndex = '173';
+      modal.innerHTML = '<div class="crew-modal-card" id="server-explorer-modal-body" style="max-width:940px; width:96%; max-height:92vh; overflow-y:auto;"></div>';
+      document.body.appendChild(modal);
+    }
+    return {
+      modal,
+      body: document.getElementById('server-explorer-modal-body')
+    };
+  }
+
+  async function openServerPdfForAdmin(recordId, driveFileIdHint, triggerBtn) {
+    if (!currentUser || !window.SamuStorage.isUserAdmin(currentUser)) return;
+    const cleanId = String(recordId || '').trim();
+    if (!cleanId && !driveFileIdHint) return;
+
+    const origText = triggerBtn ? triggerBtn.textContent : '';
+    if (triggerBtn) {
+      triggerBtn.disabled = true;
+      triggerBtn.textContent = '🖥️ Abrindo...';
+    }
+    try {
+      const localRec = cleanId ? await window.SamuStorage.getRecordById(cleanId) : null;
+      const effDriveId = String(driveFileIdHint || (localRec && localRec.driveFileId) || '').trim();
+      const res = await window.SamuStorage.downloadServerPdfBase64(cleanId, effDriveId);
+      if (res && res.ok && res.pdfBase64) {
+        const fName = String(res.fileName || `${cleanId || 'documento_samu'}.pdf`);
+        const srcMsg = res.servedFrom === 'google_drive_fallback'
+          ? '☁️ PDF carregado do backup Google Drive'
+          : '🖥️ PDF aberto direto do Cartão SD do Servidor A14!';
+        if (window.AndroidBridge && typeof window.AndroidBridge.shareOrDownloadPdf === 'function') {
+          window.AndroidBridge.shareOrDownloadPdf(res.pdfBase64, fName);
+          showToast(srcMsg);
+          return;
+        }
+        const binStr = window.atob(String(res.pdfBase64).replace(/\s+/g, ''));
+        const bytes = new Uint8Array(binStr.length);
+        for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+        const blob = new Blob([bytes], { type: 'application/pdf' });
+        const blobUrl = URL.createObjectURL(blob);
+        const opened = window.open(blobUrl, '_blank');
+        if (!opened) {
+          const a = document.createElement('a');
+          a.href = blobUrl;
+          a.download = fName;
+          document.body.appendChild(a);
+          a.click();
+          setTimeout(() => { try { document.body.removeChild(a); } catch (e) {} }, 400);
+        }
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+        showToast(srcMsg);
+        return;
+      }
+      throw new Error('PDF indisponível no Servidor Central.');
+    } catch (err) {
+      const fallbackRec = cleanId ? await window.SamuStorage.getRecordById(cleanId) : null;
+      if (fallbackRec && fallbackRec.data) {
+        showToast('⚠️ Abrindo visualização local do PDF no aplicativo...');
+        await openPdfPreviewModal(fallbackRec);
+      } else {
+        samuAlert('Não foi possível abrir o PDF do Servidor Central A14: ' + (err.message || err));
+      }
+    } finally {
+      if (triggerBtn) {
+        triggerBtn.disabled = false;
+        triggerBtn.textContent = origText;
+      }
+    }
+  }
+
+  async function openInAppServerFoldersModal() {
+    if (!currentUser || !window.SamuStorage.isUserAdmin(currentUser)) return;
+    const { modal, body } = ensureServerExplorerModal();
+    if (!modal || !body) return;
+
+    modal.classList.remove('hidden');
+    body.innerHTML = `<div style="padding:28px; text-align:center; color:var(--muted); font-weight:700;">🖥️ Conectando ao Servidor Central A14 (Cartão MicroSD 512 GB)...</div>`;
+
+    let srvData = null;
+    try {
+      srvData = await window.SamuStorage.listServerFolders();
+    } catch (err) {
+      body.innerHTML = `
+        <div style="padding:22px; text-align:center;">
+          <div style="font-size:2rem; margin-bottom:8px;">🖥️⚠️</div>
+          <h3 style="margin:0 0 6px; color:var(--navy);">Servidor Central A14 Inacessível Agora</h3>
+          <p style="margin:0 0 14px; font-size:0.86rem; color:var(--muted);">
+            ${escapeHtml(err.message || String(err))}<br>
+            Enquanto o Servidor A14 estiver fora de alcance, você pode consultar normalmente o espelho automático do Google Drive.
+          </p>
+          <div style="display:flex; justify-content:center; gap:8px; flex-wrap:wrap;">
+            <button type="button" class="btn btn-primary btn-sm" id="btn-srv-exp-retry">🔄 Tentar Novamente</button>
+            <button type="button" class="btn btn-success btn-sm" id="btn-srv-exp-open-drive">📁 Abrir Espelho Google Drive</button>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-srv-exp-close-err">✖ Fechar</button>
+          </div>
+        </div>
+      `;
+      document.getElementById('btn-srv-exp-retry').onclick = () => openInAppServerFoldersModal();
+      document.getElementById('btn-srv-exp-open-drive').onclick = () => {
+        modal.classList.add('hidden');
+        openInAppDriveFoldersModal();
+      };
+      document.getElementById('btn-srv-exp-close-err').onclick = () => modal.classList.add('hidden');
+      return;
+    }
+
+    const categories = Array.isArray(srvData.categories) ? srvData.categories : [];
+    let activeCatKey = (categories[0] && categories[0].key) || 'Fichas_Atendimento';
+    let selectedMonth = 'all';
+
+    const modeBadge = srvData._serverMode === 'lan'
+      ? `<span class="type-badge" style="background:#dcfce7; color:#14532d;">🟢 Wi-Fi Base (~5ms) • ${escapeHtml(srvData._serverBaseUrl || '')}</span>`
+      : `<span class="type-badge" style="background:#f3e8ff; color:#6b21a8;">🟣 Túnel 4G (~40ms) • ${escapeHtml(srvData._serverBaseUrl || '')}</span>`;
+    const sdBadge = `<span class="type-badge" style="background:#0f172a; color:#fff;">💾 ${escapeHtml(srvData.summaryFormatted || ((srvData.freeFormatted || '') + ' livres'))}</span>`;
+
+    const renderServerExplorer = () => {
+      const curCat = categories.find(c => c.key === activeCatKey) || { key: activeCatKey, title: activeCatKey, totalFiles: 0, months: [] };
+      const monthsArr = Array.isArray(curCat.months) ? curCat.months : [];
+      if (selectedMonth !== 'all' && !monthsArr.some(m => m.month === selectedMonth)) {
+        selectedMonth = 'all';
+      }
+      const visibleFiles = [];
+      monthsArr.forEach(mObj => {
+        if (selectedMonth !== 'all' && mObj.month !== selectedMonth) return;
+        const fList = Array.isArray(mObj.files) ? mObj.files : [];
+        fList.forEach(f => visibleFiles.push(f));
+      });
+
+      body.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+          <div>
+            <h3 style="margin:0; font-size:1.05rem; color:var(--navy);">🖥️ Pastas do Servidor Central (Galaxy A14 – Cartão SD 512 GB)</h3>
+            <div style="font-size:0.77rem; color:var(--muted); margin-top:3px;">
+              Armazenamento permanente na Base: <code>${escapeHtml(srvData.vaultPath || 'SAMU_192_Servidor')}</code>
+            </div>
+            <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:6px;">
+              ${modeBadge}
+              ${sdBadge}
+            </div>
+          </div>
+          <div style="display:flex; gap:6px; flex-wrap:wrap;">
+            <button type="button" class="btn btn-outline btn-sm" id="btn-srv-exp-refresh">🔄 Atualizar</button>
+            <button type="button" class="btn btn-outline btn-sm" id="btn-srv-exp-switch-drv">📁 Pastas Drive</button>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-srv-exp-close">✖ Fechar</button>
+          </div>
+        </div>
+
+        <div class="catalog-subtabs">
+          ${categories.map(cat => `
+            <button type="button" class="catalog-subtab ${activeCatKey === cat.key ? 'active' : ''}" data-srv-cat="${escapeHtml(cat.key)}">
+              ${escapeHtml(cat.title)} (${Number(cat.totalFiles) || 0})
+            </button>
+          `).join('')}
+        </div>
+
+        <div class="chips-wrap" style="margin-bottom:10px;">
+          <button type="button" class="chip-btn ${selectedMonth === 'all' ? 'selected' : ''}" data-srv-month="all">📅 Todos os Meses (${Number(curCat.totalFiles) || 0})</button>
+          ${monthsArr.map(m => `
+            <button type="button" class="chip-btn ${selectedMonth === m.month ? 'selected' : ''}" data-srv-month="${escapeHtml(m.month)}">📂 ${escapeHtml(m.month)} (${Number(m.count) || 0})</button>
+          `).join('')}
+        </div>
+
+        <div style="max-height:54vh; overflow-y:auto; border:1px solid #e2e8f0; border-radius:10px; padding:6px 10px;">
+          ${visibleFiles.length === 0 ? `
+            <div style="padding:20px; text-align:center; color:var(--muted); font-size:0.86rem;">Nenhum PDF arquivado nesta pasta do Cartão SD ainda.</div>
+          ` : visibleFiles.map(f => {
+            const title = f.patientName || f.vehicle || f.fileName || (f.type === 'ficha' ? 'Ficha SAMU' : 'Check List');
+            const drvMirrored = Boolean(f.driveUrl || f.driveFileId || f.driveBackupStatus === 'synced');
+            return `
+              <div class="check-item-row" style="flex-wrap:wrap; gap:8px;">
+                <div class="check-item-info">
+                  <strong>📄 ${escapeHtml(title)}</strong>
+                  <small style="color:var(--muted);"> • ${escapeHtml(f.date || '')} • Pasta SD: <code>${escapeHtml(f.monthFolder || '')}</code>${f.sizeFormatted ? ` • ${escapeHtml(f.sizeFormatted)}` : ''}</small>
+                  <br>
+                  <small style="color:var(--muted);">
+                    Por: ${escapeHtml(f.createdByName || '-')}
+                    • ${f.serverStored ? '<span style="color:#15803d;font-weight:700;">🖥️ No Cartão SD</span>' : '<span style="color:#b45309;">⏳ Cache SD</span>'}
+                    • ${drvMirrored ? '<span style="color:#0369a1;font-weight:700;">☁️ Backup Drive OK</span>' : '<span style="color:#92400e;">⏳ Fila Backup Drive</span>'}
+                  </small>
+                </div>
+                <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                  <button type="button" class="btn btn-primary btn-sm" data-srv-open-pdf="${escapeHtml(f.id)}" data-srv-drive-id="${escapeHtml(f.driveFileId || '')}">🖥️ Abrir PDF Servidor</button>
+                  <button type="button" class="btn btn-outline btn-sm" data-srv-preview="${escapeHtml(f.id)}">👁️ Ver no App</button>
+                  ${f.driveUrl ? `<a href="${escapeHtml(f.driveUrl)}" target="_blank" rel="noopener" class="btn btn-success btn-sm" style="text-decoration:none;">☁️ Abrir PDF Drive</a>` : ''}
+                  <button type="button" class="btn btn-danger-outline btn-sm" data-srv-del="${escapeHtml(f.id)}">🗑️ Excluir</button>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      `;
+
+      document.getElementById('btn-srv-exp-close').onclick = () => modal.classList.add('hidden');
+      document.getElementById('btn-srv-exp-refresh').onclick = () => openInAppServerFoldersModal();
+      document.getElementById('btn-srv-exp-switch-drv').onclick = () => {
+        modal.classList.add('hidden');
+        openInAppDriveFoldersModal();
+      };
+      body.querySelectorAll('[data-srv-cat]').forEach(btn => {
+        btn.onclick = () => {
+          activeCatKey = btn.dataset.srvCat;
+          selectedMonth = 'all';
+          renderServerExplorer();
+        };
+      });
+      body.querySelectorAll('[data-srv-month]').forEach(btn => {
+        btn.onclick = () => {
+          selectedMonth = btn.dataset.srvMonth;
+          renderServerExplorer();
+        };
+      });
+      body.querySelectorAll('[data-srv-open-pdf]').forEach(btn => {
+        btn.onclick = () => openServerPdfForAdmin(btn.dataset.srvOpenPdf, btn.dataset.srvDriveId, btn);
+      });
+      body.querySelectorAll('[data-srv-preview]').forEach(btn => {
+        btn.onclick = async () => {
+          let rec = await window.SamuStorage.getRecordById(btn.dataset.srvPreview);
+          if (!rec && window.SamuStorage.syncAllWithCloud) {
+            try {
+              await window.SamuStorage.syncAllWithCloud({ onlyFlushPending: false });
+              rec = await window.SamuStorage.getRecordById(btn.dataset.srvPreview);
+            } catch (e) {}
+          }
+          if (rec && rec.data) {
+            modal.classList.add('hidden');
+            await openPdfPreviewModal(rec);
+          } else {
+            await openServerPdfForAdmin(btn.dataset.srvPreview, '', btn);
+          }
+        };
+      });
+      body.querySelectorAll('[data-srv-del]').forEach(btn => {
+        btn.onclick = async () => {
+          const deleted = await deleteRecordCompletelyAsAdmin(btn.dataset.srvDel, btn);
+          if (deleted) {
+            openInAppServerFoldersModal();
+          }
+        };
+      });
+    };
+
+    renderServerExplorer();
+  }
+
   function ensureDriveExplorerModal() {
     let modal = document.getElementById('drive-explorer-modal');
     if (!modal) {
@@ -4348,6 +4597,7 @@
             </div>
           </div>
           <div style="display:flex; gap:6px; flex-wrap:wrap;">
+            <button type="button" class="btn btn-outline btn-sm" id="btn-drv-switch-srv">🖥️ Pastas Servidor (SD)</button>
             ${settings.rootFolderUrl ? `<a href="${escapeHtml(settings.rootFolderUrl)}" target="_blank" class="btn btn-outline btn-sm" style="text-decoration:none;" title="Requer estar logado no Gmail proprietário ou compartilhado no app Google Drive">↗️ App Google Drive</a>` : ''}
             <button type="button" class="btn btn-secondary btn-sm" id="btn-drv-exp-close">✖ Fechar</button>
           </div>
@@ -4387,8 +4637,9 @@
                 </div>
                 <div style="display:flex; gap:6px; flex-wrap:wrap;">
                   ${r.data ? `<button type="button" class="btn btn-primary btn-sm" data-drv-preview="${escapeHtml(r.id)}">👁️ Ver PDF no App</button>` : ''}
+                  <button type="button" class="btn btn-outline btn-sm" style="border-color:#0f172a; color:#0f172a;" data-drv-srv-pdf="${escapeHtml(r.id)}" data-drv-fid="${escapeHtml(r.driveFileId || '')}">🖥️ PDF Servidor</button>
                   ${(r.driveUrl || r.driveFileId || r.data) ? `<button type="button" class="btn btn-outline btn-sm" style="border-color:#1d4ed8; color:#1d4ed8;" data-drv-print="${escapeHtml(r.id)}">🖨️ Imprimir na Base</button>` : ''}
-                  ${r.driveUrl ? `<a href="${escapeHtml(r.driveUrl)}" target="_blank" class="btn btn-success btn-sm" style="text-decoration:none;">☁️ Abrir PDF Drive</a>` : `<span class="type-badge" style="background:#fef3c7;color:#92400e;">Pendente envio</span>`}
+                  ${r.driveUrl ? `<a href="${escapeHtml(r.driveUrl)}" target="_blank" class="btn btn-success btn-sm" style="text-decoration:none;">☁️ Abrir PDF Drive</a>` : `<span class="type-badge" style="background:#fef3c7;color:#92400e;">⏳ Backup Drive</span>`}
                 </div>
               </div>
             `;
@@ -4397,6 +4648,16 @@
       `;
 
       document.getElementById('btn-drv-exp-close').onclick = () => modal.classList.add('hidden');
+      const btnSwitchSrv = document.getElementById('btn-drv-switch-srv');
+      if (btnSwitchSrv) {
+        btnSwitchSrv.onclick = () => {
+          modal.classList.add('hidden');
+          openInAppServerFoldersModal();
+        };
+      }
+      body.querySelectorAll('[data-drv-srv-pdf]').forEach(btn => {
+        btn.onclick = () => openServerPdfForAdmin(btn.dataset.drvSrvPdf, btn.dataset.drvFid, btn);
+      });
       body.querySelectorAll('[data-drv-folder]').forEach(btn => {
         btn.onclick = () => {
           activeFolderType = btn.dataset.drvFolder;
@@ -4470,7 +4731,8 @@
           <td style="padding:7px 6px;">${escapeHtml(r.risk || r.shift || '-')}</td>
           <td style="padding:7px 6px;">${escapeHtml(r.createdByName || r.createdBy || '-')}</td>
           <td style="padding:7px 6px; white-space:nowrap;">
-            ${r.driveUrl ? `<a href="${escapeHtml(r.driveUrl)}" target="_blank" class="btn btn-success btn-sm" style="padding:3px 8px; font-size:0.73rem; text-decoration:none;">☁️ PDF</a>` : ''}
+            <button type="button" class="btn btn-outline btn-sm" data-sht-srv-pdf="${escapeHtml(r.id)}" data-sht-fid="${escapeHtml(r.driveFileId || '')}" style="padding:3px 7px; font-size:0.72rem; border-color:#0f172a; color:#0f172a;">🖥️ SD</button>
+            ${r.driveUrl ? `<a href="${escapeHtml(r.driveUrl)}" target="_blank" class="btn btn-success btn-sm" style="padding:3px 8px; font-size:0.73rem; text-decoration:none;">☁️ Drive</a>` : ''}
             ${r.data ? `<button type="button" class="btn btn-outline btn-sm" data-sht-prev="${escapeHtml(r.id)}" style="padding:3px 8px; font-size:0.73rem;">👁️ Ver</button>` : ''}
           </td>
         </tr>
@@ -4516,6 +4778,9 @@
     `;
 
     const bindPreviewBtns = () => {
+      body.querySelectorAll('[data-sht-srv-pdf]').forEach(btn => {
+        btn.onclick = () => openServerPdfForAdmin(btn.dataset.shtSrvPdf, btn.dataset.shtFid, btn);
+      });
       body.querySelectorAll('[data-sht-prev]').forEach(btn => {
         btn.onclick = async () => {
           const rec = records.find(x => x.id === btn.dataset.shtPrev);
@@ -4867,7 +5132,12 @@
       txt.textContent = `🔄 Enviar (${pending})`;
     } else {
       btn.classList.add('synced');
-      txt.textContent = settings.scriptUrl ? '☁️ Drive Sync OK' : '☁️ Sync OK';
+      const srvSnap = window.SamuStorage.getServerStatusSnapshot ? window.SamuStorage.getServerStatusSnapshot() : null;
+      if (srvSnap && srvSnap.isConnected) {
+        txt.textContent = srvSnap.activeMode === 'lan' ? '🖥️ Servidor Wi-Fi OK' : '🖥️ Servidor 4G OK';
+      } else {
+        txt.textContent = settings.scriptUrl ? '☁️ Central Sync OK' : '☁️ Sync OK';
+      }
     }
   }
 
@@ -9198,7 +9468,13 @@
                     : 'Privacidade ativa: exibindo apenas as fichas feitas no seu login.')}
             </div>
           </div>
-          <button type="button" class="btn btn-outline btn-sm" id="btn-hist-sync">🔄 Atualizar Drive</button>
+          <div style="display:flex; gap:6px; flex-wrap:wrap;">
+            ${isAdmin ? `
+              <button type="button" class="btn btn-primary btn-sm" id="btn-hist-server-folders" style="background:#0f172a; border-color:#0f172a;">🖥️ Pastas Servidor (SD)</button>
+              <button type="button" class="btn btn-success btn-sm" id="btn-hist-drive-folders">📁 Pastas Drive</button>
+            ` : ''}
+            <button type="button" class="btn btn-outline btn-sm" id="btn-hist-sync">🔄 Atualizar Central</button>
+          </div>
         </div>
 
         <div class="search-bar-box">
@@ -9262,6 +9538,18 @@
     }
 
     document.getElementById('btn-hist-sync').addEventListener('click', () => triggerBackgroundSync(true));
+    const btnHistSrvFolders = document.getElementById('btn-hist-server-folders');
+    if (btnHistSrvFolders) {
+      btnHistSrvFolders.addEventListener('click', () => openInAppServerFoldersModal());
+    }
+    const btnHistDrvFolders = document.getElementById('btn-hist-drive-folders');
+    if (btnHistDrvFolders) {
+      btnHistDrvFolders.addEventListener('click', () => openInAppDriveFoldersModal());
+    }
+
+    container.querySelectorAll('[data-h-server-pdf]').forEach(btn => {
+      btn.addEventListener('click', () => openServerPdfForAdmin(btn.dataset.hServerPdf, btn.dataset.hDriveId || '', btn));
+    });
 
     // Ações dos cards do histórico
     container.querySelectorAll('[data-h-send-drive]').forEach(btn => {
@@ -9385,7 +9673,7 @@
 
     const confirmMsg = isDraft
       ? `Excluir PERMANENTEMENTE este rascunho de ${typeLabel}?\n\n• ${titleLabel} (${dateBR})\n\nEle será apagado de todos os celulares da equipe.`
-      : `Excluir PERMANENTEMENTE este registro (${typeLabel})?\n\n• ${titleLabel} (${dateBR})\n\nEsta ação apagará a ficha/checklist de TODOS os celulares do aplicativo, removerá da Planilha de Controle e excluirá o PDF do Google Drive.`;
+      : `Excluir PERMANENTEMENTE este registro (${typeLabel})?\n\n• ${titleLabel} (${dateBR})\n\nEsta ação apagará a ficha/checklist de TODOS os celulares, do Cartão SD de 512 GB do Servidor Central A14, da Planilha de Controle e do backup no Google Drive.`;
 
     if (!(await samuConfirm(confirmMsg))) return false;
 
@@ -9425,8 +9713,8 @@
       renderActiveView();
 
       showToast(res.driveDeleted
-        ? `🗑️ ${typeLabel} excluído completamente do Aplicativo e do Google Drive!`
-        : `🗑️ ${typeLabel} excluído do Aplicativo! (O PDF no Google Drive será removido ao sincronizar)`);
+        ? `🗑️ ${typeLabel} excluído completamente do Servidor A14, Aplicativo e Google Drive!`
+        : `🗑️ ${typeLabel} excluído do Aplicativo e agendado p/ remoção no Servidor/Drive!`);
       return true;
     } catch (err) {
       samuAlert('Erro ao excluir registro: ' + (err.message || err));
@@ -9460,8 +9748,21 @@
 
     const isDraft = rec.syncStatus === 'draft';
     const synced = rec.syncStatus === 'synced';
+    const onServer = Boolean(rec.serverStored || rec.storedOnServer);
+    const hasDrive = Boolean(rec.driveUrl || rec.driveFileId || rec.driveBackupStatus === 'synced');
     const statusCls = isDraft ? 'status-draft' : (synced ? 'status-synced' : 'status-pending');
-    const statusLabel = isDraft ? '📌 Rascunho (Em aberto)' : (synced ? '☁️ No Google Drive' : '⏳ Aguardando Drive');
+    let statusLabel = '';
+    if (isDraft) {
+      statusLabel = '📌 Rascunho (Em aberto)';
+    } else if (!synced) {
+      statusLabel = '⏳ Aguardando Envio';
+    } else if (isAdmin) {
+      if (onServer && hasDrive) statusLabel = '🖥️ Servidor A14 + ☁️ Drive';
+      else if (onServer) statusLabel = '🖥️ Servidor A14 (⏳ Backup Drive)';
+      else statusLabel = '☁️ No Google Drive';
+    } else {
+      statusLabel = '✅ Salvo na Central';
+    }
     const dateParts = String(rec.date || '').split('-');
     const dateBR = dateParts.length === 3 ? `${dateParts[2]}/${dateParts[1]}/${dateParts[0]}` : rec.date;
 
@@ -9477,7 +9778,7 @@
       } else if (printJob && printJob.status === 'error') {
         printBadgeHtml = `<span class="type-badge" style="background:#fee2e2; color:#991b1b;" title="${escapeHtml(printJob.errorMsg || 'Erro ao imprimir')}">⚠️ Erro Impressão Base</span>`;
       } else if (rec.skipAutoPrint) {
-        printBadgeHtml = `<span class="type-badge" style="background:#e0f2fe; color:#0369a1;">☁️ Só Drive (Sem Imprimir)</span>`;
+        printBadgeHtml = `<span class="type-badge" style="background:#e0f2fe; color:#0369a1;">${isAdmin ? '💾 Salvo (Sem Imprimir)' : '✅ Salvo (Sem Imprimir)'}</span>`;
       }
     }
     const printBtnLabel = (printJob && printJob.status === 'printed') ? '🖨️ Reimprimir na Base' : '🖨️ Imprimir na Base';
@@ -9504,14 +9805,15 @@
           ${isAdmin ? `<br>👤 Enviado por: <strong>${escapeHtml(rec.createdByName || rec.createdBy)}</strong> (${escapeHtml(rec.createdBy)})` : ''}
         </div>
         <div class="history-actions">
-          ${!isDraft && !synced ? `<button type="button" class="btn btn-success btn-sm" data-h-send-drive="${escapeHtml(rec.id)}">☁️ Enviar ao Drive Agora</button>` : ''}
+          ${!isDraft && !synced ? `<button type="button" class="btn btn-success btn-sm" data-h-send-drive="${escapeHtml(rec.id)}">🔄 Enviar Agora</button>` : ''}
           <button type="button" class="btn btn-outline btn-sm" data-h-edit="${escapeHtml(rec.id)}">${isDraft ? '✏️ Continuar Preenchimento' : '✏️ Abrir / Editar'}</button>
           <button type="button" class="btn btn-primary btn-sm" data-h-pdf="${escapeHtml(rec.id)}">📄 Gerar / Ver PDF</button>
           ${!isDraft ? `<button type="button" class="btn btn-outline btn-sm" style="border-color:#1d4ed8; color:#1d4ed8;" data-h-print-base="${escapeHtml(rec.id)}">${printBtnLabel}</button>` : ''}
           ${rec.type === 'ficha' ? `<button type="button" class="btn btn-whatsapp btn-sm" data-h-reg="${escapeHtml(rec.id)}">📲 Cabeçalho Regulação</button>` : ''}
-          ${rec.driveUrl ? `<a href="${escapeHtml(rec.driveUrl)}" target="_blank" rel="noopener" class="btn btn-success btn-sm" style="text-decoration:none;">☁️ Ver no Google Drive</a>` : ''}
+          ${isAdmin && !isDraft ? `<button type="button" class="btn btn-outline btn-sm" style="border-color:#0f172a; color:#0f172a; background:#f8fafc;" data-h-server-pdf="${escapeHtml(rec.id)}" data-h-drive-id="${escapeHtml(rec.driveFileId || '')}">🖥️ Abrir PDF Servidor</button>` : ''}
+          ${isAdmin && rec.driveUrl ? `<a href="${escapeHtml(rec.driveUrl)}" target="_blank" rel="noopener" class="btn btn-success btn-sm" style="text-decoration:none;">☁️ Abrir PDF Drive</a>` : ''}
           ${isAdmin
-            ? `<button type="button" class="btn btn-danger-outline btn-sm" data-h-del-admin="${escapeHtml(rec.id)}">${isDraft ? '🗑️ Excluir Rascunho' : '🗑️ Excluir do App e Drive'}</button>`
+            ? `<button type="button" class="btn btn-danger-outline btn-sm" data-h-del-admin="${escapeHtml(rec.id)}">${isDraft ? '🗑️ Excluir Rascunho' : '🗑️ Excluir (Servidor e Drive)'}</button>`
             : (isDraft ? `<button type="button" class="btn btn-secondary btn-sm" data-h-del-draft="${escapeHtml(rec.id)}">🗑️ Excluir</button>` : '')}
         </div>
       </div>
@@ -10299,8 +10601,40 @@
         ` : ''}
       </div>
 
+      ${(() => {
+        const srvSnap = window.SamuStorage.getServerStatusSnapshot ? window.SamuStorage.getServerStatusSnapshot() : { isConnected: false, activeMode: 'drive_fallback' };
+        const statusChip = srvSnap.isConnected
+          ? (srvSnap.activeMode === 'lan'
+              ? `<span class="type-badge" style="background:#dcfce7; color:#14532d;">🟢 Conectado no Wi-Fi da Base (~5ms) • ${escapeHtml(srvSnap.activeBaseUrl)}</span>`
+              : `<span class="type-badge" style="background:#f3e8ff; color:#6b21a8;">🟣 Conectado via Túnel 4G (~40ms) • ${escapeHtml(srvSnap.activeBaseUrl)}</span>`)
+          : `<span class="type-badge" style="background:#e0f2fe; color:#0369a1;">☁️ Contingência Automática Google Drive (Aguardando descoberta do Servidor A14)</span>`;
+        return `
+          <div class="card" style="border:1.5px solid #0f172a;">
+            <div class="card-title"><span>🖥️ Servidor Central SAMU 192 (Galaxy A14 – Cartão MicroSD 512 GB)</span></div>
+            <p style="margin:0 0 10px; font-size:0.84rem; color:var(--muted);">
+              Motor principal ultra-rápido na Base: armazena <strong>100% das Fichas, Check Lists (PDF + JSON), Pacientes, Logins/Senhas, Médicos e Recebedores</strong> no Cartão SD de 512 GB, faz backup espelhado automático no Google Drive (incluindo exclusões) e sincroniza tudo a cada 24h. Se acabar a energia nos roteadores da Base, o APK alterna sozinho para o Google Drive!
+            </p>
+            <div class="chips-wrap" style="margin-bottom:10px;">
+              ${statusChip}
+              ${srvSnap.sdSummary ? `<span class="type-badge" style="background:#0f172a; color:#fff;">💾 ${escapeHtml(srvSnap.sdSummary)}</span>` : ''}
+              ${srvSnap.wifiSsid ? `<span class="type-badge" style="background:#f1f5f9; color:#334155;">📶 Wi-Fi A14: ${escapeHtml(srvSnap.wifiSsid)}</span>` : ''}
+              ${srvSnap.lanUrl ? `<span class="type-badge" style="background:#f1f5f9; color:#334155;">🏠 LAN: ${escapeHtml(srvSnap.lanUrl)}</span>` : ''}
+              ${srvSnap.tunnelUrl ? `<span class="type-badge" style="background:#faf5ff; color:#6b21a8;">🌐 4G: ${escapeHtml(srvSnap.tunnelUrl)}</span>` : ''}
+            </div>
+            <div class="field">
+              <label>IP / URL Fixa do Servidor A14 (opcional – deixe em branco para descoberta 100% automática)</label>
+              <input type="text" id="adm-server-url" placeholder="Automático (ex. manual opcional: http://192.168.1.50:18920)" value="${escapeHtml(settings.serverUrl || '')}" />
+            </div>
+            <div style="display:flex; flex-wrap:wrap; gap:8px;">
+              <button type="button" class="btn btn-primary btn-sm" id="btn-adm-test-server" style="background:#0f172a; border-color:#0f172a;">🔌 Testar / Conectar Servidor A14</button>
+              <button type="button" class="btn btn-success btn-sm" id="btn-adm-open-server-folders">🖥️ Pastas do Servidor (Cartão SD)</button>
+            </div>
+          </div>
+        `;
+      })()}
+
       <div class="card">
-        <div class="card-title"><span>☁️ Conexão com Google Drive da Central SAMU (Dados em Tempo Real + PDFs)</span></div>
+        <div class="card-title"><span>☁️ Backup Espelhado &amp; Contingência Google Drive (Acesso Exclusivo ADM)</span></div>
         <p style="margin:0 0 10px; font-size:0.84rem; color:var(--muted);">
           URL oficial já pré-configurada de fábrica: centraliza os PDFs organizados em pastas por tipo/mês, libera abertura direta do link do PDF no celular sem pedir permissão extra (mantendo pastas e planilha privadas) e sincroniza todos os celulares da equipe em tempo real.
         </p>
@@ -10668,6 +11002,37 @@
       });
     }
 
+    const btnTestServer = document.getElementById('btn-adm-test-server');
+    if (btnTestServer && window.SamuStorage.probeServerConnection) {
+      btnTestServer.addEventListener('click', async () => {
+        const rawSrv = (document.getElementById('adm-server-url') && document.getElementById('adm-server-url').value.trim()) || '';
+        window.SamuStorage.saveSettings({ serverUrl: rawSrv });
+        btnTestServer.disabled = true;
+        btnTestServer.textContent = '🖥️ Conectando ao A14...';
+        try {
+          const probe = await window.SamuStorage.probeServerConnection(rawSrv || undefined);
+          await refreshSyncBadge();
+          renderAdminView(true);
+          if (probe && probe.ok) {
+            const modeTxt = probe.mode === 'lan' ? 'Wi-Fi da Base (~5ms)' : 'Túnel 4G (~40ms)';
+            showToast(`🖥️ Conectado ao Servidor Central A14 via ${modeTxt}!`);
+          } else {
+            samuAlert((probe && probe.error) || 'Servidor A14 não encontrado agora. O aplicativo continuará operando normalmente via contingência Google Drive.');
+          }
+        } catch (errSrv) {
+          samuAlert('Erro ao testar Servidor A14: ' + (errSrv.message || errSrv));
+        } finally {
+          btnTestServer.disabled = false;
+          btnTestServer.textContent = '🔌 Testar / Conectar Servidor A14';
+        }
+      });
+    }
+
+    const btnOpenServerFolders = document.getElementById('btn-adm-open-server-folders');
+    if (btnOpenServerFolders) {
+      btnOpenServerFolders.addEventListener('click', () => openInAppServerFoldersModal());
+    }
+
     document.getElementById('btn-adm-test-drive').addEventListener('click', async () => {
       const url = document.getElementById('adm-script-url').value.trim();
       const cpfApiUrl = (document.getElementById('adm-cpf-api-url') && document.getElementById('adm-cpf-api-url').value.trim()) || '';
@@ -10683,7 +11048,7 @@
       btn.disabled = true;
       btn.textContent = 'Testando Google Drive...';
       try {
-        const res = await window.SamuStorage.apiPost({ action: 'ping' }, url);
+        const res = await window.SamuStorage.apiPost({ action: 'ping' }, url, { forceDirectDrive: true });
         if (res && res.ok) {
           window.SamuStorage.saveSettings({
             scriptUrl: url,
@@ -11160,7 +11525,7 @@
       btnPrevDelAdmin.disabled = false;
       btnPrevDelAdmin.textContent = (existingSaved && existingSaved.syncStatus === 'draft')
         ? '🗑️ Excluir Rascunho'
-        : '🗑️ Excluir do App e Drive';
+        : '🗑️ Excluir (Servidor e Drive)';
     }
 
     modal.classList.remove('hidden');

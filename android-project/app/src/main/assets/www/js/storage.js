@@ -21,6 +21,7 @@
   const LS_SHARED_FICHAS = 'samu_shared_fichas_v1';
   const LS_VIATURA_AVARIAS = 'samu_viatura_avarias_v1';
   const LS_MEDICOS_REGULADORES = 'samu_medicos_reguladores_v1';
+  const LS_SERVER_ENDPOINTS = 'samu_servidor_central_v1';
   const LS_SEED_V2_DONE = 'samu_seed_crew_demo_v1';
 
   const DEFAULT_USERS = [
@@ -326,7 +327,7 @@
     try {
       const db = await openDB();
       if (!db || !db.objectStoreNames.contains('internal_kv')) return;
-      const keys = [LS_USERS, LS_DELETED_USERS, LS_DELETED_RECORDS, LS_HOSP_RECEIVERS, LS_MEDICOS_REGULADORES, LS_PATIENTS_DB, LS_SETTINGS, LS_LAST_KM, LS_CREW_TEAMS, LS_SHARED_FICHAS, LS_VIATURA_AVARIAS];
+      const keys = [LS_USERS, LS_DELETED_USERS, LS_DELETED_RECORDS, LS_HOSP_RECEIVERS, LS_MEDICOS_REGULADORES, LS_PATIENTS_DB, LS_SETTINGS, LS_LAST_KM, LS_CREW_TEAMS, LS_SHARED_FICHAS, LS_VIATURA_AVARIAS, LS_SERVER_ENDPOINTS];
       await Promise.all(keys.map(k => new Promise((resolve) => {
         try {
           const cur = safeLS.getItem(k);
@@ -378,9 +379,24 @@
     return trimmed;
   }
 
+  function normalizeServerBaseUrl(rawUrl) {
+    let s = String(rawUrl == null ? '' : rawUrl).trim();
+    if (!s) return '';
+    if (!/^https?:\/\//i.test(s)) {
+      s = 'http://' + s;
+    }
+    s = s.replace(/\/+(?:api\/fichas|api\/ping|api\/adm|ws)\/?$/i, '').replace(/\/+$/, '');
+    const ipv4NoPort = s.match(/^(http:\/\/(?:\d{1,3}\.){3}\d{1,3})$/i);
+    if (ipv4NoPort) {
+      s = ipv4NoPort[1] + ':18920';
+    }
+    return s;
+  }
+
   function getSettings() {
     const defaults = {
       scriptUrl: DEFAULT_SCRIPT_URL,
+      serverUrl: '',
       rootFolderUrl: '',
       spreadsheetUrl: '',
       cpfApiUrl: '',
@@ -404,6 +420,7 @@
           ? DEFAULT_SCRIPT_URL
           : normalizeDriveScriptUrl(merged.scriptUrl, true);
       }
+      merged.serverUrl = normalizeServerBaseUrl(merged.serverUrl);
       merged._lastFactoryScriptUrl = DEFAULT_SCRIPT_URL;
       if (!merged.githubRepo || !String(merged.githubRepo).trim()) {
         merged.githubRepo = DEFAULT_GITHUB_REPO;
@@ -419,6 +436,12 @@
     const next = Object.assign({}, cur, partial);
     if (typeof next.scriptUrl === 'string') {
       next.scriptUrl = normalizeDriveScriptUrl(next.scriptUrl, false);
+    }
+    if (typeof next.serverUrl === 'string') {
+      next.serverUrl = normalizeServerBaseUrl(next.serverUrl);
+    }
+    if (partial && Object.prototype.hasOwnProperty.call(partial, 'serverUrl') && next.serverUrl !== cur.serverUrl) {
+      invalidateActiveServerCache();
     }
     if (next.githubRepo) next.githubRepo = next.githubRepo.trim();
     if (next.githubBranch) next.githubBranch = next.githubBranch.trim() || 'main';
@@ -1447,9 +1470,10 @@
   const DAILY_CK_SLOT_PREFIX = '__ckday_';
   const DAILY_CK_SLOT_COUNT = 12;
   const MODULES_CFG_KEY = '__modules_cfg__';
+  const SERVER_CENTRAL_AVARIA_KEY = '__samu_servidor_central__';
 
   function isPrintSystemKey(k) {
-    return /^(?:__print_|__pjob_|__ckday_|__modules_)/.test(String(k || ''));
+    return /^(?:__print_|__pjob_|__ckday_|__modules_|__samu_servidor_)/.test(String(k || ''));
   }
 
   function extractDriveFileIdFromAny(driveFileId, driveUrl) {
@@ -2008,10 +2032,13 @@
   async function enqueueRemotePrintJob(record, opts) {
     const o = (opts && typeof opts === 'object') ? opts : {};
     const isTest = Boolean(o.isTestPage);
-    const fileId = isTest ? '__TEST_PAGE__' : extractDriveFileIdFromAny(record && record.driveFileId, record && record.driveUrl);
+    const fileId = isTest ? '__TEST_PAGE__' : (
+      extractDriveFileIdFromAny(record && record.driveFileId, record && record.driveUrl) ||
+      ((record && (record.serverStored || record.storedOnServer) && record.id) ? ('SERVER_LOCAL:' + String(record.id)) : '')
+    );
     const fileUrl = isTest ? '' : String((record && record.driveUrl) || '').trim();
     if (!isTest && !fileId && !fileUrl) {
-      throw new Error('O PDF precisa estar salvo no Google Drive antes de enviar para a Impressora da Base.');
+      throw new Error('O PDF precisa estar salvo no Servidor Central ou Google Drive antes de enviar para a Impressora da Base.');
     }
 
     const wasDirtyBefore = Boolean(getGitHubMeta().dirty);
@@ -3587,6 +3614,9 @@
         if (!rEntry || typeof rEntry !== 'object') return;
         const lEntry = localAv[vKey];
         if (isPrintSystemKey(vKey)) {
+          if (vKey === SERVER_CENTRAL_AVARIA_KEY) {
+            ingestDiscoveredServerEndpoint(rEntry, 'sync_db');
+          }
           if (!lEntry || String(rEntry.updatedAt || '') > String(lEntry.updatedAt || '')) {
             localAv[vKey] = Object.assign({}, rEntry, {
               key: vKey,
@@ -4226,12 +4256,393 @@
     return /HTTP\s+(?:429|5\d\d)\b|resposta vazia|n[aã]o retornou JSON|Resposta JSON inv[aá]lida|Lock|server error occurred|Service invoked too many times|SocketTimeoutException|timed out|Software caused connection abort|Connection reset/i.test(s);
   }
 
-  async function apiPost(payload, customUrl) {
+  /* ===================== ROTEADOR INTELIGENTE: SERVIDOR CENTRAL A14 (512GB SD) + FALLBACK GOOGLE DRIVE ===================== */
+  const runtimeServerState = {
+    activeBaseUrl: '',
+    activeMode: '', // 'lan' | 'tunnel' | 'manual' | 'drive_fallback'
+    lastProbeAtMs: 0,
+    lastDiscoveryAtMs: 0,
+    lastHealth: null,
+    ongoingResolve: null
+  };
+
+  function getStoredServerEndpoints() {
+    try {
+      const raw = safeLS.getItem(LS_SERVER_ENDPOINTS);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') return parsed;
+      }
+    } catch (e) {}
+    return {
+      lanUrl: '',
+      tunnelUrl: '',
+      wifiSsid: '',
+      sdSummary: '',
+      version: '',
+      updatedAt: ''
+    };
+  }
+
+  function ingestDiscoveredServerEndpoint(obj, sourceLabel) {
+    if (!obj || typeof obj !== 'object') return false;
+    const lan = normalizeServerBaseUrl(obj.lan_url || obj.lanUrl || (obj.lan_ip ? `http://${obj.lan_ip}:${obj.lan_port || 18920}` : ''));
+    const tun = normalizeServerBaseUrl(obj.tunnel_url || obj.tunnelUrl || '');
+    if (!lan && !tun) return false;
+
+    const cur = getStoredServerEndpoints();
+    const changed = (lan && lan !== cur.lanUrl) || (tun && tun !== cur.tunnelUrl);
+    const next = {
+      lanUrl: lan || cur.lanUrl || '',
+      tunnelUrl: tun || cur.tunnelUrl || '',
+      wifiSsid: String(obj.wifi_ssid || obj.wifiSsid || cur.wifiSsid || ''),
+      sdSummary: String(obj.sd_summary || obj.sdSummary || (obj.sdCard && obj.sdCard.summaryFormatted) || cur.sdSummary || ''),
+      version: String(obj.version || cur.version || ''),
+      source: String(sourceLabel || 'auto'),
+      updatedAt: String(obj.updated_at || obj.updatedAt || new Date().toISOString())
+    };
+    saveInternalJson(LS_SERVER_ENDPOINTS, next);
+    if (changed && !runtimeServerState.activeBaseUrl) {
+      runtimeServerState.lastProbeAtMs = 0;
+    }
+    return changed;
+  }
+
+  function invalidateActiveServerCache() {
+    runtimeServerState.activeBaseUrl = '';
+    runtimeServerState.activeMode = '';
+    runtimeServerState.lastProbeAtMs = 0;
+  }
+
+  function isPrivateLanUrl(u) {
+    return /^https?:\/\/(?:192\.168\.|10\.|127\.|localhost\b|172\.(?:1[6-9]|2\d|3[0-1])\.)/i.test(String(u || '').trim());
+  }
+
+  async function probeSingleServerBaseUrl(baseUrl, timeoutMs) {
+    const cleanBase = normalizeServerBaseUrl(baseUrl);
+    if (!cleanBase) return null;
+    const isLan = isPrivateLanUrl(cleanBase);
+    const connMs = timeoutMs || (isLan ? 1200 : 2600);
+    const readMs = Math.max(connMs + 500, isLan ? 1800 : 3500);
+    const pingUrl = `${cleanBase}/api/ping?_=${Date.now()}`;
+
+    try {
+      let res = null;
+      if (window.AndroidBridge && typeof window.AndroidBridge.httpRequest === 'function') {
+        res = await genericHttpJson('GET', pingUrl, {
+          'X-Samu-Connect-Timeout-Ms': String(connMs),
+          'X-Samu-Read-Timeout-Ms': String(readMs)
+        });
+      } else {
+        const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        const timer = setTimeout(() => {
+          try { if (ctrl) ctrl.abort(); } catch (e) {}
+        }, readMs);
+        try {
+          const resp = await fetch(pingUrl, {
+            method: 'GET',
+            mode: 'cors',
+            cache: 'no-store',
+            signal: ctrl ? ctrl.signal : undefined
+          });
+          if (!resp.ok) throw new Error('HTTP ' + resp.status);
+          res = await resp.json();
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+      if (res && res.ok && (res.service || res.sdCard || res.lanPort === 18920 || res.serverMode)) {
+        ingestDiscoveredServerEndpoint(res, isLan ? 'ping_lan' : 'ping_tunnel');
+        return {
+          ok: true,
+          baseUrl: cleanBase,
+          mode: isLan ? 'lan' : 'tunnel',
+          health: res
+        };
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  async function discoverServerEndpointsFromGitHub(force) {
+    const now = Date.now();
+    if (!force && (now - runtimeServerState.lastDiscoveryAtMs) < 25000) {
+      return getStoredServerEndpoints();
+    }
+    runtimeServerState.lastDiscoveryAtMs = now;
+
+    // 1. Checa se já veio embutido no viaturaAvarias sincronizado
+    try {
+      const av = getViaturaAvariasMap();
+      if (av && av[SERVER_CENTRAL_AVARIA_KEY]) {
+        ingestDiscoveredServerEndpoint(av[SERVER_CENTRAL_AVARIA_KEY], 'avarias_cache');
+      }
+    } catch (eAv) {}
+
+    // 2. Busca servidor_central.json publicado automaticamente pelo Galaxy A14
+    const rawCandidates = [
+      `https://raw.githubusercontent.com/guileao97/samu-logs-teste/main/servidor_central.json?_=${now}`,
+      `https://raw.githubusercontent.com/guileao97/samu-logs/main/servidor_central.json?_=${now}`
+    ];
+    for (let i = 0; i < rawCandidates.length; i++) {
+      try {
+        const meta = await genericHttpJson('GET', rawCandidates[i], {
+          'X-Samu-Connect-Timeout-Ms': '2500',
+          'X-Samu-Read-Timeout-Ms': '3500'
+        });
+        if (meta && (meta.lan_url || meta.tunnel_url || meta.lan_ip)) {
+          ingestDiscoveredServerEndpoint(meta, 'github_raw');
+          break;
+        }
+      } catch (eGh) {}
+    }
+    return getStoredServerEndpoints();
+  }
+
+  async function resolveActiveServerBaseUrl(opts) {
+    const o = (opts && typeof opts === 'object') ? opts : {};
+    const now = Date.now();
+    const forceProbe = Boolean(o.forceProbe);
+
+    if (!forceProbe && runtimeServerState.activeBaseUrl && (now - runtimeServerState.lastProbeAtMs) < 25000) {
+      return runtimeServerState.activeBaseUrl;
+    }
+    if (!forceProbe && !runtimeServerState.activeBaseUrl && runtimeServerState.activeMode === 'drive_fallback' && (now - runtimeServerState.lastProbeAtMs) < 12000) {
+      return '';
+    }
+    if (runtimeServerState.ongoingResolve) {
+      try { return await runtimeServerState.ongoingResolve; } catch (e) {}
+    }
+
+    const doResolve = async () => {
+      const settings = getSettings();
+      const manualUrl = normalizeServerBaseUrl(o.overrideManualUrl !== undefined ? o.overrideManualUrl : settings.serverUrl);
+
+      if (manualUrl) {
+        const hitManual = await probeSingleServerBaseUrl(manualUrl, isPrivateLanUrl(manualUrl) ? 1400 : 2800);
+        if (hitManual && hitManual.ok) {
+          runtimeServerState.activeBaseUrl = hitManual.baseUrl;
+          runtimeServerState.activeMode = hitManual.mode;
+          runtimeServerState.lastHealth = hitManual.health;
+          runtimeServerState.lastProbeAtMs = Date.now();
+          return hitManual.baseUrl;
+        }
+      }
+
+      let stored = getStoredServerEndpoints();
+      if (!stored.lanUrl && !stored.tunnelUrl) {
+        try {
+          const av = getViaturaAvariasMap();
+          if (av && av[SERVER_CENTRAL_AVARIA_KEY]) {
+            ingestDiscoveredServerEndpoint(av[SERVER_CENTRAL_AVARIA_KEY], 'avarias_cache');
+            stored = getStoredServerEndpoints();
+          }
+        } catch (e) {}
+      }
+
+      const tryStoredPair = async (ep) => {
+        if (ep.lanUrl && ep.lanUrl !== manualUrl) {
+          const hitLan = await probeSingleServerBaseUrl(ep.lanUrl, 1200);
+          if (hitLan && hitLan.ok) return hitLan;
+        }
+        if (ep.tunnelUrl && ep.tunnelUrl !== manualUrl) {
+          const hitTun = await probeSingleServerBaseUrl(ep.tunnelUrl, 2600);
+          if (hitTun && hitTun.ok) return hitTun;
+        }
+        return null;
+      };
+
+      let winner = await tryStoredPair(stored);
+      if (!winner && o.allowDiscovery !== false) {
+        const fresh = await discoverServerEndpointsFromGitHub(forceProbe);
+        if (fresh.lanUrl !== stored.lanUrl || fresh.tunnelUrl !== stored.tunnelUrl) {
+          winner = await tryStoredPair(fresh);
+        }
+      }
+
+      runtimeServerState.lastProbeAtMs = Date.now();
+      if (winner && winner.ok) {
+        runtimeServerState.activeBaseUrl = winner.baseUrl;
+        runtimeServerState.activeMode = winner.mode;
+        runtimeServerState.lastHealth = winner.health;
+        return winner.baseUrl;
+      }
+
+      runtimeServerState.activeBaseUrl = '';
+      runtimeServerState.activeMode = 'drive_fallback';
+      return '';
+    };
+
+    runtimeServerState.ongoingResolve = doResolve();
+    try {
+      return await runtimeServerState.ongoingResolve;
+    } finally {
+      runtimeServerState.ongoingResolve = null;
+    }
+  }
+
+  function getServerStatusSnapshot() {
+    const settings = getSettings();
+    const stored = getStoredServerEndpoints();
+    return {
+      isConnected: Boolean(runtimeServerState.activeBaseUrl),
+      activeBaseUrl: runtimeServerState.activeBaseUrl || '',
+      activeMode: runtimeServerState.activeMode || (stored.lanUrl || stored.tunnelUrl ? 'idle' : 'drive_fallback'),
+      manualUrl: settings.serverUrl || '',
+      lanUrl: stored.lanUrl || '',
+      tunnelUrl: stored.tunnelUrl || '',
+      wifiSsid: (runtimeServerState.lastHealth && runtimeServerState.lastHealth.wifiSsid) || stored.wifiSsid || '',
+      sdSummary: (runtimeServerState.lastHealth && runtimeServerState.lastHealth.sdCard && runtimeServerState.lastHealth.sdCard.summaryFormatted) || stored.sdSummary || '',
+      version: (runtimeServerState.lastHealth && runtimeServerState.lastHealth.version) || stored.version || '',
+      health: runtimeServerState.lastHealth || null
+    };
+  }
+
+  async function probeServerConnection(manualOverrideUrl) {
+    if (manualOverrideUrl !== undefined && String(manualOverrideUrl).trim() !== '') {
+      const clean = normalizeServerBaseUrl(manualOverrideUrl);
+      const hit = await probeSingleServerBaseUrl(clean, isPrivateLanUrl(clean) ? 1800 : 3500);
+      if (hit && hit.ok) {
+        runtimeServerState.activeBaseUrl = hit.baseUrl;
+        runtimeServerState.activeMode = hit.mode;
+        runtimeServerState.lastHealth = hit.health;
+        runtimeServerState.lastProbeAtMs = Date.now();
+        return hit;
+      }
+      return { ok: false, error: `Servidor Central A14 não respondeu em ${clean}.` };
+    }
+    invalidateActiveServerCache();
+    await discoverServerEndpointsFromGitHub(true);
+    const active = await resolveActiveServerBaseUrl({ forceProbe: true, allowDiscovery: true });
+    if (active) {
+      return {
+        ok: true,
+        baseUrl: active,
+        mode: runtimeServerState.activeMode,
+        health: runtimeServerState.lastHealth
+      };
+    }
+    return {
+      ok: false,
+      error: 'Servidor Central A14 offline ou fora de alcance no momento (usando contingência automática Google Drive).'
+    };
+  }
+
+  function getServerPdfDirectUrl(recordId) {
+    const cleanId = String(recordId || '').trim();
+    if (!cleanId) return '';
+    const base = runtimeServerState.activeBaseUrl || getSettings().serverUrl || getStoredServerEndpoints().lanUrl || getStoredServerEndpoints().tunnelUrl || '';
+    if (!base) return '';
+    return `${normalizeServerBaseUrl(base)}/api/pdf/${encodeURIComponent(cleanId)}`;
+  }
+
+  async function listServerFolders() {
+    const srvBase = await resolveActiveServerBaseUrl({ forceProbe: !runtimeServerState.activeBaseUrl, allowDiscovery: true });
+    if (!srvBase) {
+      throw new Error('Servidor Central A14 não está acessível agora (verifique se o Galaxy A14 está ligado no Wi-Fi da Base).');
+    }
+    let auth = resolveEffectiveSession();
+    if (!auth || !auth.username) {
+      throw new Error('Sessão ADM não encontrada. Faça login novamente.');
+    }
+    const res = await apiPostSingleAttempt({
+      action: 'listServerFolders',
+      authUser: auth.username,
+      authPass: auth.password,
+      authName: auth.name || auth.username,
+      authRole: getUserProfileChoice(auth)
+    }, `${srvBase}/api/fichas`);
+    if (!res || !res.ok) {
+      throw new Error((res && res.error) || 'Não foi possível listar as pastas do Cartão SD do Servidor.');
+    }
+    res._serverBaseUrl = srvBase;
+    res._serverMode = runtimeServerState.activeMode;
+    return res;
+  }
+
+  async function downloadServerPdfBase64(recordId, driveFileId) {
+    const cleanRecId = String(recordId || '').trim();
+    const cleanDriveId = String(driveFileId || '').trim();
+    const srvBase = await resolveActiveServerBaseUrl({ forceProbe: !runtimeServerState.activeBaseUrl, allowDiscovery: true });
+    if (srvBase) {
+      try {
+        const res = await apiPostSingleAttempt({
+          action: 'downloadPdf',
+          recordId: cleanRecId,
+          driveFileId: cleanDriveId
+        }, `${srvBase}/api/fichas`);
+        if (res && res.ok && res.pdfBase64) {
+          res.directUrl = `${srvBase}/api/pdf/${encodeURIComponent(cleanRecId || cleanDriveId)}`;
+          return res;
+        }
+      } catch (eSrvPdf) {}
+    }
+    if (cleanDriveId && getSettings().scriptUrl) {
+      const drvRes = await apiPost({
+        action: 'downloadPdf',
+        driveFileId: cleanDriveId
+      }, getSettings().scriptUrl, { forceDirectDrive: true });
+      if (drvRes && drvRes.ok && drvRes.pdfBase64) {
+        drvRes.servedFrom = 'google_drive_fallback';
+        return drvRes;
+      }
+    }
+    throw new Error('PDF não encontrado no Cartão SD do Servidor Central nem no backup do Google Drive.');
+  }
+
+  async function apiPost(payload, customUrl, extraOpts) {
+    const opts = (extraOpts && typeof extraOpts === 'object') ? extraOpts : {};
     const settings = getSettings();
     const url = (customUrl || settings.scriptUrl || '').trim();
-    if (!url) throw new Error('URL do Google Drive não configurada.');
-
     const action = String((payload && payload.action) || '');
+
+    const isServerSupportedAction = /^(?:ping|syncDatabase|login|listUsers|saveUser|deleteUser|uploadRecord|deleteRecord|listHistory|lookupCpf|downloadPdf|listServerFolders)$/.test(action);
+    const isExplicitForeignUrl = Boolean(
+      customUrl &&
+      String(customUrl).trim() &&
+      String(customUrl).trim() !== String(settings.scriptUrl || '').trim() &&
+      String(customUrl).trim() !== DEFAULT_SCRIPT_URL
+    );
+
+    // 1. PRIORIDADE MÁXIMA: Servidor Central A14 (Cartão SD 512 GB: ~5ms no Wi-Fi da Base / ~40ms no Túnel 4G)
+    if (!opts.forceDirectDrive && !isExplicitForeignUrl && isServerSupportedAction) {
+      let srvBase = await resolveActiveServerBaseUrl({ allowDiscovery: action !== 'ping' });
+      if (srvBase) {
+        try {
+          const srvRes = await apiPostSingleAttempt(payload, `${srvBase}/api/fichas`);
+          if (srvRes && typeof srvRes === 'object') {
+            srvRes._viaServerCentral = true;
+            srvRes._serverMode = runtimeServerState.activeMode;
+            srvRes._serverBaseUrl = srvBase;
+            return srvRes;
+          }
+        } catch (eSrv1) {
+          invalidateActiveServerCache();
+          // Se saiu do Wi-Fi da Base para o 4G da rua, tenta imediatamente o Túnel 4G antes de cair p/ contingência Drive
+          try {
+            const altBase = await resolveActiveServerBaseUrl({ forceProbe: true, allowDiscovery: true });
+            if (altBase && altBase !== srvBase) {
+              const srvRes2 = await apiPostSingleAttempt(payload, `${altBase}/api/fichas`);
+              if (srvRes2 && typeof srvRes2 === 'object') {
+                srvRes2._viaServerCentral = true;
+                srvRes2._serverMode = runtimeServerState.activeMode;
+                srvRes2._serverBaseUrl = altBase;
+                return srvRes2;
+              }
+            }
+          } catch (eSrv2) {
+            invalidateActiveServerCache();
+          }
+        }
+      }
+      if (action === 'listServerFolders') {
+        throw new Error('Servidor Central A14 inacessível no momento.');
+      }
+    }
+
+    // 2. CONTINGÊNCIA AUTOMÁTICA: Google Drive / Google Apps Script (caso acabe a luz nos roteadores da Base)
+    if (!url) throw new Error('URL do Servidor Central / Google Drive não configurada.');
+
     const allowRetry = (action === 'uploadRecord' || action === 'listHistory' || action === 'deleteRecord');
 
     try {
@@ -4341,14 +4752,15 @@
       throw new Error('Sessão do profissional não encontrada. Faça login novamente.');
     }
 
+    const postOpts = o.forceDirectDrive ? { forceDirectDrive: true } : undefined;
     const tryWithCred = async (cred) => {
-      const r1 = await apiPost(buildPayloadFn(cred), customUrl);
+      const r1 = await apiPost(buildPayloadFn(cred), customUrl, postOpts);
       if (r1 && r1.ok) return r1;
       if (r1 && !r1.ok && isAuthFailureResponse(r1)) {
         const rawP = String(cred.password || '');
         if (/^0+\d+$/.test(rawP)) {
           const stripped = rawP.replace(/^0+/, '') || '0';
-          const rStrip = await apiPost(buildPayloadFn(Object.assign({}, cred, { password: stripped })), customUrl);
+          const rStrip = await apiPost(buildPayloadFn(Object.assign({}, cred, { password: stripped })), customUrl, postOpts);
           if (rStrip && rStrip.ok) return rStrip;
         }
       }
@@ -4732,7 +5144,7 @@
 
     if (curSettings.scriptUrl) {
       try {
-        const delRes = await apiPostAuthenticatedWithHeal((cred) => ({
+        const delPayloadBuilder = (cred) => ({
           action: 'deleteRecord',
           authUser: cred.username,
           authPass: cred.password,
@@ -4741,7 +5153,8 @@
           recordId: cleanId,
           driveFileId,
           driveUrl
-        }), { customUrl: curSettings.scriptUrl });
+        });
+        const delRes = await apiPostAuthenticatedWithHeal(delPayloadBuilder, { customUrl: curSettings.scriptUrl });
         if (delRes && delRes.ok) {
           driveDeleted = true;
           cloudSynced = true;
@@ -4749,6 +5162,13 @@
           if (freshMap[cleanId]) {
             freshMap[cleanId].drivePurged = true;
             setDeletedRecordsMap(freshMap);
+          }
+          // Se excluiu no Servidor Central A14 (Cartão SD + fila Drive), dispara também exclusão imediata no Drive em 2º plano
+          if (delRes._viaServerCentral && (driveFileId || driveUrl)) {
+            apiPostAuthenticatedWithHeal(delPayloadBuilder, {
+              customUrl: curSettings.scriptUrl,
+              forceDirectDrive: true
+            }).catch(() => {});
           }
         }
       } catch (eDelApi) {}
@@ -5071,7 +5491,7 @@
         requestedByName: String((auth && auth.name) || record.createdByName || '')
       } : null;
 
-      // Prioridade máxima para o upload do PDF com auto-cura transparente de sessão na Planilha Google
+      // Prioridade máxima para o Servidor Central A14 (Cartão SD 512 GB) + fallback automático p/ Planilha/Google Drive
       const res = await apiPostAuthenticatedWithHeal((cred) => ({
         action: 'uploadRecord',
         authUser: cred.username,
@@ -5082,13 +5502,23 @@
         record: cleanRecordForCloud,
         pdfBase64: effectivePdfB64,
         autoPrintOpts
-      }), { record, allowAdminFallback: true });
+      }), { record, allowAdminFallback: true, forceDirectDrive: Boolean(upOpts.forceDirectDrive) });
 
       if (res && res.ok) {
         record.syncStatus = 'synced';
         record.driveUrl = res.driveUrl || record.driveUrl || '';
         record.driveFileId = res.driveFileId || record.driveFileId || extractDriveFileIdFromAny('', record.driveUrl);
         record.syncedAt = res.syncedAt || new Date().toISOString();
+        if (res.serverStored || res.storedOnServer || res._viaServerCentral) {
+          record.serverStored = true;
+          record.storedOnServer = true;
+        }
+        if (res.serverFolder) {
+          record.serverFolder = res.serverFolder;
+        }
+        if (res.driveBackupStatus) {
+          record.driveBackupStatus = res.driveBackupStatus;
+        }
         delete record.pendingPdfBase64;
         delete record.pendingAutoPrint;
         if (forceSkipPrint) {
@@ -5100,7 +5530,7 @@
         await saveRecordLocal(record, { skipPatientUpsert: true });
 
         let printQueued = false;
-        if (wantAutoPrint && (record.driveFileId || record.driveUrl)) {
+        if (wantAutoPrint && (record.driveFileId || record.driveUrl || record.serverStored || res.printQueued)) {
           if (res.printQueued && res.printJob && res.printJob.slotKey) {
             const curAv = getViaturaAvariasMap();
             curAv[res.printJob.slotKey] = res.printJob;
@@ -5119,7 +5549,16 @@
           scheduleDeferredDirtySync(printQueued ? 4000 : 1200);
         }
 
-        return { synced: true, driveUrl: record.driveUrl, driveFileId: record.driveFileId, printQueued, skippedAutoPrint: forceSkipPrint };
+        return {
+          synced: true,
+          serverStored: Boolean(record.serverStored),
+          serverFolder: record.serverFolder || '',
+          driveBackupStatus: record.driveBackupStatus || '',
+          driveUrl: record.driveUrl,
+          driveFileId: record.driveFileId,
+          printQueued,
+          skippedAutoPrint: forceSkipPrint
+        };
       } else {
         throw new Error((res && res.error) || 'Falha ao enviar ao Google Drive.');
       }
@@ -5288,7 +5727,15 @@
             if (!remoteRec || !remoteRec.id || latestDelMap[remoteRec.id]) continue;
             const existing = await getRecordById(remoteRec.id);
             if (!existing || (existing.syncStatus !== 'pending' && existing.syncStatus !== 'draft')) {
-              await saveRecordLocal(remoteRec);
+              const mergedRec = Object.assign({}, remoteRec);
+              if (existing && (existing.serverStored || existing.storedOnServer) && !mergedRec.serverStored) {
+                mergedRec.serverStored = true;
+                mergedRec.storedOnServer = true;
+                if (!mergedRec.serverFolder && existing.serverFolder) mergedRec.serverFolder = existing.serverFolder;
+              }
+              if (existing && existing.driveUrl && !mergedRec.driveUrl) mergedRec.driveUrl = existing.driveUrl;
+              if (existing && existing.driveFileId && !mergedRec.driveFileId) mergedRec.driveFileId = existing.driveFileId;
+              await saveRecordLocal(mergedRec, { fromRemoteMerge: true });
             }
           }
         } else if (histRes && !histRes.ok && uploadedCount === 0 && pendingRemaining === 0) {
@@ -5677,6 +6124,12 @@
     setSession,
     getSavedSignature,
     savePersonalSignature,
+    normalizeServerBaseUrl,
+    getServerStatusSnapshot,
+    probeServerConnection,
+    listServerFolders,
+    downloadServerPdfBase64,
+    getServerPdfDirectUrl,
     apiPost,
     login,
     saveRecordLocal,
