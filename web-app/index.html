@@ -115,10 +115,38 @@
         <button type="button" class="sync-pill" id="btn-sync-status" title="Sincronizar com Google Drive">
           <span id="sync-status-text">Offline</span>
         </button>
+        <button type="button" class="sync-pill btn-top-update" id="btn-top-check-update" title="Verificar e instalar atualizações do aplicativo">
+          <span id="top-update-text">🔄 Atualizar</span>
+        </button>
         <button type="button" class="btn-logout btn-pass-top" id="btn-change-pass" title="Trocar minha senha">🔑 Senha</button>
         <button type="button" class="btn-logout" id="btn-logout">Sair</button>
       </div>
     </header>
+
+    <!-- BARRA ILUSTRATIVA FIXA DE SINCRONIZAÇÃO E ENVIO EM SEGUNDO PLANO (SEMPRE VISÍVEL EM TODO O APK) -->
+    <div id="global-bg-sync-wrap" class="global-bg-sync-wrap hidden" aria-live="polite">
+      <div id="global-bg-sync-card" class="global-bg-sync-card">
+        <div class="bg-sync-top-row">
+          <div class="bg-sync-title-wrap">
+            <span class="bg-sync-pulse-icon" id="bg-sync-icon">☁️</span>
+            <div class="bg-sync-texts">
+              <div class="bg-sync-title" id="bg-sync-title">Enviando em segundo plano...</div>
+              <div class="bg-sync-detail" id="bg-sync-detail">Preparando envio...</div>
+            </div>
+          </div>
+          <div class="bg-sync-right-actions">
+            <span class="bg-sync-queue-pill hidden" id="bg-sync-queue-pill">1/1</span>
+            <span class="bg-sync-pct" id="bg-sync-pct">0%</span>
+            <button type="button" class="bg-sync-view-pdf-btn hidden" id="btn-bg-sync-view-pdf">👁️ Ver PDF</button>
+            <button type="button" class="bg-sync-close-btn hidden" id="btn-bg-sync-dismiss" title="Fechar aviso">✕</button>
+          </div>
+        </div>
+        <div class="bg-sync-stages" id="bg-sync-stages"></div>
+        <div class="bg-sync-track">
+          <div class="bg-sync-fill" id="bg-sync-fill" style="width: 15%;"></div>
+        </div>
+      </div>
+    </div>
 
     <main class="main-container" id="main-view"></main>
 

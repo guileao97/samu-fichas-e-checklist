@@ -112,13 +112,664 @@
   }
 
   let toastTimer = null;
-  function showToast(msg) {
+  function showToast(msg, opts) {
     const el = document.getElementById('toast-banner');
     if (!el) return;
-    el.textContent = msg;
+    const o = (opts && typeof opts === 'object') ? opts : {};
+    el.classList.toggle('toast-success', Boolean(o.isSuccess));
+    if (o.actionLabel && typeof o.onAction === 'function') {
+      el.innerHTML = `<span>${escapeHtml(msg)}</span><button type="button" class="toast-action-btn" id="btn-toast-inline-act">${escapeHtml(o.actionLabel)}</button>`;
+      const actBtn = document.getElementById('btn-toast-inline-act');
+      if (actBtn) {
+        actBtn.onclick = () => {
+          clearTimeout(toastTimer);
+          el.classList.add('hidden');
+          o.onAction();
+        };
+      }
+    } else {
+      el.textContent = msg;
+    }
     el.classList.remove('hidden');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => el.classList.add('hidden'), 3400);
+    const dur = Math.max(2500, Number(o.durationMs) || (o.actionLabel ? 6500 : 3600));
+    toastTimer = setTimeout(() => el.classList.add('hidden'), dur);
+  }
+
+  /* ===================== GERENCIADOR GLOBAL DE ENVIO & SINCRONIZAÇÃO EM 2º PLANO ===================== */
+  const bgSendQueue = [];
+  let bgSendWorkerRunning = false;
+  let bgActiveSyncCount = 0;
+  let bgProgressSmoothTimer = null;
+  let bgAutoHideTimer = null;
+  let bgCurrentPct = 0;
+  let bgPreviewPayload = null; // { record, generated, upRes }
+
+  function nextUiFrame() {
+    return new Promise((resolve) => {
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(() => setTimeout(resolve, 16));
+      } else {
+        setTimeout(resolve, 20);
+      }
+    });
+  }
+
+  function isUserTypingInInput() {
+    const ae = document.activeElement;
+    if (!ae) return false;
+    const tag = String(ae.tagName || '').toUpperCase();
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || Boolean(ae.isContentEditable);
+  }
+
+  function getRecordDisplayLabel(rec) {
+    if (!rec) return 'Registro SAMU 192';
+    if (rec.type === 'checklist_condutor') {
+      return `Check List Condutor (${rec.vehicle || 'USB'})`;
+    }
+    if (rec.type === 'checklist_enfermagem') {
+      return `Check List Enfermagem (${rec.shift || 'Plantão'})`;
+    }
+    return rec.patientName ? `Ficha: ${rec.patientName}` : 'Ficha de Atendimento USB';
+  }
+
+  function updateBgSyncDockLayout() {
+    const wrap = document.getElementById('global-bg-sync-wrap');
+    const isVisible = Boolean(wrap && !wrap.classList.contains('hidden') && currentUser);
+    const hasDraftBarTab = isVisible && (activeTab === 'ficha' || activeTab === 'condutor' || activeTab === 'enfermagem');
+    document.body.classList.toggle('bg-sync-docked-draft', hasDraftBarTab);
+    const h = (isVisible && wrap && wrap.offsetHeight > 0) ? wrap.offsetHeight : 0;
+    document.documentElement.style.setProperty('--bgsync-h', h + 'px');
+  }
+
+  function renderBgStagesHtml(stages) {
+    if (!Array.isArray(stages) || !stages.length) return '';
+    return stages.map((st, idx) => {
+      const cls = st.state === 'done' ? 'done' : (st.state === 'active' ? 'active' : (st.state === 'queued' ? 'queued' : ''));
+      const arrow = idx < stages.length - 1 ? '<span class="bg-stage-arrow">➜</span>' : '';
+      return `<span class="bg-stage-chip ${cls}">${escapeHtml(st.label)}</span>${arrow}`;
+    }).join('');
+  }
+
+  function stopBgSmoothProgress() {
+    if (bgProgressSmoothTimer) {
+      clearInterval(bgProgressSmoothTimer);
+      bgProgressSmoothTimer = null;
+    }
+  }
+
+  function startBgSmoothProgress(fromPct, ceilingPct, titleForNative, detailForNative) {
+    stopBgSmoothProgress();
+    bgCurrentPct = Math.max(bgCurrentPct, fromPct);
+    const fillEl = document.getElementById('bg-sync-fill');
+    const pctEl = document.getElementById('bg-sync-pct');
+    if (fillEl) fillEl.style.width = bgCurrentPct + '%';
+    if (pctEl) pctEl.textContent = bgCurrentPct + '%';
+
+    bgProgressSmoothTimer = setInterval(() => {
+      if (bgCurrentPct >= ceilingPct) return;
+      const step = bgCurrentPct < 65 ? 3 : (bgCurrentPct < 82 ? 2 : 1);
+      bgCurrentPct = Math.min(ceilingPct, bgCurrentPct + step);
+      const f = document.getElementById('bg-sync-fill');
+      const p = document.getElementById('bg-sync-pct');
+      if (f) f.style.width = bgCurrentPct + '%';
+      if (p) p.textContent = bgCurrentPct + '%';
+      if (bgCurrentPct % 6 === 0 && window.SamuStorage && window.SamuStorage.setNativeBackgroundProgress) {
+        window.SamuStorage.setNativeBackgroundProgress({
+          active: true,
+          title: titleForNative,
+          detail: detailForNative,
+          percent: bgCurrentPct
+        });
+      }
+    }, 280);
+  }
+
+  function setBgSyncBarState(cfg) {
+    const wrap = document.getElementById('global-bg-sync-wrap');
+    const card = document.getElementById('global-bg-sync-card');
+    if (!wrap || !card) return;
+
+    if (bgAutoHideTimer) {
+      clearTimeout(bgAutoHideTimer);
+      bgAutoHideTimer = null;
+    }
+
+    if (!cfg || cfg.hidden) {
+      stopBgSmoothProgress();
+      wrap.classList.add('hidden');
+      card.classList.remove('state-success', 'state-warning');
+      updateBgSyncDockLayout();
+      if (window.SamuStorage && window.SamuStorage.setNativeBackgroundProgress && !bgSendWorkerRunning && bgActiveSyncCount <= 0) {
+        window.SamuStorage.setNativeBackgroundProgress({ active: false });
+      }
+      return;
+    }
+
+    wrap.classList.remove('hidden');
+    card.classList.toggle('state-success', cfg.variant === 'success');
+    card.classList.toggle('state-warning', cfg.variant === 'warning');
+
+    const iconEl = document.getElementById('bg-sync-icon');
+    const titleEl = document.getElementById('bg-sync-title');
+    const detailEl = document.getElementById('bg-sync-detail');
+    const queueEl = document.getElementById('bg-sync-queue-pill');
+    const pctEl = document.getElementById('bg-sync-pct');
+    const viewBtn = document.getElementById('btn-bg-sync-view-pdf');
+    const closeBtn = document.getElementById('btn-bg-sync-dismiss');
+    const stagesEl = document.getElementById('bg-sync-stages');
+    const fillEl = document.getElementById('bg-sync-fill');
+
+    if (iconEl) iconEl.textContent = cfg.icon || '☁️';
+    if (titleEl) titleEl.textContent = cfg.title || 'Sincronizando...';
+    if (detailEl) detailEl.textContent = cfg.detail || '';
+
+    if (queueEl) {
+      if (cfg.queueText) {
+        queueEl.textContent = cfg.queueText;
+        queueEl.classList.remove('hidden');
+      } else {
+        queueEl.classList.add('hidden');
+      }
+    }
+
+    const pct = Math.max(0, Math.min(100, Number(cfg.percent) || 0));
+    bgCurrentPct = pct;
+    if (pctEl) pctEl.textContent = pct + '%';
+    if (fillEl) fillEl.style.width = Math.max(6, pct) + '%';
+    if (stagesEl) stagesEl.innerHTML = renderBgStagesHtml(cfg.stages || []);
+
+    bgPreviewPayload = cfg.previewPayload || null;
+    if (viewBtn) {
+      viewBtn.classList.toggle('hidden', !bgPreviewPayload);
+    }
+    if (closeBtn) {
+      closeBtn.classList.toggle('hidden', !cfg.allowDismiss);
+    }
+
+    updateBgSyncDockLayout();
+    requestAnimationFrame(updateBgSyncDockLayout);
+
+    if (cfg.smoothTo && cfg.smoothTo > pct) {
+      startBgSmoothProgress(pct, cfg.smoothTo, cfg.title || 'SAMU 192', cfg.detail || '');
+    } else {
+      stopBgSmoothProgress();
+    }
+
+    if (window.SamuStorage && window.SamuStorage.setNativeBackgroundProgress) {
+      const stillBusy = Boolean(cfg.isWorking || bgSendWorkerRunning || bgActiveSyncCount > 0 || bgSendQueue.length > 0);
+      window.SamuStorage.setNativeBackgroundProgress({
+        active: stillBusy,
+        title: cfg.title || 'SAMU 192',
+        detail: cfg.detail || '',
+        percent: pct,
+        doneTitle: !stillBusy ? (cfg.nativeDoneTitle || '') : '',
+        doneDetail: !stillBusy ? (cfg.nativeDoneDetail || '') : '',
+        doneSuccess: cfg.variant !== 'warning'
+      });
+    }
+
+    if (cfg.autoHideMs && cfg.autoHideMs > 0) {
+      bgAutoHideTimer = setTimeout(() => {
+        if (!bgSendWorkerRunning && bgSendQueue.length === 0 && bgActiveSyncCount <= 0) {
+          setBgSyncBarState({ hidden: true });
+        }
+      }, cfg.autoHideMs);
+    }
+  }
+
+  function enqueueBackgroundRecordSend(record, extraOpts) {
+    if (!record) return;
+    if (window.SamuStorage && window.SamuStorage.ensureBatteryOptimizationDisabled) {
+      window.SamuStorage.ensureBatteryOptimizationDisabled();
+    }
+    const opts = (extraOpts && typeof extraOpts === 'object') ? extraOpts : {};
+    bgSendQueue.push({ type: 'record_upload', record, opts });
+    const totalInFlight = bgSendQueue.length + (bgSendWorkerRunning ? 1 : 0);
+    const label = getRecordDisplayLabel(record);
+    const wantPrint = Boolean(record.pendingAutoPrint || (window.SamuStorage.shouldAutoPrintRecord && window.SamuStorage.shouldAutoPrintRecord(record)));
+    const waitingNight = !wantPrint && isDaytimeChecklistWaitingNightPrint(record);
+
+    if (!bgSendWorkerRunning) {
+      processBackgroundSendQueue();
+    } else {
+      showToast(`☁️ ${label} entrou na fila de envio em 2º plano (${totalInFlight} na fila)!`);
+      const qEl = document.getElementById('bg-sync-queue-pill');
+      if (qEl) {
+        qEl.textContent = `Fila: ${totalInFlight}`;
+        qEl.classList.remove('hidden');
+      }
+    }
+    return { queued: true, wantPrint, waitingNight };
+  }
+
+  function enqueueBackgroundBasePrint(record, preGeneratedPdf) {
+    if (!record) return;
+    if (window.SamuStorage && window.SamuStorage.ensureBatteryOptimizationDisabled) {
+      window.SamuStorage.ensureBatteryOptimizationDisabled();
+    }
+    bgSendQueue.push({ type: 'base_print', record, preGeneratedPdf: preGeneratedPdf || null, opts: {} });
+    const totalInFlight = bgSendQueue.length + (bgSendWorkerRunning ? 1 : 0);
+    if (!bgSendWorkerRunning) {
+      processBackgroundSendQueue();
+    } else {
+      showToast(`🖨️ Impressão na Base adicionada à fila em 2º plano (${totalInFlight})!`);
+    }
+  }
+
+  async function processBackgroundSendQueue() {
+    if (bgSendWorkerRunning) return;
+    bgSendWorkerRunning = true;
+    let processedIdx = 0;
+
+    try {
+      while (bgSendQueue.length > 0) {
+        const job = bgSendQueue.shift();
+        processedIdx++;
+        const totalBatch = processedIdx + bgSendQueue.length;
+        const queueText = totalBatch > 1 ? `${processedIdx}/${totalBatch}` : '';
+
+        if (job.type === 'base_print') {
+          await executeBackgroundBasePrintJob(job.record, job.preGeneratedPdf, queueText);
+        } else {
+          await executeBackgroundRecordUploadJob(job.record, job.opts || {}, queueText);
+        }
+      }
+    } finally {
+      bgSendWorkerRunning = false;
+      if (bgSendQueue.length > 0) {
+        processBackgroundSendQueue();
+      }
+    }
+  }
+
+  async function executeBackgroundRecordUploadJob(record, opts, queueText) {
+    const label = getRecordDisplayLabel(record);
+    const wantPrint = !opts.skipAutoPrint && Boolean(
+      record.pendingAutoPrint ||
+      (window.SamuStorage.shouldAutoPrintRecord && window.SamuStorage.shouldAutoPrintRecord(record))
+    );
+    const waitingNight = !wantPrint && isDaytimeChecklistWaitingNightPrint(record);
+    const printStagePendingLabel = wantPrint
+      ? '🖨️ Impressora Base'
+      : (waitingNight ? '☀️ Aguarda Noturno' : '☁️ Arquivamento');
+
+    try {
+      // Etapa 1: Preparação / Mesclagem de turno e geração do PDF 200 DPI em 2º plano
+      setBgSyncBarState({
+        isWorking: true,
+        icon: '📄',
+        title: `Preparando PDF • ${label}`,
+        detail: wantPrint
+          ? 'Gerando páginas oficiais em 200 DPI p/ Google Drive e Impressora da Base...'
+          : 'Gerando páginas oficiais em 200 DPI em segundo plano...',
+        percent: 16,
+        smoothTo: 36,
+        queueText,
+        stages: [
+          { label: '📄 Gerando PDF...', state: 'active' },
+          { label: '☁️ Google Drive', state: 'pending' },
+          { label: printStagePendingLabel, state: 'pending' }
+        ]
+      });
+
+      await nextUiFrame();
+
+      if (opts.kind === 'condutor' && record.data) {
+        if (opts.isOtherShiftEmpty && !isRecentlyOfflinePassive() && window.SamuStorage.hasGitHubConfigured()) {
+          await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: false }).catch(() => {});
+        }
+        applySharedDailyToCondutorState(record.data, { replaceOtherShift: false });
+        if (window.SamuStorage.saveSharedDailyChecklist) {
+          await window.SamuStorage.saveSharedDailyChecklist('condutor', record.data, currentUser).catch(() => {});
+        }
+        await window.SamuStorage.saveRecordLocal(record, { skipPatientUpsert: true });
+      } else if (opts.kind === 'enfermagem' && record.data) {
+        if (opts.isOtherShiftEmpty && !isRecentlyOfflinePassive() && window.SamuStorage.hasGitHubConfigured()) {
+          await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: false }).catch(() => {});
+        }
+        syncActiveShiftFieldsInEnfermagem(record.data);
+        applySharedDailyToEnfermagemState(record.data, { replaceOtherShift: false });
+        if (window.SamuStorage.saveSharedDailyChecklist) {
+          await window.SamuStorage.saveSharedDailyChecklist('enfermagem', record.data, currentUser).catch(() => {});
+        }
+        await window.SamuStorage.saveRecordLocal(record, { skipPatientUpsert: true });
+      }
+
+      const generated = opts.preGeneratedPdf || await window.SamuPDF.generatePdfForRecord(record);
+
+      // Etapa 2: Upload ao Google Drive + Fila de Impressão Automática na Base SAMU
+      setBgSyncBarState({
+        isWorking: true,
+        icon: '☁️',
+        title: `Enviando ao Google Drive • ${label}`,
+        detail: wantPrint
+          ? 'Transmitindo PDF p/ Google Drive e acionando Impressora da Base SAMU...'
+          : 'Transmitindo PDF oficial para o Google Drive da Central SAMU...',
+        percent: 44,
+        smoothTo: 93,
+        queueText,
+        stages: [
+          { label: '📄 PDF 200 DPI ✓', state: 'done' },
+          { label: '☁️ Enviando Drive...', state: 'active' },
+          { label: wantPrint ? '🖨️ Fila Base...' : printStagePendingLabel, state: wantPrint ? 'active' : 'pending' }
+        ]
+      });
+
+      const upRes = await window.SamuStorage.uploadRecordToDrive(record, generated.base64, {
+        skipAutoPrint: Boolean(opts.skipAutoPrint)
+      });
+
+      await refreshDraftCount();
+      await refreshSyncBadge();
+      if (activeTab === 'historico' && !isUserTypingInInput()) {
+        renderHistoricoView();
+      }
+      if (activeTab === 'admin' && !isUserTypingInInput()) {
+        renderAdminView(true);
+      }
+
+      const moreInQueue = bgSendQueue.length > 0;
+      const openThisPdfFn = () => {
+        openPdfPreviewModal(record, generated, upRes);
+      };
+
+      if (upRes && upRes.synced) {
+        const doneTitle = upRes.printQueued
+          ? `✅ Enviado ao Drive e Impressora da Base!`
+          : (waitingNight
+            ? `✅ Turno Diurno salvo no Google Drive!`
+            : `✅ PDF enviado ao Google Drive com sucesso!`);
+        const doneDetail = upRes.printQueued
+          ? `${label} • Salvo no Drive e colocado na fila de impressão da Base SAMU.`
+          : (waitingNight
+            ? `${label} • Imprimirá automaticamente na Base quando o Noturno concluir.`
+            : `${label} • Arquivado com segurança no Google Drive.`);
+
+        if (!moreInQueue) {
+          setBgSyncBarState({
+            isWorking: false,
+            variant: 'success',
+            icon: '✅',
+            title: doneTitle,
+            detail: doneDetail,
+            percent: 100,
+            allowDismiss: true,
+            autoHideMs: 11000,
+            previewPayload: { record, generated, upRes },
+            nativeDoneTitle: doneTitle,
+            nativeDoneDetail: doneDetail,
+            stages: [
+              { label: '📄 PDF ✓', state: 'done' },
+              { label: '☁️ Google Drive ✓', state: 'done' },
+              {
+                label: upRes.printQueued
+                  ? '🖨️ Impressora Base ✓'
+                  : (waitingNight ? '☀️ Aguarda Noturno' : '✅ Concluído'),
+                state: 'done'
+              }
+            ]
+          });
+        }
+
+        showToast(
+          upRes.printQueued
+            ? `✅ ${label} enviado ao Drive e colocado p/ imprimir na Base!`
+            : (waitingNight
+              ? `✅ ${label} salvo no Drive! (Imprimirá na Base após o Noturno)`
+              : `✅ ${label} enviado ao Google Drive com sucesso!`),
+          {
+            isSuccess: true,
+            durationMs: 7000,
+            actionLabel: '👁️ Ver PDF',
+            onAction: openThisPdfFn
+          }
+        );
+      } else {
+        schedulePendingDriveRetry(6000);
+        const isOfflineReason = Boolean(upRes && (upRes.reason === 'offline' || upRes.isNetworkError));
+        const warnTitle = isOfflineReason
+          ? `⏳ Salvo na fila automática • ${label}`
+          : `⚠️ Aguardando reenvio • ${label}`;
+        const warnDetail = isOfflineReason
+          ? (wantPrint
+            ? 'Sem sinal agora: enviará ao Google Drive e imprimirá na Base automaticamente!'
+            : 'Sem sinal agora: enviará ao Google Drive automaticamente assim que conectar!')
+          : (upRes && upRes.error ? String(upRes.error) : 'Tentando reenviar automaticamente em segundo plano...');
+
+        if (!moreInQueue) {
+          setBgSyncBarState({
+            isWorking: false,
+            variant: 'warning',
+            icon: '⏳',
+            title: warnTitle,
+            detail: warnDetail,
+            percent: 100,
+            allowDismiss: true,
+            autoHideMs: 11000,
+            previewPayload: { record, generated, upRes },
+            nativeDoneTitle: warnTitle,
+            nativeDoneDetail: warnDetail,
+            stages: [
+              { label: '📄 PDF Salvo ✓', state: 'done' },
+              { label: '⏳ Fila Google Drive', state: 'queued' },
+              { label: wantPrint ? '⏳ Fila Base' : '🗄️ SQLite Seguro', state: 'queued' }
+            ]
+          });
+        }
+
+        showToast(
+          isOfflineReason
+            ? `⏳ Sem sinal agora: ${label} salvo na fila (enviará e imprimirá automaticamente)!`
+            : `⚠️ ${label} salvo na fila — tentando reenviar em 2º plano...`,
+          {
+            durationMs: 6500,
+            actionLabel: '👁️ Ver PDF',
+            onAction: openThisPdfFn
+          }
+        );
+      }
+    } catch (err) {
+      schedulePendingDriveRetry(8000);
+      const errMsg = String((err && err.message) || err || 'Falha temporária');
+      if (bgSendQueue.length === 0) {
+        setBgSyncBarState({
+          isWorking: false,
+          variant: 'warning',
+          icon: '⚠️',
+          title: `⏳ Salvo localmente para reenvio • ${label}`,
+          detail: errMsg,
+          percent: 100,
+          allowDismiss: true,
+          autoHideMs: 10000
+        });
+      }
+      showToast(`⚠️ ${label} salvo no aparelho. Reenviando automaticamente em 2º plano.`);
+    }
+  }
+
+  async function executeBackgroundBasePrintJob(record, preGeneratedPdf, queueText) {
+    const label = getRecordDisplayLabel(record);
+    try {
+      setBgSyncBarState({
+        isWorking: true,
+        icon: '🖨️',
+        title: `Impressora da Base • ${label}`,
+        detail: (!record.driveFileId && !record.driveUrl)
+          ? 'Enviando PDF ao Google Drive antes de acionar a Impressora da Base...'
+          : 'Colocando documento na fila de impressão remota da Base SAMU...',
+        percent: 25,
+        smoothTo: 88,
+        queueText,
+        stages: [
+          { label: '📄 PDF Oficial ✓', state: 'done' },
+          { label: '☁️ Google Drive', state: (!record.driveFileId && !record.driveUrl) ? 'active' : 'done' },
+          { label: '🖨️ Impressora Base...', state: 'active' }
+        ]
+      });
+
+      await nextUiFrame();
+      let generated = preGeneratedPdf;
+
+      if (!record.driveFileId && !record.driveUrl) {
+        if (record.isDraft || record.syncStatus === 'draft') {
+          record.isDraft = false;
+          record.syncStatus = 'pending';
+        }
+        generated = generated || await window.SamuPDF.generatePdfForRecord(record);
+        const upRes = await window.SamuStorage.uploadRecordToDrive(record, generated.base64, { skipAutoPrint: true });
+        await refreshDraftCount();
+        await refreshSyncBadge();
+
+        if (!upRes.synced) {
+          record.pendingAutoPrint = true;
+          await window.SamuStorage.saveRecordLocal(record, { skipPatientUpsert: true });
+          schedulePendingDriveRetry(6000);
+          if (bgSendQueue.length === 0) {
+            setBgSyncBarState({
+              isWorking: false,
+              variant: 'warning',
+              icon: '⏳',
+              title: `⏳ Impressão na Base agendada • ${label}`,
+              detail: 'Sem conexão agora: enviará ao Drive e imprimirá na Base assim que o sinal voltar!',
+              percent: 100,
+              allowDismiss: true,
+              autoHideMs: 9000,
+              stages: [
+                { label: '📄 PDF Salvo ✓', state: 'done' },
+                { label: '⏳ Fila Drive', state: 'queued' },
+                { label: '⏳ Fila Base', state: 'queued' }
+              ]
+            });
+          }
+          showToast('⏳ Sem sinal agora! Salvo na fila p/ imprimir na Base automaticamente.');
+          return;
+        }
+      }
+
+      await window.SamuStorage.enqueueRemotePrintJob(record, { trigger: 'manual' });
+      await refreshSyncBadge();
+      if (activeTab === 'historico' && !isUserTypingInInput()) renderHistoricoView();
+      if (activeTab === 'admin' && !isUserTypingInInput()) renderAdminView(true);
+
+      const ag = window.SamuStorage.getRemotePrintAgentStatus ? window.SamuStorage.getRemotePrintAgentStatus() : null;
+      const doneMsg = (ag && ag.isOnline)
+        ? `🖨️ Enviado p/ Impressora da Base (${ag.printerName || ag.pcName})!`
+        : '🖨️ Enviado para a Fila da Impressora da Base SAMU!';
+
+      if (bgSendQueue.length === 0) {
+        setBgSyncBarState({
+          isWorking: false,
+          variant: 'success',
+          icon: '🖨️',
+          title: doneMsg,
+          detail: `${label} • Pronto para impressão na Base SAMU.`,
+          percent: 100,
+          allowDismiss: true,
+          autoHideMs: 8500,
+          nativeDoneTitle: doneMsg,
+          nativeDoneDetail: label,
+          stages: [
+            { label: '📄 PDF ✓', state: 'done' },
+            { label: '☁️ Google Drive ✓', state: 'done' },
+            { label: '🖨️ Fila Base ✓', state: 'done' }
+          ]
+        });
+      }
+      showToast(doneMsg, { isSuccess: true, durationMs: 5000 });
+    } catch (err) {
+      const errMsg = String((err && err.message) || err || 'Erro ao enviar p/ Base');
+      if (bgSendQueue.length === 0) {
+        setBgSyncBarState({
+          isWorking: false,
+          variant: 'warning',
+          icon: '⚠️',
+          title: `⚠️ Aviso na Impressora da Base • ${label}`,
+          detail: errMsg,
+          percent: 100,
+          allowDismiss: true,
+          autoHideMs: 9000
+        });
+      }
+      showToast('⚠️ Não foi possível acionar a Impressora da Base agora: ' + errMsg);
+    }
+  }
+
+  function runBackgroundCloudAction(cfg) {
+    const c = (cfg && typeof cfg === 'object') ? cfg : {};
+    if (window.SamuStorage && window.SamuStorage.ensureBatteryOptimizationDisabled) {
+      window.SamuStorage.ensureBatteryOptimizationDisabled();
+    }
+    bgActiveSyncCount++;
+    const title = c.title || 'Sincronizando em 2º plano...';
+    const detail = c.detail || 'Transmitindo atualização para o Google Drive da Central SAMU...';
+
+    if (!bgSendWorkerRunning) {
+      setBgSyncBarState({
+        isWorking: true,
+        icon: c.icon || '🔄',
+        title,
+        detail,
+        percent: 22,
+        smoothTo: 88,
+        stages: c.stages || [
+          { label: '🗄️ Salvo no Aparelho ✓', state: 'done' },
+          { label: '☁️ Google Drive...', state: 'active' },
+          { label: '📲 Equipe SAMU', state: 'pending' }
+        ]
+      });
+    }
+
+    (async () => {
+      try {
+        const res = typeof c.taskFn === 'function' ? await c.taskFn() : null;
+        bgActiveSyncCount = Math.max(0, bgActiveSyncCount - 1);
+        await refreshSyncBadge();
+        if (typeof c.onDoneUi === 'function') {
+          try { await c.onDoneUi(res); } catch (eUi) {}
+        }
+        const okTitle = (typeof c.successTitle === 'function' ? c.successTitle(res) : c.successTitle) || '✅ Sincronização concluída com sucesso!';
+        const okDetail = (typeof c.successDetail === 'function' ? c.successDetail(res) : c.successDetail) || 'Dados sincronizados com o Google Drive da Central SAMU.';
+        const okToast = (typeof c.successToast === 'function' ? c.successToast(res) : c.successToast) || okTitle;
+
+        if (!bgSendWorkerRunning && bgSendQueue.length === 0 && bgActiveSyncCount <= 0) {
+          setBgSyncBarState({
+            isWorking: false,
+            variant: 'success',
+            icon: c.doneIcon || '✅',
+            title: okTitle,
+            detail: okDetail,
+            percent: 100,
+            allowDismiss: true,
+            autoHideMs: 6500,
+            nativeDoneTitle: okTitle,
+            nativeDoneDetail: okDetail,
+            stages: c.doneStages || [
+              { label: '🗄️ SQLite ✓', state: 'done' },
+              { label: '☁️ Google Drive ✓', state: 'done' },
+              { label: '✅ Sincronizado', state: 'done' }
+            ]
+          });
+        }
+        showToast(okToast, { isSuccess: true, durationMs: 4500 });
+      } catch (err) {
+        bgActiveSyncCount = Math.max(0, bgActiveSyncCount - 1);
+        const errMsg = String((err && err.message) || err || 'Sem conexão no momento');
+        if (!bgSendWorkerRunning && bgSendQueue.length === 0 && bgActiveSyncCount <= 0) {
+          setBgSyncBarState({
+            isWorking: false,
+            variant: 'warning',
+            icon: '⏳',
+            title: c.warnTitle || '⏳ Salvo no aparelho (sincronizará ao conectar)',
+            detail: errMsg,
+            percent: 100,
+            allowDismiss: true,
+            autoHideMs: 7500
+          });
+        }
+        showToast(c.warnToast || ('⏳ Salvo no aparelho! Sincronizará automaticamente: ' + errMsg));
+      }
+    })();
   }
 
   function samuConfirm(message, isAlertOnly) {
@@ -1312,6 +1963,7 @@
       window.SamuStorage.setSession(null);
       currentUser = null;
       activeCrew = null;
+      updateBgSyncDockLayout();
       const crewModal = document.getElementById('crew-modal');
       if (crewModal) crewModal.classList.add('hidden');
       const pwModal = document.getElementById('password-modal');
@@ -1344,6 +1996,7 @@
         window.SamuStorage.setSession(null);
         currentUser = null;
         activeCrew = null;
+        updateBgSyncDockLayout();
         const crewModal = document.getElementById('crew-modal');
         if (crewModal) crewModal.classList.add('hidden');
         const passModal = document.getElementById('password-modal');
@@ -1388,6 +2041,23 @@
     document.getElementById('btn-sync-status').addEventListener('click', () => {
       triggerBackgroundSync(true);
     });
+
+    const btnBgViewPdf = document.getElementById('btn-bg-sync-view-pdf');
+    if (btnBgViewPdf) {
+      btnBgViewPdf.addEventListener('click', () => {
+        if (bgPreviewPayload && bgPreviewPayload.record) {
+          openPdfPreviewModal(bgPreviewPayload.record, bgPreviewPayload.generated, bgPreviewPayload.upRes);
+        }
+      });
+    }
+    const btnBgDismiss = document.getElementById('btn-bg-sync-dismiss');
+    if (btnBgDismiss) {
+      btnBgDismiss.addEventListener('click', () => {
+        if (!bgSendWorkerRunning && bgSendQueue.length === 0 && bgActiveSyncCount <= 0) {
+          setBgSyncBarState({ hidden: true });
+        }
+      });
+    }
 
     // Botões do Modal de Preview de PDF
     document.getElementById('btn-preview-close').addEventListener('click', () => {
@@ -1491,69 +2161,27 @@
         }
         previewCurrentRecord._patientCheckedOnSend = true;
       }
-      const btn = document.getElementById('btn-preview-drive');
-      btn.disabled = true;
-      btn.textContent = 'Enviando...';
-      try {
-        if (previewCurrentRecord.isDraft || previewCurrentRecord.syncStatus === 'draft') {
-          previewCurrentRecord.isDraft = false;
-          previewCurrentRecord.syncStatus = 'pending';
-        }
-        if (previewCurrentRecord.type === 'checklist_condutor' && previewCurrentRecord.data) {
-          applySharedDailyToCondutorState(previewCurrentRecord.data, { replaceOtherShift: false });
-          if (window.SamuStorage.saveSharedDailyChecklist) {
-            await window.SamuStorage.saveSharedDailyChecklist('condutor', previewCurrentRecord.data, currentUser);
-          }
-          previewGeneratedPdf = await window.SamuPDF.generatePdfForRecord(previewCurrentRecord);
-        } else if (previewCurrentRecord.type === 'checklist_enfermagem' && previewCurrentRecord.data) {
-          syncActiveShiftFieldsInEnfermagem(previewCurrentRecord.data);
-          applySharedDailyToEnfermagemState(previewCurrentRecord.data, { replaceOtherShift: false });
-          if (window.SamuStorage.saveSharedDailyChecklist) {
-            await window.SamuStorage.saveSharedDailyChecklist('enfermagem', previewCurrentRecord.data, currentUser);
-          }
-          previewGeneratedPdf = await window.SamuPDF.generatePdfForRecord(previewCurrentRecord);
-        }
-        if (crewPushTimer) {
-          clearTimeout(crewPushTimer);
-          crewPushTimer = null;
-        }
-        const res = await window.SamuStorage.uploadRecordToDrive(previewCurrentRecord, previewGeneratedPdf.base64);
-        const delAdmBtn = document.getElementById('btn-preview-delete-admin');
-        if (delAdmBtn && currentUser && window.SamuStorage.isUserAdmin(currentUser)) {
-          delAdmBtn.classList.remove('hidden');
-          delAdmBtn.textContent = '🗑️ Excluir do App e Drive';
-        }
-        await refreshDraftCount();
-        await refreshSyncBadge();
-        if (activeTab === 'historico') renderHistoricoView();
-        if (res.synced) {
-          const waitingNight = !res.printQueued && isDaytimeChecklistWaitingNightPrint(previewCurrentRecord);
-          document.getElementById('preview-drive-status').textContent = res.printQueued
-            ? '✅ PDF salvo no Google Drive e enviado automaticamente para a Impressora da Base!'
-            : (waitingNight
-              ? '✅ Turno Diurno salvo no Google Drive! (Imprimirá automaticamente na Base quando o Noturno concluir a folha)'
-              : '✅ PDF salvo no Google Drive com sucesso!');
-          showToast(res.printQueued
-            ? '🖨️ PDF salvo no Drive e enviado p/ Impressora da Base!'
-            : (waitingNight
-              ? '☀️ Diurno salvo no Drive! Imprimirá na Base quando o Noturno concluir.'
-              : 'PDF enviado ao Google Drive!'));
-        } else {
-          schedulePendingDriveRetry(6000);
-          if (res.reason === 'offline' || res.isNetworkError) {
-            document.getElementById('preview-drive-status').textContent = res.printPendingOffline
-              ? '⏳ Sem sinal agora: salvo na fila para enviar ao Drive e imprimir na Base automaticamente.'
-              : '⏳ Sem sinal agora: salvo na fila para envio automático.';
-            showToast('Salvo na fila offline! Enviará assim que conectar.');
-          } else {
-            document.getElementById('preview-drive-status').textContent = formatUploadFailurePreviewText(res);
-            showToast('⚠️ Falha ao enviar ao Google Drive: tentando reenviar automaticamente...');
-          }
-        }
-      } finally {
-        btn.disabled = false;
-        btn.textContent = '☁️ Enviar p/ Drive';
+      if (previewCurrentRecord.isDraft || previewCurrentRecord.syncStatus === 'draft') {
+        previewCurrentRecord.isDraft = false;
+        previewCurrentRecord.syncStatus = 'pending';
       }
+      previewCurrentRecord.pendingAutoPrint = window.SamuStorage.shouldAutoPrintRecord
+        ? window.SamuStorage.shouldAutoPrintRecord(previewCurrentRecord)
+        : (previewCurrentRecord.type === 'ficha');
+      if (crewPushTimer) {
+        clearTimeout(crewPushTimer);
+        crewPushTimer = null;
+      }
+      await window.SamuStorage.saveRecordLocal(previewCurrentRecord, { skipPatientUpsert: true });
+      const prevModal = document.getElementById('pdf-preview-modal');
+      if (prevModal) prevModal.classList.add('hidden');
+      const kindMap = previewCurrentRecord.type === 'checklist_condutor'
+        ? 'condutor'
+        : (previewCurrentRecord.type === 'checklist_enfermagem' ? 'enfermagem' : 'ficha');
+      enqueueBackgroundRecordSend(previewCurrentRecord, {
+        kind: kindMap,
+        preGeneratedPdf: kindMap === 'ficha' ? previewGeneratedPdf : null
+      });
     });
 
     const btnPrevDelAdmin = document.getElementById('btn-preview-delete-admin');
@@ -1604,15 +2232,34 @@
       }
     };
 
+    let isUpdateCheckInFlight = false;
+    const setTopUpdateBtnVisual = (mode, label) => {
+      const btnTopUpd = document.getElementById('btn-top-check-update');
+      const txtTopUpd = document.getElementById('top-update-text');
+      if (!btnTopUpd || !txtTopUpd) return;
+      btnTopUpd.classList.toggle('checking', mode === 'checking');
+      btnTopUpd.classList.toggle('has-update', mode === 'has-update');
+      txtTopUpd.textContent = label || '🔄 Atualizar';
+    };
+
     const runAutoUpdateCheck = async (interactive) => {
       if (!window.SamuStorage.checkAndApplyAppUpdate) return;
+      if (isUpdateCheckInFlight) {
+        if (interactive) showToast('🔄 Verificação de atualização já está em andamento em 2º plano...');
+        return;
+      }
       if (!interactive && isRecentlyOfflinePassive()) return;
+      isUpdateCheckInFlight = true;
+      if (interactive) {
+        setTopUpdateBtnVisual('checking', '⏳ Verificando...');
+        showToast('🔄 Verificando atualizações em 2º plano...');
+      }
       try {
-        if (interactive) showToast('🚀 Consultando atualizações no GitHub...');
         const res = await window.SamuStorage.checkAndApplyAppUpdate();
         updateLoginVersionFooter();
 
         if (res.status === 'offline') {
+          setTopUpdateBtnVisual('idle', '🔄 Atualizar');
           if (interactive) showToast('📴 Sem internet agora para buscar atualizações no GitHub.');
           return;
         }
@@ -1623,6 +2270,7 @@
             return;
           }
           persistFichaDraft();
+          setTopUpdateBtnVisual('has-update', '✨ Aplicar!');
           showAutoUpdateBanner(
             `✨ Nova atualização automática (Revisão #${res.remote.otaRevision}) baixada do GitHub!`,
             '🔄 Aplicar Agora',
@@ -1631,12 +2279,18 @@
               window.SamuStorage.reloadForOtaUpdate();
             }
           );
-          if (interactive) showToast(`✨ Revisão #${res.remote.otaRevision} baixada! Toque em Aplicar Agora.`);
+          if (interactive) {
+            if (await samuConfirm(`✨ Nova atualização (Revisão #${res.remote.otaRevision}) baixada!\n\nDeseja aplicar agora? (Seu preenchimento atual já foi salvo automaticamente)`)) {
+              persistFichaDraft();
+              window.SamuStorage.reloadForOtaUpdate();
+            }
+          }
           return;
         }
 
         if (res.status === 'apk_update_available') {
           const notes = res.remote.releaseNotes ? ` (${res.remote.releaseNotes})` : '';
+          setTopUpdateBtnVisual('has-update', `🚀 v${res.remote.apkVersionName}`);
           showAutoUpdateBanner(
             `🚀 Novo APK v${res.remote.apkVersionName} disponível no GitHub!${notes}`,
             '📲 Atualizar APK Agora',
@@ -1654,6 +2308,7 @@
           return;
         }
 
+        setTopUpdateBtnVisual('idle', '🔄 Atualizar');
         if (interactive) {
           if (res.status === 'repo_empty_yet') {
             samuAlert(
@@ -1661,11 +2316,14 @@
               `Rode o atalho PUBLICAR_ATUALIZACAO_GITHUB.bat no computador da Coordenação para publicar a versão pública do instalador (sem precisar de token nos celulares!).`
             );
           } else {
-            showToast(`✅ Aplicativo atualizado (v${res.local.apkVersionName} • Rev #${res.local.otaRevision})!`);
+            showToast(`✅ Aplicativo já está atualizado (v${res.local.apkVersionName} • Rev #${res.local.otaRevision})!`, { isSuccess: true });
           }
         }
       } catch (err) {
-        if (interactive) samuAlert('Erro ao verificar atualização no GitHub: ' + err.message);
+        setTopUpdateBtnVisual('idle', '🔄 Atualizar');
+        if (interactive) showToast('⚠️ Não foi possível verificar atualização agora: ' + (err.message || err));
+      } finally {
+        isUpdateCheckInFlight = false;
       }
     };
 
@@ -1674,6 +2332,10 @@
     const btnLoginCheckUpd = document.getElementById('btn-login-check-update');
     if (btnLoginCheckUpd) {
       btnLoginCheckUpd.addEventListener('click', () => runAutoUpdateCheck(true));
+    }
+    const btnTopCheckUpd = document.getElementById('btn-top-check-update');
+    if (btnTopCheckUpd) {
+      btnTopCheckUpd.addEventListener('click', () => runAutoUpdateCheck(true));
     }
 
     const pullGitHubWheneverOnline = async () => {
@@ -1715,6 +2377,20 @@
       triggerBackgroundSync(false);
     });
     window.addEventListener('offline', refreshSyncBadge);
+
+    window.__onAndroidAppResume = async () => {
+      if (!currentUser) return;
+      try {
+        await refreshDraftCount();
+        await refreshSyncBadge();
+        if (activeTab === 'historico' && !isUserTypingInInput()) {
+          renderHistoricoView();
+        } else if (activeTab === 'admin' && !isUserTypingInInput()) {
+          renderAdminView(true);
+        }
+        flushPendingDriveQueueSilently();
+      } catch (e) {}
+    };
 
     // Sincronização instantânea entre abas abertas no mesmo aparelho / Simulador
     window.addEventListener('storage', (ev) => {
@@ -4036,7 +4712,7 @@
   }
 
   async function flushPendingDriveQueueSilently() {
-    if (!currentUser || isCloudRecordSyncInFlight) return;
+    if (!currentUser || isCloudRecordSyncInFlight || bgSendWorkerRunning) return;
     if (isRecentlyOfflinePassive()) return;
     const settings = window.SamuStorage.getSettings();
     if (!settings || !settings.scriptUrl) return;
@@ -4047,18 +4723,52 @@
     } catch (e) {
       return;
     }
-    const hasPending = Array.isArray(visible) && visible.some(r => r && r.syncStatus === 'pending');
-    if (!hasPending) return;
+    const pendingItems = Array.isArray(visible) ? visible.filter(r => r && r.syncStatus === 'pending') : [];
+    if (!pendingItems.length) return;
 
     isCloudRecordSyncInFlight = true;
+    bgActiveSyncCount++;
     try {
-      const res = await window.SamuStorage.syncAllWithCloud({ onlyFlushPending: true });
+      setBgSyncBarState({
+        isWorking: true,
+        icon: '☁️',
+        title: `Reenviando fila automática (${pendingItems.length} pendente${pendingItems.length > 1 ? 's' : ''})`,
+        detail: 'Sinal detectado: transmitindo PDFs pendentes ao Google Drive e Impressora da Base...',
+        percent: 24,
+        smoothTo: 88,
+        stages: [
+          { label: '📄 Fila SQLite ✓', state: 'done' },
+          { label: '☁️ Enviando Drive...', state: 'active' },
+          { label: '🖨️ Impressora Base', state: 'active' }
+        ]
+      });
+
+      const res = await window.SamuStorage.syncAllWithCloud({
+        onlyFlushPending: true,
+        foreground: true,
+        onProgress: (p) => {
+          if (!bgSendWorkerRunning && p && p.detail) {
+            setBgSyncBarState({
+              isWorking: true,
+              icon: '☁️',
+              title: `Enviando fila pendente (${pendingItems.length})`,
+              detail: p.detail,
+              percent: p.percent || 50,
+              smoothTo: Math.min(94, (p.percent || 50) + 18),
+              stages: [
+                { label: '📄 PDF 200 DPI ✓', state: 'done' },
+                { label: '☁️ Google Drive...', state: 'active' },
+                { label: '🖨️ Impressora Base', state: 'active' }
+              ]
+            });
+          }
+        }
+      });
+
       if (res && res.uploadedCount > 0) {
         await refreshSyncBadge();
-        if (activeTab === 'historico') {
-          const activeEl = document.activeElement;
-          const isTyping = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA');
-          if (!isTyping) renderHistoricoView();
+        if (activeTab === 'historico' && !isUserTypingInInput()) {
+          renderHistoricoView();
         }
         if (previewCurrentRecord && previewCurrentRecord.id) {
           const updatedRec = await window.SamuStorage.getRecordById(previewCurrentRecord.id);
@@ -4071,10 +4781,42 @@
             }
           }
         }
-        showToast(`☁️ ${res.uploadedCount} PDF(s) pendente(s) enviado(s) automaticamente ao Google Drive!`);
+        const doneMsg = `✅ ${res.uploadedCount} PDF(s) da fila enviado(s) ao Google Drive com sucesso!`;
+        if (!bgSendWorkerRunning) {
+          setBgSyncBarState({
+            isWorking: false,
+            variant: 'success',
+            icon: '✅',
+            title: doneMsg,
+            detail: 'Todos os documentos pendentes foram sincronizados em segundo plano.',
+            percent: 100,
+            allowDismiss: true,
+            autoHideMs: 8000,
+            previewPayload: res.lastUploadedRecord ? { record: res.lastUploadedRecord, generated: null, upRes: { synced: true } } : null,
+            nativeDoneTitle: doneMsg,
+            nativeDoneDetail: 'Fila pendente SAMU 192 concluída.',
+            stages: [
+              { label: '📄 PDF ✓', state: 'done' },
+              { label: '☁️ Google Drive ✓', state: 'done' },
+              { label: '🖨️ Fila Base ✓', state: 'done' }
+            ]
+          });
+        }
+        showToast(doneMsg, {
+          isSuccess: true,
+          durationMs: 6000,
+          actionLabel: res.lastUploadedRecord ? '👁️ Ver PDF' : '',
+          onAction: res.lastUploadedRecord ? () => openPdfPreviewModal(res.lastUploadedRecord) : null
+        });
+      } else if (!bgSendWorkerRunning) {
+        setBgSyncBarState({ hidden: true });
       }
     } catch (e) {
+      if (!bgSendWorkerRunning) {
+        setBgSyncBarState({ hidden: true });
+      }
     } finally {
+      bgActiveSyncCount = Math.max(0, bgActiveSyncCount - 1);
       isCloudRecordSyncInFlight = false;
     }
   }
@@ -4126,48 +4868,177 @@
           renderActiveView();
           showToast('Configure a conexão com o Google Drive abaixo.');
         } else {
-          samuAlert('Funcionando na Base Interna Offline deste aparelho.');
+          showToast('🗄️ Funcionando na Base Interna Offline deste aparelho.');
         }
       }
       return;
     }
 
     if (isCloudRecordSyncInFlight) {
-      if (interactive) showToast('☁️ Sincronização com o Google Drive já está em andamento...');
+      if (interactive) showToast('☁️ Sincronização já está em andamento em 2º plano...');
       return;
     }
 
     isCloudRecordSyncInFlight = true;
+    bgActiveSyncCount++;
     try {
-      if (interactive) showToast('☁️ Sincronizando dados e PDFs com Google Drive...');
-      const res = await window.SamuStorage.syncAllWithCloud();
+      if (!bgSendWorkerRunning) {
+        setBgSyncBarState({
+          isWorking: true,
+          icon: '🔄',
+          title: 'Sincronizando com a Central SAMU (Google Drive)',
+          detail: 'Atualizando cadastros, equipe, fila de impressão e PDFs em segundo plano...',
+          percent: 18,
+          smoothTo: 86,
+          stages: [
+            { label: '📱 Base SQLite ✓', state: 'done' },
+            { label: '☁️ Google Drive...', state: 'active' },
+            { label: '🔄 Equipe & Histórico', state: 'pending' }
+          ]
+        });
+      }
+
+      const res = await window.SamuStorage.syncAllWithCloud({
+        foreground: true,
+        onProgress: (p) => {
+          if (!bgSendWorkerRunning && p && p.detail) {
+            setBgSyncBarState({
+              isWorking: true,
+              icon: p.phase === 'upload_pdf' ? '☁️' : '🔄',
+              title: 'Sincronizando com a Central SAMU',
+              detail: p.detail,
+              percent: p.percent || 45,
+              smoothTo: Math.min(94, (p.percent || 45) + 18),
+              stages: [
+                { label: '📱 Base SQLite ✓', state: 'done' },
+                { label: '☁️ Google Drive', state: p.phase === 'history' ? 'done' : 'active' },
+                { label: '🔄 Equipe & Histórico', state: p.phase === 'history' ? 'active' : 'pending' }
+              ]
+            });
+          }
+        }
+      });
+
       upgradeExistingSignaturesToBlueInk();
       renderBottomNav();
       await refreshSyncBadge();
-      if (activeTab === 'historico') renderHistoricoView();
-      if (activeTab === 'aprovacoes') renderAprovacoesView(true);
-      if (interactive) {
-        if (res && res.offline) {
-          showToast('📴 Sem internet agora: funcionando 100% pela Base Interna Offline! Sincronizará assim que conectar.');
-        } else if (res && res.uploadedCount > 0) {
-          showToast(`✅ Base sincronizada e ${res.uploadedCount} PDF(s) enviado(s) ao Google Drive!`);
-        } else if (res && res.pendingRemaining > 0 && res.lastUploadError) {
-          samuAlert('Atenção ao enviar PDF pendente ao Google Drive:\n\n' + res.lastUploadError);
-        } else {
-          showToast('✅ Base sincronizada com o Google Drive com sucesso!');
+      if (activeTab === 'historico' && !isUserTypingInInput()) renderHistoricoView();
+      if (activeTab === 'aprovacoes' && !isUserTypingInInput()) renderAprovacoesView(true);
+      if (activeTab === 'admin' && !isUserTypingInInput()) renderAdminView(true);
+
+      if (res && res.offline) {
+        if (!bgSendWorkerRunning) {
+          setBgSyncBarState({
+            isWorking: false,
+            variant: 'warning',
+            icon: '📴',
+            title: 'Funcionando na Base Interna Offline',
+            detail: 'Sem sinal no momento — sincronizará automaticamente assim que conectar!',
+            percent: 100,
+            allowDismiss: true,
+            autoHideMs: interactive ? 6000 : 3500,
+            stages: [
+              { label: '📱 SQLite Seguro ✓', state: 'done' },
+              { label: '⏳ Aguardando Sinal', state: 'queued' }
+            ]
+          });
+        }
+        if (interactive) {
+          showToast('📴 Sem internet agora: salvo na Base Interna! Sincronizará assim que conectar.');
+        }
+      } else if (res && res.uploadedCount > 0) {
+        const msg = `✅ Sincronizado e ${res.uploadedCount} PDF(s) enviado(s) ao Google Drive!`;
+        if (!bgSendWorkerRunning) {
+          setBgSyncBarState({
+            isWorking: false,
+            variant: 'success',
+            icon: '✅',
+            title: msg,
+            detail: 'Base operacional, histórico e fila da Base atualizados.',
+            percent: 100,
+            allowDismiss: true,
+            autoHideMs: 8000,
+            previewPayload: res.lastUploadedRecord ? { record: res.lastUploadedRecord, generated: null, upRes: { synced: true } } : null,
+            nativeDoneTitle: msg,
+            nativeDoneDetail: 'Sincronização em segundo plano concluída.',
+            stages: [
+              { label: '📱 Base SQLite ✓', state: 'done' },
+              { label: '☁️ Google Drive ✓', state: 'done' },
+              { label: '✅ Sincronizado', state: 'done' }
+            ]
+          });
+        }
+        showToast(msg, {
+          isSuccess: true,
+          durationMs: 6000,
+          actionLabel: res.lastUploadedRecord ? '👁️ Ver PDF' : '',
+          onAction: res.lastUploadedRecord ? () => openPdfPreviewModal(res.lastUploadedRecord) : null
+        });
+      } else if (res && res.pendingRemaining > 0 && res.lastUploadError) {
+        schedulePendingDriveRetry(8000);
+        if (!bgSendWorkerRunning) {
+          setBgSyncBarState({
+            isWorking: false,
+            variant: 'warning',
+            icon: '⚠️',
+            title: `⏳ ${res.pendingRemaining} PDF(s) aguardando reenvio`,
+            detail: String(res.lastUploadError),
+            percent: 100,
+            allowDismiss: true,
+            autoHideMs: 8500
+          });
+        }
+        if (interactive) {
+          showToast('⚠️ Aviso ao enviar PDF pendente: tentando novamente em 2º plano...');
+        }
+      } else {
+        if (!bgSendWorkerRunning) {
+          setBgSyncBarState({
+            isWorking: false,
+            variant: 'success',
+            icon: '✅',
+            title: '✅ Sincronizado com o Google Drive!',
+            detail: 'Cadastros, equipe do plantão e histórico em dia.',
+            percent: 100,
+            allowDismiss: true,
+            autoHideMs: interactive ? 5500 : 3000,
+            nativeDoneTitle: interactive ? '✅ SAMU 192 sincronizado com sucesso!' : '',
+            nativeDoneDetail: 'Todos os dados estão em dia com a Central.',
+            stages: [
+              { label: '📱 Base SQLite ✓', state: 'done' },
+              { label: '☁️ Google Drive ✓', state: 'done' },
+              { label: '✅ Em Dia', state: 'done' }
+            ]
+          });
+        }
+        if (interactive) {
+          showToast('✅ Base sincronizada com o Google Drive com sucesso!', { isSuccess: true });
         }
       }
     } catch (err) {
       const isNet = window.SamuStorage.isNetworkErrorMessage && window.SamuStorage.isNetworkErrorMessage(err && err.message);
+      if (!bgSendWorkerRunning) {
+        setBgSyncBarState({
+          isWorking: false,
+          variant: 'warning',
+          icon: isNet ? '📴' : '⚠️',
+          title: isNet ? '📴 Sem conexão no momento' : '⚠️ Oscilação na sincronização',
+          detail: isNet
+            ? 'Funcionando 100% offline — sincronizará automaticamente ao reconectar.'
+            : String((err && err.message) || err || ''),
+          percent: 100,
+          allowDismiss: true,
+          autoHideMs: interactive ? 6500 : 3200
+        });
+      }
       if (interactive) {
-        if (isNet) {
-          showToast('📴 Sem internet agora: funcionando 100% pela Base Interna Offline! Sincronizará com o Google Drive assim que conectar.');
-        } else {
-          samuAlert('Erro na sincronização: ' + err.message);
-        }
+        showToast(isNet
+          ? '📴 Sem internet agora: funcionando offline! Sincronizará assim que conectar.'
+          : '⚠️ Oscilação ao sincronizar: ' + (err.message || err));
       }
       await refreshSyncBadge();
     } finally {
+      bgActiveSyncCount = Math.max(0, bgActiveSyncCount - 1);
       isCloudRecordSyncInFlight = false;
     }
   }
@@ -4294,12 +5165,16 @@
   }
 
   function renderActiveView() {
-    if (activeTab === 'ficha') return renderFichaView();
-    if (activeTab === 'condutor') return renderCondutorView();
-    if (activeTab === 'enfermagem') return renderEnfermagemView();
-    if (activeTab === 'historico') return renderHistoricoView();
-    if (activeTab === 'aprovacoes') return renderAprovacoesView();
-    if (activeTab === 'admin') return renderAdminView();
+    updateBgSyncDockLayout();
+    let out;
+    if (activeTab === 'ficha') out = renderFichaView();
+    else if (activeTab === 'condutor') out = renderCondutorView();
+    else if (activeTab === 'enfermagem') out = renderEnfermagemView();
+    else if (activeTab === 'historico') out = renderHistoricoView();
+    else if (activeTab === 'aprovacoes') out = renderAprovacoesView();
+    else if (activeTab === 'admin') out = renderAdminView();
+    requestAnimationFrame(() => syncStickyBarsLayout());
+    return out;
   }
 
   function persistFichaDraft(opts) {
@@ -4712,6 +5587,7 @@
     if (topbar && topbar.offsetHeight > 0) {
       document.documentElement.style.setProperty('--topbar-h', topbar.offsetHeight + 'px');
     }
+    updateBgSyncDockLayout();
     const draftBar = document.querySelector('#main-view .quick-draft-bar');
     if (draftBar && draftBar.offsetHeight > 0) {
       document.documentElement.style.setProperty('--draftbar-h', draftBar.offsetHeight + 'px');
@@ -4721,9 +5597,11 @@
       window.addEventListener('resize', () => {
         requestAnimationFrame(syncStickyBarsLayout);
       });
-      if (typeof ResizeObserver === 'function' && topbar) {
-        const roTop = new ResizeObserver(() => syncStickyBarsLayout());
-        roTop.observe(topbar);
+      if (typeof ResizeObserver === 'function') {
+        const roSticky = new ResizeObserver(() => syncStickyBarsLayout());
+        if (topbar) roSticky.observe(topbar);
+        const bgWrap = document.getElementById('global-bg-sync-wrap');
+        if (bgWrap) roSticky.observe(bgWrap);
       }
     }
   }
@@ -6905,7 +7783,7 @@
       await openPdfPreviewModal(tempRecord);
     });
 
-    // Salvar e Enviar PDF ao Google Drive
+    // Salvar e Enviar PDF ao Google Drive (envia em 2º plano, já abre ficha limpa e coloca p/ imprimir na Base)
     document.getElementById('btn-save-send-ficha').addEventListener('click', async () => {
       const patCheck = await handlePatientCadastroOnFichaSend(fichaState);
       if (!patCheck.proceed) {
@@ -6919,7 +7797,6 @@
 
       const btn = document.getElementById('btn-save-send-ficha');
       btn.disabled = true;
-      btn.textContent = 'Gerando PDF e Salvando...';
       try {
         const prevKmFinal = fichaState.kmFinal ? String(fichaState.kmFinal).trim() : '';
         if (prevKmFinal !== '') {
@@ -6930,24 +7807,23 @@
         const existing = editingFichaId ? await window.SamuStorage.getRecordById(editingFichaId) : null;
         const record = buildFichaRecordObject(recId, existing);
         record.isDraft = false;
+        record.syncStatus = 'pending';
         record._patientCheckedOnSend = true;
+        record.pendingAutoPrint = window.SamuStorage.shouldAutoPrintRecord
+          ? window.SamuStorage.shouldAutoPrintRecord(record)
+          : true;
 
         if (crewPushTimer) {
           clearTimeout(crewPushTimer);
           crewPushTimer = null;
         }
-        const generated = await window.SamuPDF.generatePdfForRecord(record);
         await window.SamuStorage.saveRecordLocal(record, { skipPatientUpsert: true });
         if (activeCrew) {
           window.SamuStorage.closeCrewCurrentSession(activeCrew.crewId, currentCrewSessionId, 'submitted', recId, prevKmFinal, false);
         }
-        const upRes = await window.SamuStorage.uploadRecordToDrive(record, generated.base64);
-        if (!upRes.synced) {
-          schedulePendingDriveRetry(6000);
-        }
         await window.SamuStorage.clearDraft(currentUser.username, 'ficha');
 
-        // Prepara nova ficha limpa para o próximo atendimento (já puxando o último KM Final como KM Inicial e assinaturas da equipe!)
+        // Abre imediatamente uma ficha limpa p/ o próximo atendimento (puxando último KM Final como KM Inicial e assinaturas da equipe)
         editingFichaId = null;
         manualShowSecondEnf = false;
         manualShowSecondCond = false;
@@ -6956,14 +7832,14 @@
         resetFichaSyncTracking(fichaState, uid('sf'), {}, false);
         await refreshDraftCount();
         await refreshSyncBadge();
-
-        await openPdfPreviewModal(record, generated, upRes);
         renderFichaView();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+
+        // Gera o PDF 200 DPI, envia ao Google Drive e coloca na Impressora da Base em 2º plano sem abrir o PDF na tela
+        enqueueBackgroundRecordSend(record, { kind: 'ficha' });
       } catch (err) {
         samuAlert('Erro ao salvar ficha: ' + err.message);
-      } finally {
         btn.disabled = false;
-        btn.textContent = '💾 Salvar e Enviar PDF ao Google Drive';
       }
     });
   }
@@ -7607,15 +8483,12 @@
 
       const btn = document.getElementById('btn-save-send-condutor');
       btn.disabled = true;
-      btn.textContent = 'Gerando PDF e Salvando...';
       try {
         if (crewPushTimer) {
           clearTimeout(crewPushTimer);
           crewPushTimer = null;
         }
-        if (!isDiurno && Object.keys(d.itensDiurno || {}).length === 0 && !isRecentlyOfflinePassive() && window.SamuStorage.hasGitHubConfigured()) {
-          await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: false }).catch(() => {});
-        }
+        const isOtherShiftEmpty = !isDiurno && Object.keys(d.itensDiurno || {}).length === 0;
         applySharedDailyToCondutorState(d, { replaceOtherShift: false });
         if (window.SamuStorage.saveViaturaAvarias) {
           window.SamuStorage.saveViaturaAvarias(
@@ -7634,12 +8507,13 @@
         const recId = editingCondutorId || uid('ckcond');
         const existing = editingCondutorId ? await window.SamuStorage.getRecordById(editingCondutorId) : null;
         const record = buildCondRecord(recId, existing);
-        const generated = await window.SamuPDF.generatePdfForRecord(record);
+        record.isDraft = false;
+        record.syncStatus = 'pending';
+        record.pendingAutoPrint = window.SamuStorage.shouldAutoPrintRecord
+          ? window.SamuStorage.shouldAutoPrintRecord(record)
+          : false;
+
         await window.SamuStorage.saveRecordLocal(record);
-        const upRes = await window.SamuStorage.uploadRecordToDrive(record, generated.base64);
-        if (!upRes.synced) {
-          schedulePendingDriveRetry(6000);
-        }
         await window.SamuStorage.clearDraft(currentUser.username, 'checklist_condutor');
 
         editingCondutorId = null;
@@ -7651,13 +8525,13 @@
         applySharedDailyToCondutorState(condutorState, { replaceOtherShift: false });
         await refreshDraftCount();
         await refreshSyncBadge();
-        await openPdfPreviewModal(record, generated, upRes);
         renderCondutorView();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+
+        enqueueBackgroundRecordSend(record, { kind: 'condutor', isOtherShiftEmpty });
       } catch (err) {
         samuAlert('Erro ao salvar Check List: ' + err.message);
-      } finally {
         btn.disabled = false;
-        btn.textContent = '💾 Salvar e Enviar PDF ao Google Drive';
       }
     });
 
@@ -7665,12 +8539,19 @@
     if (btnQuickEnCond) {
       btnQuickEnCond.addEventListener('click', async () => {
         btnQuickEnCond.disabled = true;
-        await window.SamuStorage.saveChecklistModulesConfig({ condutorEnabled: true }, currentUser && currentUser.username);
+        await window.SamuStorage.saveChecklistModulesConfig({ condutorEnabled: true }, currentUser && currentUser.username, { skipCloudAwait: true });
         renderBottomNav();
         await refreshDraftCount();
         await refreshSyncBadge();
         renderCondutorView();
-        showToast('✅ Check List dos Motoristas ATIVADO para os funcionários!');
+        runBackgroundCloudAction({
+          icon: '🚑',
+          title: 'Ativando Check List dos Motoristas...',
+          detail: 'Sincronizando liberação com todos os celulares pelo Google Drive...',
+          taskFn: () => window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true, forceTryOnline: true }),
+          successTitle: '✅ Check List dos Motoristas ativado e sincronizado!',
+          successToast: '✅ Check List dos Motoristas ATIVADO e sincronizado no Google Drive!'
+        });
       });
     }
   }
@@ -8114,15 +8995,12 @@
 
       const btn = document.getElementById('btn-save-send-enf');
       btn.disabled = true;
-      btn.textContent = 'Gerando PDF e Salvando...';
       try {
         if (crewPushTimer) {
           clearTimeout(crewPushTimer);
           crewPushTimer = null;
         }
-        if (!isDia && Object.keys(d.itensDia || {}).length === 0 && !isRecentlyOfflinePassive() && window.SamuStorage.hasGitHubConfigured()) {
-          await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: false }).catch(() => {});
-        }
+        const isOtherShiftEmpty = !isDia && Object.keys(d.itensDia || {}).length === 0;
         syncActiveShiftFieldsInEnfermagem(d);
         applySharedDailyToEnfermagemState(d, { replaceOtherShift: false });
         if (window.SamuStorage.saveSharedDailyChecklist) {
@@ -8131,26 +9009,28 @@
         const recId = editingEnfermagemId || uid('ckenf');
         const existing = editingEnfermagemId ? await window.SamuStorage.getRecordById(editingEnfermagemId) : null;
         const record = buildEnfRecord(recId, existing);
-        const generated = await window.SamuPDF.generatePdfForRecord(record);
+        record.isDraft = false;
+        record.syncStatus = 'pending';
+        record.pendingAutoPrint = window.SamuStorage.shouldAutoPrintRecord
+          ? window.SamuStorage.shouldAutoPrintRecord(record)
+          : false;
+
         await window.SamuStorage.saveRecordLocal(record);
-        const upRes = await window.SamuStorage.uploadRecordToDrive(record, generated.base64);
-        if (!upRes.synced) {
-          schedulePendingDriveRetry(6000);
-        }
         await window.SamuStorage.clearDraft(currentUser.username, 'checklist_enfermagem');
 
         editingEnfermagemId = null;
         enfermagemValidationActive = false;
+        activeEnfSectionIdx = 0;
         enfermagemState = createEmptyEnfermagem();
         await refreshDraftCount();
         await refreshSyncBadge();
-        await openPdfPreviewModal(record, generated, upRes);
         renderEnfermagemView();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+
+        enqueueBackgroundRecordSend(record, { kind: 'enfermagem', isOtherShiftEmpty });
       } catch (err) {
         samuAlert('Erro ao salvar Check List de Enfermagem: ' + err.message);
-      } finally {
         btn.disabled = false;
-        btn.textContent = '💾 Salvar e Enviar PDF ao Google Drive';
       }
     });
 
@@ -8158,12 +9038,19 @@
     if (btnQuickEnEnf) {
       btnQuickEnEnf.addEventListener('click', async () => {
         btnQuickEnEnf.disabled = true;
-        await window.SamuStorage.saveChecklistModulesConfig({ enfermagemEnabled: true }, currentUser && currentUser.username);
+        await window.SamuStorage.saveChecklistModulesConfig({ enfermagemEnabled: true }, currentUser && currentUser.username, { skipCloudAwait: true });
         renderBottomNav();
         await refreshDraftCount();
         await refreshSyncBadge();
         renderEnfermagemView();
-        showToast('✅ Check List da Enfermagem ATIVADO para os funcionários!');
+        runBackgroundCloudAction({
+          icon: '🩺',
+          title: 'Ativando Check List da Enfermagem...',
+          detail: 'Sincronizando liberação com todos os celulares pelo Google Drive...',
+          taskFn: () => window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true, forceTryOnline: true }),
+          successTitle: '✅ Check List da Enfermagem ativado e sincronizado!',
+          successToast: '✅ Check List da Enfermagem ATIVADO e sincronizado no Google Drive!'
+        });
       });
     }
   }
@@ -8313,34 +9200,16 @@
       btn.addEventListener('click', async () => {
         const rec = await window.SamuStorage.getRecordById(btn.dataset.hSendDrive);
         if (!rec) return;
-        const origTxt = btn.textContent;
         btn.disabled = true;
-        btn.textContent = '☁️ Enviando...';
-        try {
-          if (crewPushTimer) {
-            clearTimeout(crewPushTimer);
-            crewPushTimer = null;
-          }
-          const gen = await window.SamuPDF.generatePdfForRecord(rec);
-          const up = await window.SamuStorage.uploadRecordToDrive(rec, gen.base64);
-          await refreshSyncBadge();
-          renderHistoricoView();
-          if (up.synced) {
-            showToast(up.printQueued
-              ? '✅ PDF enviado ao Google Drive e para a Impressora da Base!'
-              : '✅ PDF enviado ao Google Drive com sucesso!');
-          } else if (up.reason === 'offline' || up.isNetworkError) {
-            schedulePendingDriveRetry(6000);
-            showToast('📴 Sem conexão no momento. Continuará tentando enviar automaticamente.');
-          } else {
-            schedulePendingDriveRetry(6000);
-            samuAlert('Não foi possível enviar ao Google Drive agora:\n\n' + (up.error || 'Erro temporário no servidor.'));
-          }
-        } catch (err) {
-          samuAlert('Erro ao enviar PDF ao Google Drive: ' + (err.message || err));
-          btn.disabled = false;
-          btn.textContent = origTxt;
+        btn.textContent = '☁️ Na fila (2º plano)...';
+        if (crewPushTimer) {
+          clearTimeout(crewPushTimer);
+          crewPushTimer = null;
         }
+        const kindMap = rec.type === 'checklist_condutor'
+          ? 'condutor'
+          : (rec.type === 'checklist_enfermagem' ? 'enfermagem' : 'ficha');
+        enqueueBackgroundRecordSend(rec, { kind: kindMap });
       });
     });
 
@@ -8632,25 +9501,33 @@
     }
 
     window.SamuStorage.deleteLocalUser(cleanUname);
-    if (window.SamuStorage.hasGitHubConfigured()) {
-      try { await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true, forceTryOnline: true }); } catch (eGh) {}
-    }
-    const curSettings = window.SamuStorage.getSettings();
-    if (curSettings.scriptUrl) {
-      try {
-        await window.SamuStorage.apiPost({
-          action: 'deleteUser',
-          authUser: currentUser.username,
-          authPass: currentUser.password,
-          authName: currentUser.name,
-          authRole: window.SamuStorage.getUserProfileChoice(currentUser),
-          username: cleanUname
-        });
-      } catch (e) {}
-    }
     renderBottomNav();
     await refreshSyncBadge();
-    showToast(`🗑️ Login "${cleanUname}" excluído com sucesso!`);
+
+    const authSnapshot = currentUser ? Object.assign({}, currentUser) : null;
+    runBackgroundCloudAction({
+      icon: '🗑️',
+      title: `Excluindo login "${cleanUname}" na nuvem...`,
+      detail: 'Sincronizando exclusão com todos os celulares pelo Google Drive...',
+      taskFn: async () => {
+        if (window.SamuStorage.hasGitHubConfigured()) {
+          await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true, forceTryOnline: true }).catch(() => {});
+        }
+        const curSettings = window.SamuStorage.getSettings();
+        if (curSettings.scriptUrl && authSnapshot) {
+          await window.SamuStorage.apiPost({
+            action: 'deleteUser',
+            authUser: authSnapshot.username,
+            authPass: authSnapshot.password,
+            authName: authSnapshot.name,
+            authRole: window.SamuStorage.getUserProfileChoice(authSnapshot),
+            username: cleanUname
+          }).catch(() => {});
+        }
+      },
+      successTitle: `✅ Login "${cleanUname}" excluído em toda a rede!`,
+      successToast: `✅ Login "${cleanUname}" excluído e sincronizado no Google Drive!`
+    });
     return true;
   }
 
@@ -8793,7 +9670,7 @@
 
     const btnPullGh = document.getElementById('btn-aprov-pull-gh');
     if (btnPullGh) {
-      btnPullGh.addEventListener('click', async () => {
+      btnPullGh.addEventListener('click', () => {
         if (!window.SamuStorage.hasGitHubConfigured()) {
           activeTab = 'admin';
           renderBottomNav();
@@ -8801,24 +9678,7 @@
           showToast('Configure a URL do Google Drive abaixo para ativar a sincronização online.');
           return;
         }
-        if (!navigator.onLine) {
-          showToast('📴 Sem internet agora — exibindo cadastros da Base Interna Offline.');
-          return;
-        }
-        btnPullGh.disabled = true;
-        btnPullGh.textContent = 'Sincronizando...';
-        try {
-          await window.SamuStorage.syncInternalDbWithGitHub();
-          renderBottomNav();
-          await refreshSyncBadge();
-          renderAprovacoesView(true);
-          showToast('✅ Base de dados sincronizada com o Google Drive!');
-        } catch (err) {
-          samuAlert('Erro ao sincronizar com o Google Drive: ' + err.message);
-        } finally {
-          btnPullGh.disabled = false;
-          btnPullGh.textContent = '🔄 Sincronizar Agora';
-        }
+        triggerBackgroundSync(true);
       });
     }
 
@@ -8871,21 +9731,38 @@
           overrides.coren = corenInput.value.trim();
           overrides.councilId = overrides.coren;
         }
-        btn.disabled = true;
-        btn.textContent = 'Aprovando...';
         try {
-          const res = await window.SamuStorage.approveUser(uname, overrides, currentUser.username);
+          const res = await window.SamuStorage.approveUser(uname, overrides, currentUser.username, { skipCloudAwait: true });
           renderBottomNav();
           await refreshSyncBadge();
           renderAprovacoesView(true);
           const finalLbl = window.SamuStorage.getUserRoleLabel(res.user);
-          showToast(res.githubSynced
-            ? `✅ "${uname}" aprovado como ${finalLbl} na Base Interna e no Google Drive!`
-            : `✅ "${uname}" aprovado como ${finalLbl} na Base Interna! (Sincronizará c/ Google Drive ao conectar)`);
+          const authSnap = currentUser ? Object.assign({}, currentUser) : null;
+          runBackgroundCloudAction({
+            icon: '✅',
+            title: `Sincronizando aprovação de "${uname}"...`,
+            detail: `Liberando acesso (${finalLbl}) em todos os celulares...`,
+            taskFn: async () => {
+              if (window.SamuStorage.hasGitHubConfigured()) {
+                await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true, forceTryOnline: true });
+              }
+              const curSettings = window.SamuStorage.getSettings();
+              if (curSettings.scriptUrl && authSnap) {
+                await window.SamuStorage.apiPost({
+                  action: 'saveUser',
+                  authUser: authSnap.username,
+                  authPass: authSnap.password,
+                  authName: authSnap.name,
+                  authRole: window.SamuStorage.getUserProfileChoice(authSnap),
+                  userData: Object.assign({}, res.user, { role: window.SamuStorage.getUserProfileChoice(res.user) })
+                }).catch(() => {});
+              }
+            },
+            successTitle: `✅ "${uname}" aprovado e sincronizado (${finalLbl})!`,
+            successToast: `✅ "${uname}" aprovado como ${finalLbl} e sincronizado no Google Drive!`
+          });
         } catch (err) {
           samuAlert('Erro ao aprovar cadastro: ' + err.message);
-          btn.disabled = false;
-          btn.textContent = '✅ Aprovar Cadastro';
         }
       });
     });
@@ -8922,55 +9799,48 @@
           councilId: mapped.role === 'condutor' ? '' : nextCoren,
           updatedAt: new Date().toISOString()
         });
-        btn.disabled = true;
-        btn.textContent = 'Salvando...';
-        try {
-          window.SamuStorage.upsertLocalUser(updatedUser);
-          if (currentUser && target.username.toLowerCase() === currentUser.username.toLowerCase()) {
-            const refreshedSelf = window.SamuStorage.getLocalUsers().find(x => x.username.toLowerCase() === currentUser.username.toLowerCase());
-            if (refreshedSelf) {
-              currentUser = Object.assign({}, currentUser, {
-                role: refreshedSelf.role,
-                subRole: window.SamuStorage.getUserSubRole(refreshedSelf),
-                isAdmin: window.SamuStorage.isUserAdmin(refreshedSelf),
-                coren: refreshedSelf.coren || refreshedSelf.councilId || '',
-                councilId: refreshedSelf.coren || refreshedSelf.councilId || ''
-              });
-              window.SamuStorage.setSession(currentUser);
-              updateTopbarUserHeader();
+        window.SamuStorage.upsertLocalUser(updatedUser);
+        if (currentUser && target.username.toLowerCase() === currentUser.username.toLowerCase()) {
+          const refreshedSelf = window.SamuStorage.getLocalUsers().find(x => x.username.toLowerCase() === currentUser.username.toLowerCase());
+          if (refreshedSelf) {
+            currentUser = Object.assign({}, currentUser, {
+              role: refreshedSelf.role,
+              subRole: window.SamuStorage.getUserSubRole(refreshedSelf),
+              isAdmin: window.SamuStorage.isUserAdmin(refreshedSelf),
+              coren: refreshedSelf.coren || refreshedSelf.councilId || '',
+              councilId: refreshedSelf.coren || refreshedSelf.councilId || ''
+            });
+            window.SamuStorage.setSession(currentUser);
+            updateTopbarUserHeader();
+          }
+        }
+        renderBottomNav();
+        await refreshSyncBadge();
+        renderAprovacoesView(true);
+        const authSnap = currentUser ? Object.assign({}, currentUser) : null;
+        runBackgroundCloudAction({
+          icon: '⬆️',
+          title: `Sincronizando cargo de "${target.name}"...`,
+          detail: `Atualizando perfil (${newRolePreview}) no Google Drive...`,
+          taskFn: async () => {
+            if (window.SamuStorage.hasGitHubConfigured()) {
+              await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true, forceTryOnline: true });
             }
-          }
-          let ghSynced = false;
-          if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
-            try {
-              const ghRes = await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true });
-              ghSynced = Boolean(ghRes && ghRes.pushed);
-            } catch (eGh) {}
-          }
-          const curSettings = window.SamuStorage.getSettings();
-          if (curSettings.scriptUrl && navigator.onLine) {
-            try {
+            const curSettings = window.SamuStorage.getSettings();
+            if (curSettings.scriptUrl && authSnap) {
               await window.SamuStorage.apiPost({
                 action: 'saveUser',
-                authUser: currentUser.username,
-                authPass: currentUser.password,
-                authName: currentUser.name,
-                authRole: window.SamuStorage.getUserProfileChoice(currentUser),
+                authUser: authSnap.username,
+                authPass: authSnap.password,
+                authName: authSnap.name,
+                authRole: window.SamuStorage.getUserProfileChoice(authSnap),
                 userData: Object.assign({}, updatedUser, { role: window.SamuStorage.getUserProfileChoice(updatedUser) })
-              });
-            } catch (eGs) {}
-          }
-          renderBottomNav();
-          await refreshSyncBadge();
-          renderAprovacoesView(true);
-          showToast(ghSynced
-            ? `✅ Cargo de "${target.name}" atualizado para ${newRolePreview} (Base Interna + Google Drive)!`
-            : `✅ Cargo de "${target.name}" atualizado para ${newRolePreview}!`);
-        } catch (err) {
-          samuAlert('Erro ao alterar cargo: ' + err.message);
-          btn.disabled = false;
-          btn.textContent = '⬆️ Salvar Cargo';
-        }
+              }).catch(() => {});
+            }
+          },
+          successTitle: `✅ Cargo de "${target.name}" sincronizado (${newRolePreview})!`,
+          successToast: `✅ Cargo de "${target.name}" atualizado para ${newRolePreview} e sincronizado!`
+        });
       });
     });
 
@@ -8991,11 +9861,34 @@
       btn.addEventListener('click', async () => {
         const uname = btn.dataset.rejectUser;
         if (!(await samuConfirm(`Recusar e excluir a solicitação de cadastro "${uname}"?`))) return;
-        await window.SamuStorage.rejectUser(uname);
+        await window.SamuStorage.rejectUser(uname, { skipCloudAwait: true });
         renderBottomNav();
         await refreshSyncBadge();
         renderAprovacoesView(true);
-        showToast(`Solicitação de "${uname}" recusada.`);
+        const authSnap = currentUser ? Object.assign({}, currentUser) : null;
+        runBackgroundCloudAction({
+          icon: '🗑️',
+          title: `Sincronizando recusa de "${uname}"...`,
+          detail: 'Removendo solicitação pendente do Google Drive...',
+          taskFn: async () => {
+            if (window.SamuStorage.hasGitHubConfigured()) {
+              await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true, forceTryOnline: true }).catch(() => {});
+            }
+            const curSettings = window.SamuStorage.getSettings();
+            if (curSettings.scriptUrl && authSnap) {
+              await window.SamuStorage.apiPost({
+                action: 'deleteUser',
+                authUser: authSnap.username,
+                authPass: authSnap.password,
+                authName: authSnap.name,
+                authRole: window.SamuStorage.getUserProfileChoice(authSnap),
+                username: uname
+              }).catch(() => {});
+            }
+          },
+          successTitle: `✅ Solicitação "${uname}" removida!`,
+          successToast: `✅ Solicitação de "${uname}" recusada e sincronizada!`
+        });
       });
     });
   }
@@ -9008,25 +9901,31 @@
     const container = document.getElementById('main-view');
     const settings = window.SamuStorage.getSettings();
 
-    // Tenta buscar usuários atualizados do GitHub / Google Apps Script se conectado
-    if (!skipInitialPull) {
-      if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
-        try {
-          await window.SamuStorage.syncInternalDbWithGitHub();
-        } catch (e) {}
-      } else if (settings.scriptUrl && navigator.onLine) {
-        try {
-          const res = await window.SamuStorage.apiPost({
-            action: 'listUsers',
-            authUser: currentUser.username,
-            authPass: currentUser.password,
-            authName: currentUser.name,
-            authRole: window.SamuStorage.getUserProfileChoice(currentUser)
-          });
+    // Busca dados atualizados da nuvem em 2º plano sem travar a abertura da aba Base/Drive
+    if (!skipInitialPull && !isRecentlyOfflinePassive()) {
+      if (window.SamuStorage.hasGitHubConfigured()) {
+        window.SamuStorage.syncInternalDbWithGitHub().then(async () => {
+          if (currentUser && window.SamuStorage.isUserAdmin(currentUser) && activeTab === 'admin' && !isUserTypingInInput()) {
+            renderBottomNav();
+            await refreshSyncBadge();
+            renderAdminView(true);
+          }
+        }).catch(() => {});
+      } else if (settings.scriptUrl) {
+        window.SamuStorage.apiPost({
+          action: 'listUsers',
+          authUser: currentUser.username,
+          authPass: currentUser.password,
+          authName: currentUser.name,
+          authRole: window.SamuStorage.getUserProfileChoice(currentUser)
+        }).then((res) => {
           if (res && res.ok && Array.isArray(res.users)) {
             window.SamuStorage.setLocalUsers(res.users);
+            if (currentUser && window.SamuStorage.isUserAdmin(currentUser) && activeTab === 'admin' && !isUserTypingInInput()) {
+              renderAdminView(true);
+            }
           }
-        } catch (e) {}
+        }).catch(() => {});
       }
     }
 
@@ -9223,7 +10122,26 @@
           <span class="type-badge type-ficha">🪪 CPFs na Base: ${patientsCount}</span>
           <span class="type-badge" style="${modCfg.condutorEnabled ? 'background:#dcfce7; color:#14532d;' : 'background:#fee2e2; color:#991b1b;'}">🚑 CK Motoristas: ${modCfg.condutorEnabled ? 'Ativo' : 'Desativado'}</span>
           <span class="type-badge" style="${modCfg.enfermagemEnabled ? 'background:#dcfce7; color:#14532d;' : 'background:#fee2e2; color:#991b1b;'}">🩺 CK Enfermagem: ${modCfg.enfermagemEnabled ? 'Ativo' : 'Desativado'}</span>
+          ${(() => {
+            if (!window.AndroidBridge) return '';
+            const batFree = window.SamuStorage.isBatteryOptimizationDisabled ? window.SamuStorage.isBatteryOptimizationDisabled() : true;
+            return `<span class="type-badge" style="${batFree ? 'background:#dcfce7; color:#14532d;' : 'background:#fef3c7; color:#92400e;'}">${batFree ? '🔋 2º Plano: Sem Restrição de Bateria' : '⚠️ Bateria: Toque abaixo p/ liberar 2º plano'}</span>`;
+          })()}
         </div>
+
+        ${(() => {
+          if (!window.AndroidBridge) return '';
+          const batFree = window.SamuStorage.isBatteryOptimizationDisabled ? window.SamuStorage.isBatteryOptimizationDisabled() : true;
+          if (batFree) return '';
+          return `
+            <div style="background:#fffbeb; border:1.5px solid #f59e0b; border-radius:10px; padding:10px 12px; margin-bottom:12px; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+              <div style="font-size:0.81rem; color:#78350f; font-weight:700;">
+                🔋 <strong>Garantir Envio Mesmo Fechando o APK:</strong> desative a otimização de bateria deste aparelho para o SAMU 192 nunca ser interrompido em segundo plano.
+              </div>
+              <button type="button" class="btn btn-orange btn-sm" id="btn-adm-battery-opt">🔋 Tirar Otimização de Bateria</button>
+            </div>
+          `;
+        })()}
 
         <div class="grid-3">
           <div class="field">
@@ -9513,29 +10431,39 @@
       });
     }
 
+    const btnBatteryOpt = document.getElementById('btn-adm-battery-opt');
+    if (btnBatteryOpt && window.SamuStorage.requestDisableBatteryOptimization) {
+      btnBatteryOpt.addEventListener('click', () => {
+        window.SamuStorage.requestDisableBatteryOptimization();
+      });
+    }
+
     const btnToggleCkCond = document.getElementById('btn-adm-toggle-ck-cond');
     if (btnToggleCkCond) {
       btnToggleCkCond.addEventListener('click', async () => {
         const curCfg = getChecklistModulesCfg();
         const nextVal = !curCfg.condutorEnabled;
-        btnToggleCkCond.disabled = true;
-        btnToggleCkCond.textContent = 'Salvando e sincronizando...';
-        try {
-          await window.SamuStorage.saveChecklistModulesConfig(
-            { condutorEnabled: nextVal },
-            currentUser && currentUser.username
-          );
-          renderBottomNav();
-          await refreshDraftCount();
-          await refreshSyncBadge();
-          renderAdminView(true);
-          showToast(nextVal
-            ? '✅ Check List dos Motoristas ATIVADO para todos os motoristas!'
-            : '🔒 Check List dos Motoristas DESATIVADO (oculto para funcionários não-ADM)!');
-        } catch (err) {
-          samuAlert('Erro ao atualizar configuração do Check List: ' + err.message);
-          renderAdminView(true);
-        }
+        await window.SamuStorage.saveChecklistModulesConfig(
+          { condutorEnabled: nextVal },
+          currentUser && currentUser.username,
+          { skipCloudAwait: true }
+        );
+        renderBottomNav();
+        await refreshDraftCount();
+        await refreshSyncBadge();
+        renderAdminView(true);
+        runBackgroundCloudAction({
+          icon: '🚑',
+          title: `${nextVal ? 'Ativando' : 'Desativando'} Check List Motoristas...`,
+          detail: 'Sincronizando configuração com todos os celulares pelo Google Drive...',
+          taskFn: () => window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true, forceTryOnline: true }),
+          successTitle: nextVal
+            ? '✅ Check List Motoristas ATIVADO em todos os aparelhos!'
+            : '🔒 Check List Motoristas DESATIVADO em todos os aparelhos!',
+          successToast: nextVal
+            ? '✅ Check List dos Motoristas ATIVADO e sincronizado no Google Drive!'
+            : '🔒 Check List dos Motoristas DESATIVADO e sincronizado no Google Drive!'
+        });
       });
     }
 
@@ -9544,28 +10472,31 @@
       btnToggleCkEnf.addEventListener('click', async () => {
         const curCfg = getChecklistModulesCfg();
         const nextVal = !curCfg.enfermagemEnabled;
-        btnToggleCkEnf.disabled = true;
-        btnToggleCkEnf.textContent = 'Salvando e sincronizando...';
-        try {
-          await window.SamuStorage.saveChecklistModulesConfig(
-            { enfermagemEnabled: nextVal },
-            currentUser && currentUser.username
-          );
-          renderBottomNav();
-          await refreshDraftCount();
-          await refreshSyncBadge();
-          renderAdminView(true);
-          showToast(nextVal
-            ? '✅ Check List da Enfermagem ATIVADO para toda a equipe de Enfermagem!'
-            : '🔒 Check List da Enfermagem DESATIVADO (oculto para funcionários não-ADM)!');
-        } catch (err) {
-          samuAlert('Erro ao atualizar configuração do Check List: ' + err.message);
-          renderAdminView(true);
-        }
+        await window.SamuStorage.saveChecklistModulesConfig(
+          { enfermagemEnabled: nextVal },
+          currentUser && currentUser.username,
+          { skipCloudAwait: true }
+        );
+        renderBottomNav();
+        await refreshDraftCount();
+        await refreshSyncBadge();
+        renderAdminView(true);
+        runBackgroundCloudAction({
+          icon: '🩺',
+          title: `${nextVal ? 'Ativando' : 'Desativando'} Check List Enfermagem...`,
+          detail: 'Sincronizando configuração com todos os celulares pelo Google Drive...',
+          taskFn: () => window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true, forceTryOnline: true }),
+          successTitle: nextVal
+            ? '✅ Check List Enfermagem ATIVADO em todos os aparelhos!'
+            : '🔒 Check List Enfermagem DESATIVADO em todos os aparelhos!',
+          successToast: nextVal
+            ? '✅ Check List da Enfermagem ATIVADO e sincronizado no Google Drive!'
+            : '🔒 Check List da Enfermagem DESATIVADO e sincronizado no Google Drive!'
+        });
       });
     }
 
-    // Salvar e sincronizar Base Interna com Google Drive
+    // Salvar e sincronizar Base Interna com Google Drive (em 2º plano sem travar a tela)
     const btnSyncGh = document.getElementById('btn-adm-sync-gh');
     if (btnSyncGh) {
       btnSyncGh.addEventListener('click', async () => {
@@ -9587,33 +10518,13 @@
 
         if (!window.SamuStorage.hasGitHubConfigured()) {
           await refreshSyncBadge();
-          renderAdminView();
+          renderAdminView(true);
           showToast(`🗄️ Configurações salvas na Base Interna Offline (Hospital padrão: ${defaultHospital}).`);
           return;
         }
 
-        if (!navigator.onLine) {
-          await refreshSyncBadge();
-          showToast('📴 Configuração salva! Sem internet agora — sincronizará com o Google Drive assim que conectar.');
-          return;
-        }
-
-        btnSyncGh.disabled = true;
-        btnSyncGh.textContent = 'Sincronizando com Google Drive...';
-        try {
-          const res = await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true });
-          renderBottomNav();
-          await refreshSyncBadge();
-          renderAdminView();
-          showToast(res.pushed
-            ? '☁️ Base Interna sincronizada e gravada no Google Drive com sucesso!'
-            : '☁️ Base de dados sincronizada com o Google Drive com sucesso!');
-        } catch (err) {
-          samuAlert('Erro ao sincronizar com Google Drive: ' + err.message);
-        } finally {
-          btnSyncGh.disabled = false;
-          btnSyncGh.textContent = '☁️ Salvar e Sincronizar com Google Drive';
-        }
+        await refreshSyncBadge();
+        triggerBackgroundSync(true);
       });
     }
 
@@ -9710,7 +10621,7 @@
       btnOpenSheet.addEventListener('click', () => openInAppControlSheetModal());
     }
 
-    // Eventos do painel de Impressão Automática na Base SAMU
+    // Eventos do painel de Impressão Automática na Base SAMU (em 2º plano sem travar a tela)
     const btnSavePrintCfg = document.getElementById('btn-adm-save-print-cfg');
     if (btnSavePrintCfg && window.SamuStorage.saveRemotePrintConfig) {
       btnSavePrintCfg.addEventListener('click', async () => {
@@ -9719,51 +10630,59 @@
         const checklistPrintShift = (document.getElementById('adm-prt-ck-shift') && document.getElementById('adm-prt-ck-shift').value) || 'noturno_only';
         const duplexMode = (document.getElementById('adm-prt-duplex') && document.getElementById('adm-prt-duplex').value) || 'duplex';
         const copies = Number((document.getElementById('adm-prt-copies') && document.getElementById('adm-prt-copies').value) || 1) || 1;
-        btnSavePrintCfg.disabled = true;
-        btnSavePrintCfg.textContent = 'Salvando...';
-        try {
-          await window.SamuStorage.saveRemotePrintConfig({
-            autoPrintFichas,
-            autoPrintChecklists,
-            checklistPrintShift,
-            duplexMode,
-            copies
-          }, currentUser.username);
-          await refreshSyncBadge();
-          showToast('✅ Configuração da Impressora da Base salva e sincronizada para toda a equipe!');
-          renderAdminView(true);
-        } catch (err) {
-          samuAlert('Erro ao salvar configuração de impressão: ' + err.message);
-        } finally {
-          btnSavePrintCfg.disabled = false;
-          btnSavePrintCfg.textContent = '💾 Salvar Config. de Impressão';
-        }
+        await window.SamuStorage.saveRemotePrintConfig({
+          autoPrintFichas,
+          autoPrintChecklists,
+          checklistPrintShift,
+          duplexMode,
+          copies
+        }, currentUser.username, { skipCloudAwait: true });
+        await refreshSyncBadge();
+        renderAdminView(true);
+        runBackgroundCloudAction({
+          icon: '🖨️',
+          title: 'Sincronizando Config. da Impressora da Base...',
+          detail: 'Atualizando regras de impressão automática p/ toda a equipe SAMU...',
+          taskFn: () => window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true, forceTryOnline: true }),
+          successTitle: '✅ Configuração da Impressora da Base sincronizada!',
+          successToast: '✅ Configuração da Impressora da Base salva e sincronizada para toda a equipe!'
+        });
       });
     }
 
     const btnTestPrintBase = document.getElementById('btn-adm-test-print-base');
     if (btnTestPrintBase && window.SamuStorage.enqueueRemoteTestPage) {
-      btnTestPrintBase.addEventListener('click', async () => {
+      btnTestPrintBase.addEventListener('click', () => {
         if (!window.SamuStorage.getSettings().scriptUrl) {
           samuAlert('Configure primeiro a URL do Google Drive acima para enviar a Página de Teste para a Base.');
           return;
         }
-        btnTestPrintBase.disabled = true;
-        btnTestPrintBase.textContent = '🖨️ Enviando Teste...';
-        try {
-          await window.SamuStorage.enqueueRemoteTestPage();
-          await refreshSyncBadge();
-          const ag = window.SamuStorage.getRemotePrintAgentStatus ? window.SamuStorage.getRemotePrintAgentStatus() : null;
-          showToast(ag && ag.isOnline
-            ? `🖨️ Página de Teste enviada para ${ag.printerName || ag.pcName} na Base!`
-            : '🖨️ Página de Teste colocada na fila da nuvem! Sairá assim que o PC da Base estiver aberto.');
-          renderAdminView(true);
-        } catch (err) {
-          samuAlert('Erro ao enviar Página de Teste: ' + err.message);
-        } finally {
-          btnTestPrintBase.disabled = false;
-          btnTestPrintBase.textContent = '🖨️ Imprimir Página de Teste na Base';
-        }
+        runBackgroundCloudAction({
+          icon: '🖨️',
+          doneIcon: '🖨️',
+          title: 'Enviando Página de Teste p/ Impressora da Base...',
+          detail: 'Colocando Página de Teste na fila remota da Base SAMU...',
+          stages: [
+            { label: '📄 Página Teste ✓', state: 'done' },
+            { label: '☁️ Fila Nuvem...', state: 'active' },
+            { label: '🖨️ PC da Base', state: 'pending' }
+          ],
+          doneStages: [
+            { label: '📄 Página Teste ✓', state: 'done' },
+            { label: '☁️ Fila Nuvem ✓', state: 'done' },
+            { label: '🖨️ Enviado p/ Base ✓', state: 'done' }
+          ],
+          taskFn: () => window.SamuStorage.enqueueRemoteTestPage(),
+          onDoneUi: () => {
+            if (activeTab === 'admin' && !isUserTypingInInput()) renderAdminView(true);
+          },
+          successTitle: () => {
+            const ag = window.SamuStorage.getRemotePrintAgentStatus ? window.SamuStorage.getRemotePrintAgentStatus() : null;
+            return ag && ag.isOnline
+              ? `🖨️ Página de Teste enviada p/ ${ag.printerName || ag.pcName}!`
+              : '🖨️ Página de Teste colocada na fila da Base SAMU!';
+          }
+        });
       });
     }
 
@@ -9822,35 +10741,28 @@
 
     const btnRefreshPrintQueue = document.getElementById('btn-adm-refresh-print-queue');
     if (btnRefreshPrintQueue) {
-      btnRefreshPrintQueue.addEventListener('click', async () => {
-        btnRefreshPrintQueue.disabled = true;
-        btnRefreshPrintQueue.textContent = '⏳ Atualizando...';
-        try {
-          if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
-            await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: false });
-          }
-          renderAdminView(true);
-          showToast('🔄 Status da Impressora da Base atualizado!');
-        } catch (err) {
-          renderAdminView(true);
-        }
+      btnRefreshPrintQueue.addEventListener('click', () => {
+        triggerBackgroundSync(true);
       });
     }
 
     container.querySelectorAll('[data-pjob-retry]').forEach(btn => {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', () => {
         const jid = btn.dataset.pjobRetry;
         btn.disabled = true;
-        btn.textContent = '🖨️...';
-        try {
-          await window.SamuStorage.retryRemotePrintJob(jid);
-          showToast('🖨️ Reenviado para a Fila da Impressora da Base!');
-          renderAdminView(true);
-        } catch (err) {
-          samuAlert('Erro ao reenviar impressão: ' + err.message);
-          btn.disabled = false;
-          btn.textContent = '🔄 Reimprimir';
-        }
+        btn.textContent = '🖨️ Na fila...';
+        runBackgroundCloudAction({
+          icon: '🖨️',
+          doneIcon: '🖨️',
+          title: 'Reenviando impressão para a Base SAMU...',
+          detail: 'Atualizando fila remota da Impressora da Base...',
+          taskFn: () => window.SamuStorage.retryRemotePrintJob(jid),
+          onDoneUi: () => {
+            if (activeTab === 'admin' && !isUserTypingInInput()) renderAdminView(true);
+          },
+          successTitle: '🖨️ Reenviado para a Fila da Impressora da Base!',
+          successToast: '🖨️ Reenviado para a Fila da Impressora da Base!'
+        });
       });
     });
 
@@ -9903,54 +10815,52 @@
         active: true,
         updatedAt: new Date().toISOString()
       };
-      const btn = document.getElementById('btn-save-user');
-      btn.disabled = true;
-      btn.textContent = 'Salvando...';
-      try {
-        window.SamuStorage.upsertLocalUser(userData);
-        if (currentUser && targetUname === currentUser.username.toLowerCase()) {
-          const refreshedSelf = window.SamuStorage.getLocalUsers().find(x => x.username.toLowerCase() === targetUname);
-          if (refreshedSelf) {
-            currentUser = Object.assign({}, currentUser, {
-              name: refreshedSelf.name,
-              password: refreshedSelf.password,
-              role: refreshedSelf.role,
-              subRole: window.SamuStorage.getUserSubRole(refreshedSelf),
-              isAdmin: window.SamuStorage.isUserAdmin(refreshedSelf),
-              coren: refreshedSelf.coren || refreshedSelf.councilId || '',
-              councilId: refreshedSelf.coren || refreshedSelf.councilId || '',
-              cpf: refreshedSelf.cpf || ''
-            });
-            window.SamuStorage.setSession(currentUser);
-            updateTopbarUserHeader();
-          }
-        }
-        if (window.SamuStorage.hasGitHubConfigured()) {
-          try { await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true, forceTryOnline: true }); } catch (eGh) {}
-        }
-        const curSettings = window.SamuStorage.getSettings();
-        if (curSettings.scriptUrl) {
-          const res = await window.SamuStorage.apiPost({
-            action: 'saveUser',
-            authUser: currentUser.username,
-            authPass: currentUser.password,
-            authName: currentUser.name,
-            authRole: window.SamuStorage.getUserProfileChoice(currentUser),
-            userData: Object.assign({}, userData, { role: selVal })
+      window.SamuStorage.upsertLocalUser(userData);
+      if (currentUser && targetUname === currentUser.username.toLowerCase()) {
+        const refreshedSelf = window.SamuStorage.getLocalUsers().find(x => x.username.toLowerCase() === targetUname);
+        if (refreshedSelf) {
+          currentUser = Object.assign({}, currentUser, {
+            name: refreshedSelf.name,
+            password: refreshedSelf.password,
+            role: refreshedSelf.role,
+            subRole: window.SamuStorage.getUserSubRole(refreshedSelf),
+            isAdmin: window.SamuStorage.isUserAdmin(refreshedSelf),
+            coren: refreshedSelf.coren || refreshedSelf.councilId || '',
+            councilId: refreshedSelf.coren || refreshedSelf.councilId || '',
+            cpf: refreshedSelf.cpf || ''
           });
-          if (res && !res.ok) throw new Error(res.error);
+          window.SamuStorage.setSession(currentUser);
+          updateTopbarUserHeader();
         }
-        renderBottomNav();
-        const roleSavedLbl = window.SamuStorage.getUserRoleLabel(userData);
-        showToast(`✅ "${userData.username}" salvo como ${roleSavedLbl} na Base Interna${window.SamuStorage.hasGitHubConfigured() ? ' e Google Drive' : ''}!`);
-        renderAdminView();
-      } catch (err) {
-        samuAlert('Salvo na Base Interna, mas houve aviso na nuvem: ' + err.message);
-        renderAdminView();
-      } finally {
-        btn.disabled = false;
-        btn.textContent = '➕ Salvar Profissional na Base';
       }
+      renderBottomNav();
+      await refreshSyncBadge();
+      const roleSavedLbl = window.SamuStorage.getUserRoleLabel(userData);
+      renderAdminView(true);
+      const authSnap = currentUser ? Object.assign({}, currentUser) : null;
+      runBackgroundCloudAction({
+        icon: '👥',
+        title: `Sincronizando profissional "${userData.username}"...`,
+        detail: `Gravando login (${roleSavedLbl}) no Google Drive da Central SAMU...`,
+        taskFn: async () => {
+          if (window.SamuStorage.hasGitHubConfigured()) {
+            await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true, forceTryOnline: true });
+          }
+          const curSettings = window.SamuStorage.getSettings();
+          if (curSettings.scriptUrl && authSnap) {
+            await window.SamuStorage.apiPost({
+              action: 'saveUser',
+              authUser: authSnap.username,
+              authPass: authSnap.password,
+              authName: authSnap.name,
+              authRole: window.SamuStorage.getUserProfileChoice(authSnap),
+              userData: Object.assign({}, userData, { role: selVal })
+            }).catch(() => {});
+          }
+        },
+        successTitle: `✅ "${userData.username}" (${roleSavedLbl}) salvo e sincronizado!`,
+        successToast: `✅ "${userData.username}" salvo como ${roleSavedLbl} e sincronizado no Google Drive!`
+      });
     });
 
     container.querySelectorAll('[data-adm-pw-u]').forEach(btn => {
@@ -10122,67 +11032,21 @@
       record._patientCheckedOnSend = true;
     }
 
-    const origText = triggerBtn ? triggerBtn.textContent : '';
+    const statusEl = document.getElementById('preview-drive-status');
+    const isShowingThisInPreview = Boolean(previewCurrentRecord && previewCurrentRecord.id === record.id && statusEl);
+    if (isShowingThisInPreview) {
+      statusEl.textContent = '🖨️ Enviando para a Impressora da Base em 2º plano...';
+    }
     if (triggerBtn) {
-      triggerBtn.disabled = true;
-      triggerBtn.textContent = '🖨️ Enviando p/ Base...';
+      const origText = triggerBtn.textContent;
+      triggerBtn.textContent = '🖨️ Na fila (2º plano)...';
+      setTimeout(() => {
+        try { triggerBtn.textContent = origText; } catch (e) {}
+      }, 2200);
     }
-    try {
-      const statusEl = document.getElementById('preview-drive-status');
-      const isShowingThisInPreview = Boolean(previewCurrentRecord && previewCurrentRecord.id === record.id && statusEl);
 
-      // Se o PDF ainda não foi enviado ao Google Drive, envia agora antes de colocar na fila da impressora
-      if (!record.driveFileId && !record.driveUrl) {
-        if (record.isDraft || record.syncStatus === 'draft') {
-          record.isDraft = false;
-          record.syncStatus = 'pending';
-        }
-        const generated = preGeneratedPdf || await window.SamuPDF.generatePdfForRecord(record);
-        const upRes = await window.SamuStorage.uploadRecordToDrive(record, generated.base64, { skipAutoPrint: true });
-        await refreshDraftCount();
-        await refreshSyncBadge();
-
-        if (!upRes.synced) {
-          record.pendingAutoPrint = true;
-          await window.SamuStorage.saveRecordLocal(record, { skipPatientUpsert: true });
-          schedulePendingDriveRetry(6000);
-          if (upRes.reason === 'offline' || upRes.isNetworkError) {
-            if (isShowingThisInPreview) {
-              statusEl.textContent = '⏳ Sem internet agora: salvo na fila — enviará ao Drive e imprimirá na Base automaticamente!';
-            }
-            showToast('📴 Sem sinal agora! Salvo na fila para imprimir na Base assim que o 4G voltar.');
-          } else {
-            if (isShowingThisInPreview) {
-              statusEl.textContent = formatUploadFailurePreviewText(upRes);
-            }
-            samuAlert('Não foi possível enviar o PDF ao Google Drive agora para imprimir na Base:\n\n' + (upRes.error || 'Falha temporária no servidor.'));
-          }
-          return true;
-        }
-      }
-
-      await window.SamuStorage.enqueueRemotePrintJob(record, { trigger: 'manual' });
-      await refreshSyncBadge();
-
-      const ag = window.SamuStorage.getRemotePrintAgentStatus ? window.SamuStorage.getRemotePrintAgentStatus() : null;
-      if (isShowingThisInPreview) {
-        statusEl.textContent = (ag && ag.isOnline)
-          ? `🖨️ Enviado para a Impressora da Base (${ag.printerName || ag.pcName})! Imprimindo em instantes...`
-          : '🖨️ Enviado para a Fila da Impressora da Base na nuvem!';
-      }
-      showToast((ag && ag.isOnline)
-        ? `🖨️ Enviado p/ Impressora da Base (${ag.printerName || ag.pcName})!`
-        : '🖨️ Enviado para a Fila da Impressora da Base SAMU!');
-      return true;
-    } catch (err) {
-      samuAlert('Erro ao enviar para a Impressora da Base: ' + (err.message || err));
-      return false;
-    } finally {
-      if (triggerBtn) {
-        triggerBtn.disabled = false;
-        triggerBtn.textContent = origText;
-      }
-    }
+    enqueueBackgroundBasePrint(record, preGeneratedPdf);
+    return true;
   }
 
   async function openPdfPreviewModal(record, preGenerated, uploadResult) {

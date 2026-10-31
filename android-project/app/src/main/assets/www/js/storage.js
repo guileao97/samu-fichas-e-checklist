@@ -848,7 +848,7 @@
     return { ok: true, user: newUser, githubSynced };
   }
 
-  async function approveUser(username, overrides, adminUsername) {
+  async function approveUser(username, overrides, adminUsername, opts) {
     const uname = String(username || '').trim().toLowerCase();
     const users = getLocalUsers();
     const target = users.find(u => u.username.toLowerCase() === uname);
@@ -866,6 +866,10 @@
       updated.councilId = updated.coren;
     }
     upsertLocalUser(updated, false);
+
+    if (opts && opts.skipCloudAwait) {
+      return { ok: true, user: normalizeUserObj(updated), githubSynced: false };
+    }
 
     // Sincroniza imediatamente com GitHub e/ou Google Apps Script se houver internet
     let githubSynced = false;
@@ -894,8 +898,11 @@
     return { ok: true, user: normalizeUserObj(updated), githubSynced };
   }
 
-  async function rejectUser(username) {
+  async function rejectUser(username, opts) {
     deleteLocalUser(username, false);
+    if (opts && opts.skipCloudAwait) {
+      return { ok: true };
+    }
     if (hasGitHubConfigured()) {
       try { await syncInternalDbWithGitHub({ pushChanges: true, forceTryOnline: true }); } catch (e) {}
     }
@@ -1474,7 +1481,7 @@
     };
   }
 
-  async function saveRemotePrintConfig(patch, updatedBy) {
+  async function saveRemotePrintConfig(patch, updatedBy, opts) {
     const cur = getRemotePrintConfig();
     const p = (patch && typeof patch === 'object') ? patch : {};
     const nowIso = new Date().toISOString();
@@ -1492,7 +1499,7 @@
     avMap[PRINT_CFG_KEY] = next;
     setViaturaAvariasMap(avMap);
     markGitHubDirty();
-    if (hasGitHubConfigured()) {
+    if (!(opts && opts.skipCloudAwait) && hasGitHubConfigured()) {
       try {
         await syncInternalDbWithGitHub({ pushChanges: true, forceTryOnline: true });
       } catch (e) {}
@@ -1514,7 +1521,7 @@
     };
   }
 
-  async function saveChecklistModulesConfig(patch, updatedBy) {
+  async function saveChecklistModulesConfig(patch, updatedBy, opts) {
     const cur = getChecklistModulesConfig();
     const p = (patch && typeof patch === 'object') ? patch : {};
     const nowIso = new Date().toISOString();
@@ -1529,7 +1536,7 @@
     avMap[MODULES_CFG_KEY] = next;
     setViaturaAvariasMap(avMap);
     markGitHubDirty();
-    if (hasGitHubConfigured()) {
+    if (!(opts && opts.skipCloudAwait) && hasGitHubConfigured()) {
       try {
         await syncInternalDbWithGitHub({ pushChanges: true, forceTryOnline: true });
       } catch (e) {}
@@ -3687,7 +3694,8 @@
         const payload = {
           action: 'syncDatabase',
           pushChanges: shouldPush,
-          clientDb: shouldPush ? buildInternalDbExportObject() : null
+          clientDb: shouldPush ? buildInternalDbExportObject() : null,
+          _foregroundSync: Boolean(opts.foreground || shouldPush)
         };
         const res = await apiPost(payload, driveUrl);
         if (!res || !res.ok) {
@@ -4061,14 +4069,100 @@
     } catch (e2) {}
   }
 
+  /* ===================== CONTROLE NATIVO DE SEGUNDO PLANO & BATERIA (ANDROID) ===================== */
+  function describeRecordShortLabel(rec) {
+    if (!rec || typeof rec !== 'object') return 'Registro SAMU 192';
+    if (rec.type === 'checklist_condutor') {
+      return `Check List Condutor • ${rec.vehicle || 'USB'}`;
+    }
+    if (rec.type === 'checklist_enfermagem') {
+      return `Check List Enfermagem • ${rec.shift || 'Plantão'}`;
+    }
+    return `Ficha USB • ${rec.patientName || 'Ocorrência'}`;
+  }
+
+  function ensureBatteryOptimizationDisabled() {
+    try {
+      if (window.AndroidBridge && typeof window.AndroidBridge.ensureBatteryOptimizationDisabled === 'function') {
+        window.AndroidBridge.ensureBatteryOptimizationDisabled();
+      }
+    } catch (e) {}
+  }
+
+  function isBatteryOptimizationDisabled() {
+    try {
+      if (window.AndroidBridge && typeof window.AndroidBridge.isIgnoringBatteryOptimizations === 'function') {
+        return Boolean(window.AndroidBridge.isIgnoringBatteryOptimizations());
+      }
+    } catch (e) {}
+    return true;
+  }
+
+  function requestDisableBatteryOptimization() {
+    try {
+      if (window.AndroidBridge && typeof window.AndroidBridge.requestIgnoreBatteryOptimizations === 'function') {
+        window.AndroidBridge.requestIgnoreBatteryOptimizations();
+        return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  function setNativeBackgroundProgress(state) {
+    try {
+      if (window.AndroidBridge && typeof window.AndroidBridge.setBackgroundSyncProgress === 'function') {
+        const st = (state && typeof state === 'object') ? state : {};
+        const active = Boolean(st.active);
+        if (active) {
+          ensureBatteryOptimizationDisabled();
+        }
+        window.AndroidBridge.setBackgroundSyncProgress(
+          active,
+          String(st.title || ''),
+          String(st.detail || ''),
+          typeof st.percent === 'number' ? Math.round(st.percent) : -1,
+          String(st.doneTitle || ''),
+          String(st.doneDetail || ''),
+          st.doneSuccess !== false
+        );
+      }
+    } catch (e) {}
+  }
+
   /* ===================== API GOOGLE APPS SCRIPT (DRIVE PDFs) ===================== */
   async function apiPostSingleAttempt(payload, url) {
+    let wirePayload = payload;
+    const isFgDbSync = Boolean(payload && payload._foregroundSync);
+    if (payload && Object.prototype.hasOwnProperty.call(payload, '_foregroundSync')) {
+      wirePayload = Object.assign({}, payload);
+      delete wirePayload._foregroundSync;
+    }
+
     if (window.AndroidBridge && typeof window.AndroidBridge.postJson === 'function') {
       return new Promise((resolve, reject) => {
         const reqId = 'req_' + (nativeReqCounter++) + '_' + Date.now();
         pendingNativeCalls[reqId] = { resolve, reject };
         try {
-          window.AndroidBridge.postJson(reqId, url, JSON.stringify(payload));
+          const jsonStr = JSON.stringify(wirePayload);
+          const act = String((wirePayload && wirePayload.action) || '');
+          if (act === 'uploadRecord' && typeof window.AndroidBridge.postRecordUploadNative === 'function') {
+            ensureBatteryOptimizationDisabled();
+            const recObj = (wirePayload && wirePayload.record) || {};
+            const recId = String(recObj.id || '');
+            const jobTitle = describeRecordShortLabel(recObj);
+            window.AndroidBridge.postRecordUploadNative(reqId, url, jsonStr, recId, jobTitle);
+          } else if (
+            act === 'syncDatabase' &&
+            (Boolean(wirePayload && wirePayload.pushChanges) || isFgDbSync) &&
+            typeof window.AndroidBridge.postDatabaseSyncNative === 'function'
+          ) {
+            if (Boolean(wirePayload && wirePayload.pushChanges)) {
+              ensureBatteryOptimizationDisabled();
+            }
+            window.AndroidBridge.postDatabaseSyncNative(reqId, url, jsonStr, Boolean(wirePayload && wirePayload.pushChanges));
+          } else {
+            window.AndroidBridge.postJson(reqId, url, jsonStr);
+          }
         } catch (err) {
           delete pendingNativeCalls[reqId];
           reject(err);
@@ -4084,7 +4178,7 @@
         credentials: 'omit',
         cache: 'no-store',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(wirePayload),
         redirect: 'follow'
       });
     } catch (fetchErr) {
@@ -5022,12 +5116,23 @@
 
   async function syncAllWithCloud(opts) {
     const syncOpts = (opts && typeof opts === 'object') ? opts : {};
+    const onProgress = typeof syncOpts.onProgress === 'function' ? syncOpts.onProgress : null;
+    if (onProgress) {
+      onProgress({ phase: 'prepare', percent: 12, detail: 'Verificando alterações locais e fila de envio...' });
+    }
     await purgeDeletedRecordsFromLocalDb();
     let ghResult = null;
     let ghErr = null;
     if (hasGitHubConfigured()) {
       try {
-        ghResult = await syncInternalDbWithGitHub({ pushChanges: getGitHubMeta().dirty, forceTryOnline: true });
+        if (onProgress) {
+          onProgress({ phase: 'sync_db', percent: 26, detail: 'Sincronizando base operacional com o Google Drive...' });
+        }
+        ghResult = await syncInternalDbWithGitHub({
+          pushChanges: getGitHubMeta().dirty,
+          forceTryOnline: true,
+          foreground: Boolean(syncOpts.foreground)
+        });
       } catch (eGh) {
         ghErr = eGh;
       }
@@ -5083,9 +5188,19 @@
     let uploadedCount = 0;
     let pendingRemaining = 0;
     let lastUploadError = '';
+    let lastUploadedRecord = null;
     let abortedOnNetwork = false;
 
-    for (const item of pendingList) {
+    for (let idx = 0; idx < pendingList.length; idx++) {
+      const item = pendingList[idx];
+      if (onProgress) {
+        const pct = 35 + Math.round((idx / Math.max(1, pendingList.length)) * 42);
+        onProgress({
+          phase: 'upload_pdf',
+          percent: pct,
+          detail: `Enviando PDF (${idx + 1}/${pendingList.length}): ${describeRecordShortLabel(item)}...`
+        });
+      }
       let pdfB64 = item.pendingPdfBase64 || '';
       if (!pdfB64 && window.SamuPDF) {
         try {
@@ -5096,6 +5211,7 @@
       const up = await uploadRecordToDrive(item, pdfB64);
       if (up.synced) {
         uploadedCount++;
+        lastUploadedRecord = item;
       } else {
         pendingRemaining++;
         lastUploadError = up.error || lastUploadError;
@@ -5111,11 +5227,14 @@
       if (!ghResult && ghErr && isNetworkErrorMessage(ghErr.message)) {
         throw new Error(lastUploadError || ghErr.message || 'Sem conexão com a internet.');
       }
-      return { ok: false, offline: true, uploadedCount, pendingRemaining, lastUploadError, github: ghResult };
+      return { ok: false, offline: true, uploadedCount, pendingRemaining, lastUploadError, lastUploadedRecord, github: ghResult };
     }
 
     if (!syncOpts.onlyFlushPending) {
       try {
+        if (onProgress) {
+          onProgress({ phase: 'history', percent: 84, detail: 'Atualizando histórico de registros do Google Drive...' });
+        }
         const histRes = await apiPostAuthenticatedWithHeal((cred) => ({
           action: 'listHistory',
           authUser: cred.username,
@@ -5150,7 +5269,7 @@
       }
     }
 
-    return { ok: true, uploadedCount, pendingRemaining, lastUploadError, github: ghResult };
+    return { ok: true, uploadedCount, pendingRemaining, lastUploadError, lastUploadedRecord, github: ghResult };
   }
 
   /* ===================== ÚLTIMO KM FINAL -> KM INICIAL ===================== */
@@ -5540,6 +5659,11 @@
     clearDraft,
     uploadRecordToDrive,
     syncAllWithCloud,
+    describeRecordShortLabel,
+    setNativeBackgroundProgress,
+    ensureBatteryOptimizationDisabled,
+    isBatteryOptimizationDisabled,
+    requestDisableBatteryOptimization,
     getLastKmFinal,
     setLastKmFinal,
     lookupCepOnline,

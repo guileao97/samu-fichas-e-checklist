@@ -16,6 +16,14 @@ public class SamuSqliteDb extends SQLiteOpenHelper {
 
     private static final String DB_NAME = "samu_orlandia_192.db";
     private static final int DB_VERSION = 1;
+    private static SamuSqliteDb sInstance;
+
+    public static synchronized SamuSqliteDb getInstance(Context context) {
+        if (sInstance == null) {
+            sInstance = new SamuSqliteDb(context.getApplicationContext());
+        }
+        return sInstance;
+    }
 
     public SamuSqliteDb(Context context) {
         super(context, DB_NAME, null, DB_VERSION);

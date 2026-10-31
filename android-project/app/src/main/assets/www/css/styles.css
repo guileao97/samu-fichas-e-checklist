@@ -197,6 +197,19 @@ textarea::placeholder {
 
 .sync-pill.pending { background: #f59e0b; color: #111827; }
 .sync-pill.synced { background: rgba(22, 163, 74, 0.88); }
+.btn-top-update {
+  background: rgba(255, 255, 255, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+}
+.btn-top-update.checking {
+  background: #0284c7;
+  border-color: #38bdf8;
+}
+.btn-top-update.has-update {
+  background: #16a34a;
+  border-color: #86efac;
+  animation: samuPulseBadge 1.5s infinite;
+}
 
 .btn-logout {
   border: 1px solid rgba(255, 255, 255, 0.45);
@@ -525,7 +538,7 @@ body.sim-phone-mode .field-full-phone {
 /* ===================== NAVEGAÇÃO POR ETAPAS DA FICHA (ROLAGEM HORIZONTAL) ===================== */
 .sticky-ficha-nav-stack {
   position: sticky;
-  top: var(--topbar-h, 58px);
+  top: calc(var(--topbar-h, 58px) + var(--bgsync-h, 0px));
   z-index: 44;
   background: var(--bg);
   padding: 4px 0 6px;
@@ -548,7 +561,7 @@ body.sim-phone-mode .field-full-phone {
 
 .step-pills-bar[data-step-bar="enf-sections"] {
   position: sticky;
-  top: calc(var(--topbar-h, 58px) + var(--draftbar-h, 52px) + 4px);
+  top: calc(var(--topbar-h, 58px) + var(--bgsync-h, 0px) + var(--draftbar-h, 52px) + 4px);
   z-index: 43;
   background: #ffffff;
   border: 1.5px solid #dbe3ee;
@@ -1190,10 +1203,272 @@ body.sim-phone-mode .btn-now {
 .status-pending { background: #fef3c7; color: #b45309; }
 .status-draft { background: #ede9fe; color: #6d28d9; border: 1px solid #c4b5fd; }
 
+/* ===================== BARRA ILUSTRATIVA FIXA DE SINCRONIZAÇÃO & ENVIO EM 2º PLANO ===================== */
+@keyframes samuStripesMove {
+  0% { background-position: 0 0; }
+  100% { background-position: 28px 0; }
+}
+@keyframes samuPulseBadge {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.04); }
+}
+@keyframes samuIconFloat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-2px); }
+}
+
+.global-bg-sync-wrap {
+  position: sticky;
+  top: var(--topbar-h, 58px);
+  z-index: 45;
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 8px 12px 6px;
+  background: var(--bg);
+}
+
+.global-bg-sync-card {
+  background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+  color: #f8fafc;
+  border-radius: 12px;
+  padding: 8px 11px 9px;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.24);
+  transition: border-color 0.25s ease, background 0.25s ease;
+}
+
+.global-bg-sync-card.state-success {
+  background: linear-gradient(135deg, #064e3b 0%, #0f172a 85%);
+  border-color: rgba(74, 222, 128, 0.55);
+}
+
+.global-bg-sync-card.state-warning {
+  background: linear-gradient(135deg, #78350f 0%, #0f172a 85%);
+  border-color: rgba(251, 191, 36, 0.55);
+}
+
+/* Quando acoplada diretamente à barra Salvar Rascunho | Cabeçalho Regulação | Rascunhos */
+body.bg-sync-docked-draft .global-bg-sync-wrap {
+  padding-bottom: 0;
+}
+body.bg-sync-docked-draft .global-bg-sync-card {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: none;
+}
+body.bg-sync-docked-draft .main-container {
+  padding-top: 0;
+}
+body.bg-sync-docked-draft .sticky-ficha-nav-stack {
+  padding-top: 0;
+}
+body.bg-sync-docked-draft .quick-draft-bar {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+.bg-sync-top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
+.bg-sync-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.bg-sync-pulse-icon {
+  font-size: 1.15rem;
+  line-height: 1;
+  flex-shrink: 0;
+  display: inline-block;
+  animation: samuIconFloat 1.4s ease-in-out infinite;
+}
+
+.global-bg-sync-card.state-success .bg-sync-pulse-icon,
+.global-bg-sync-card.state-warning .bg-sync-pulse-icon {
+  animation: none;
+}
+
+.bg-sync-texts {
+  min-width: 0;
+  flex: 1;
+}
+
+.bg-sync-title {
+  font-size: 0.79rem;
+  font-weight: 800;
+  color: #ffffff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bg-sync-detail {
+  font-size: 0.71rem;
+  font-weight: 600;
+  color: #bae6fd;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.global-bg-sync-card.state-success .bg-sync-detail { color: #86efac; }
+.global-bg-sync-card.state-warning .bg-sync-detail { color: #fde68a; }
+
+.bg-sync-right-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.bg-sync-queue-pill {
+  background: rgba(56, 189, 248, 0.22);
+  color: #7dd3fc;
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  font-size: 0.68rem;
+  font-weight: 800;
+  padding: 2px 7px;
+  border-radius: 99px;
+}
+
+.bg-sync-pct {
+  font-size: 0.75rem;
+  font-weight: 900;
+  color: #38bdf8;
+  min-width: 32px;
+  text-align: right;
+}
+
+.global-bg-sync-card.state-success .bg-sync-pct { color: #4ade80; }
+.global-bg-sync-card.state-warning .bg-sync-pct { color: #fbbf24; }
+
+.bg-sync-view-pdf-btn {
+  background: #22c55e;
+  color: #052e16;
+  border: none;
+  border-radius: 8px;
+  padding: 5px 9px;
+  font-size: 0.73rem;
+  font-weight: 900;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(34, 197, 94, 0.35);
+}
+.bg-sync-view-pdf-btn:active { transform: scale(0.97); }
+
+.bg-sync-close-btn {
+  background: rgba(255, 255, 255, 0.12);
+  color: #cbd5e1;
+  border: none;
+  border-radius: 6px;
+  width: 24px;
+  height: 24px;
+  font-size: 0.76rem;
+  font-weight: 800;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bg-sync-stages {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+
+.bg-stage-chip {
+  font-size: 0.67rem;
+  font-weight: 800;
+  padding: 2px 7px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #94a3b8;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.bg-stage-chip.active {
+  background: rgba(14, 165, 233, 0.25);
+  color: #e0f2fe;
+  border-color: #38bdf8;
+}
+
+.bg-stage-chip.done {
+  background: rgba(22, 163, 74, 0.28);
+  color: #bbf7d0;
+  border-color: #4ade80;
+}
+
+.bg-stage-chip.queued {
+  background: rgba(245, 158, 11, 0.25);
+  color: #fef3c7;
+  border-color: #fbbf24;
+}
+
+.bg-stage-arrow {
+  font-size: 0.65rem;
+  color: #64748b;
+  font-weight: 900;
+}
+
+.bg-sync-track {
+  width: 100%;
+  height: 7px;
+  background: rgba(255, 255, 255, 0.13);
+  border-radius: 99px;
+  overflow: hidden;
+}
+
+.bg-sync-fill {
+  height: 100%;
+  border-radius: 99px;
+  background-color: #0ea5e9;
+  background-image: linear-gradient(
+    45deg,
+    rgba(255, 255, 255, 0.24) 25%,
+    transparent 25%,
+    transparent 50%,
+    rgba(255, 255, 255, 0.24) 50%,
+    rgba(255, 255, 255, 0.24) 75%,
+    transparent 75%,
+    transparent
+  );
+  background-size: 28px 28px;
+  animation: samuStripesMove 0.85s linear infinite;
+  transition: width 0.28s ease, background-color 0.25s ease;
+}
+
+.global-bg-sync-card.state-success .bg-sync-fill {
+  background-color: #22c55e;
+  background-image: none;
+  animation: none;
+}
+
+.global-bg-sync-card.state-warning .bg-sync-fill {
+  background-color: #f59e0b;
+  background-image: none;
+  animation: none;
+}
+
 /* ===================== BARRA FIXA DE ACESSO FÁCIL A RASCUNHOS ===================== */
 .quick-draft-bar {
   position: sticky;
-  top: var(--topbar-h, 58px);
+  top: calc(var(--topbar-h, 58px) + var(--bgsync-h, 0px));
   z-index: 44;
   background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
   color: #fff;
@@ -1640,11 +1915,31 @@ body.sim-phone-mode .btn-now {
   z-index: 120;
   background: #0f172a;
   color: #fff;
-  padding: 10px 18px;
-  border-radius: 99px;
-  font-size: 0.88rem;
+  padding: 10px 16px;
+  border-radius: 16px;
+  font-size: 0.86rem;
   font-weight: 700;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100vw - 24px);
+}
+.toast-banner.toast-success {
+  background: #064e3b;
+  border: 1.5px solid #34d399;
+}
+.toast-action-btn {
+  background: #22c55e;
+  color: #052e16;
+  border: none;
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 0.78rem;
+  font-weight: 900;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 /* ===================== ABAS ENTRAR / CRIAR CADASTRO ===================== */

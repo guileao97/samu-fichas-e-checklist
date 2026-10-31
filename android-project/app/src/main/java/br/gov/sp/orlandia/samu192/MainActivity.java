@@ -4,6 +4,7 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.net.ConnectivityManager;
 import android.net.Network;
@@ -13,7 +14,10 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.CancellationSignal;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.ParcelFileDescriptor;
+import android.os.PowerManager;
 import android.print.PageRange;
 import android.print.PrintAttributes;
 import android.print.PrintDocumentAdapter;
@@ -64,18 +68,42 @@ import java.util.concurrent.Executors;
 public class MainActivity extends Activity {
 
     private static final String APP_ORIGIN = "https://samu-orlandia.local";
+    private static volatile MainActivity sActiveInstance;
+    private static volatile boolean sIsAppInForeground = false;
+    private static volatile boolean sPromptedBatteryOptThisProcess = false;
+    private static volatile long sLastBatteryPromptMs = 0L;
+
     private WebView webView;
     private SamuSqliteDb sqliteDb;
     private ConnectivityManager.NetworkCallback networkCallback;
     private File pendingApkInstallFile;
-    private final ExecutorService httpPool = Executors.newCachedThreadPool();
+
+    public static boolean isAppInForeground() {
+        return sIsAppInForeground;
+    }
+
+    public static boolean deliverHttpResultToActiveWebView(final String reqId, final boolean ok, final String text) {
+        final MainActivity act = sActiveInstance;
+        if (act == null || act.webView == null || act.isFinishing()) return false;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && act.isDestroyed()) return false;
+        act.runOnUiThread(() -> {
+            if (act.webView != null) {
+                String js = "window.__onAndroidHttpResult && window.__onAndroidHttpResult('" + jsEscape(reqId) + "', "
+                        + (ok ? "true" : "false") + ", '" + jsEscape(text) + "');";
+                act.webView.evaluateJavascript(js, null);
+            }
+        });
+        return true;
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        sActiveInstance = this;
 
-        sqliteDb = new SamuSqliteDb(this);
+        sqliteDb = SamuSqliteDb.getInstance(this);
+        SamuSyncForegroundService.ensureChannels(this);
         reconcileOtaFolderWithApkAssets();
 
         Window window = getWindow();
@@ -203,11 +231,68 @@ public class MainActivity extends Activity {
         registerNativeNetworkMonitor();
         webView.setNetworkAvailable(isDeviceNetworkConnected());
         webView.loadUrl(APP_ORIGIN + "/index.html");
+
+        requestRuntimeNotificationPermissionIfNeeded();
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            if (!sPromptedBatteryOptThisProcess && !isBatteryOptimizationIgnored()) {
+                sPromptedBatteryOptThisProcess = true;
+                sLastBatteryPromptMs = System.currentTimeMillis();
+                requestIgnoreBatteryOptimizationInternal(false);
+            }
+        }, 1600L);
+    }
+
+    private void requestRuntimeNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            try {
+                if (checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) {
+                    requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 1921);
+                }
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private boolean isBatteryOptimizationIgnored() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+                return pm == null || pm.isIgnoringBatteryOptimizations(getPackageName());
+            } catch (Exception e) {
+                return true;
+            }
+        }
+        return true;
+    }
+
+    @SuppressLint("BatteryLife")
+    private void requestIgnoreBatteryOptimizationInternal(final boolean allowSettingsFallback) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            runOnUiThread(() -> {
+                try {
+                    PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+                    if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
+                        Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                        intent.setData(Uri.parse("package:" + getPackageName()));
+                        startActivity(intent);
+                    }
+                } catch (Exception e) {
+                    if (allowSettingsFallback) {
+                        try {
+                            Intent fallback = new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
+                            startActivity(fallback);
+                        } catch (Exception ignored) {}
+                    }
+                }
+            });
+        }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        sActiveInstance = this;
+        sIsAppInForeground = true;
+        SamuSyncForegroundService.onAppForegroundChanged(this, true);
         if (pendingApkInstallFile != null && pendingApkInstallFile.exists()) {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || getPackageManager().canRequestPackageInstalls()) {
                 File f = pendingApkInstallFile;
@@ -219,6 +304,13 @@ public class MainActivity extends Activity {
             webView.setNetworkAvailable(isDeviceNetworkConnected());
             webView.evaluateJavascript("window.__onAndroidAppResume && window.__onAndroidAppResume();", null);
         }
+    }
+
+    @Override
+    protected void onPause() {
+        sIsAppInForeground = false;
+        SamuSyncForegroundService.onAppForegroundChanged(this, false);
+        super.onPause();
     }
 
     private boolean isDeviceNetworkConnected() {
@@ -403,17 +495,23 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        super.onDestroy();
+        if (sIsAppInForeground) {
+            sIsAppInForeground = false;
+            SamuSyncForegroundService.onAppForegroundChanged(this, false);
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && networkCallback != null) {
             try {
                 ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
                 if (cm != null) cm.unregisterNetworkCallback(networkCallback);
             } catch (Exception ignored) {}
         }
-        httpPool.shutdownNow();
-        if (sqliteDb != null) {
-            try { sqliteDb.close(); } catch (Exception ignored) {}
+        // NÃO interrompe HTTP_POOL nem fecha SamuSqliteDb singleton para que envios e sincronizações
+        // em segundo plano continuem até o fim mesmo após fechar o APK!
+        if (sActiveInstance == this) {
+            sActiveInstance = null;
         }
+        SamuSyncForegroundService.onMainActivityDestroyed(this);
+        super.onDestroy();
     }
 
     private static String jsEscape(String s) {
@@ -653,10 +751,73 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public boolean isIgnoringBatteryOptimizations() {
+            return isBatteryOptimizationIgnored();
+        }
+
+        @JavascriptInterface
+        public void requestIgnoreBatteryOptimizations() {
+            sLastBatteryPromptMs = System.currentTimeMillis();
+            requestIgnoreBatteryOptimizationInternal(true);
+        }
+
+        @JavascriptInterface
+        public void ensureBatteryOptimizationDisabled() {
+            if (!isBatteryOptimizationIgnored()) {
+                long now = System.currentTimeMillis();
+                if (now - sLastBatteryPromptMs > 180000L) {
+                    sLastBatteryPromptMs = now;
+                    requestIgnoreBatteryOptimizationInternal(false);
+                }
+            }
+        }
+
+        @JavascriptInterface
+        public void setBackgroundSyncProgress(final boolean active, final String title, final String detail,
+                                              final int percent, final String doneTitle,
+                                              final String doneDetail, final boolean doneSuccess) {
+            SamuSyncForegroundService.updateJsBackgroundState(
+                getApplicationContext(),
+                active,
+                title,
+                detail,
+                percent,
+                doneTitle,
+                doneDetail,
+                doneSuccess
+            );
+        }
+
+        @JavascriptInterface
+        public void postRecordUploadNative(final String reqId, final String scriptUrl, final String jsonPayload,
+                                           final String recordId, final String jobTitle) {
+            SamuSyncForegroundService.enqueueNativeRecordUpload(
+                getApplicationContext(),
+                reqId,
+                scriptUrl,
+                jsonPayload,
+                recordId,
+                jobTitle
+            );
+        }
+
+        @JavascriptInterface
+        public void postDatabaseSyncNative(final String reqId, final String scriptUrl,
+                                           final String jsonPayload, final boolean isPush) {
+            SamuSyncForegroundService.enqueueNativeDatabaseSync(
+                getApplicationContext(),
+                reqId,
+                scriptUrl,
+                jsonPayload,
+                isPush
+            );
+        }
+
+        @JavascriptInterface
         public void postJson(final String reqId, final String urlStr, final String jsonPayload) {
-            httpPool.execute(() -> {
+            SamuSyncForegroundService.HTTP_POOL.execute(() -> {
                 try {
-                    String responseBody = executeHttpRequest(urlStr, "POST", null, jsonPayload);
+                    String responseBody = SamuSyncForegroundService.executeHttpRequest(urlStr, "POST", null, jsonPayload);
                     deliverHttpResult(reqId, true, responseBody);
                 } catch (Exception e) {
                     deliverHttpResult(reqId, false, e.getMessage() != null ? e.getMessage() : e.toString());
@@ -666,9 +827,9 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void getJson(final String reqId, final String urlStr) {
-            httpPool.execute(() -> {
+            SamuSyncForegroundService.HTTP_POOL.execute(() -> {
                 try {
-                    String responseBody = executeHttpRequest(urlStr, "GET", null, null);
+                    String responseBody = SamuSyncForegroundService.executeHttpRequest(urlStr, "GET", null, null);
                     deliverHttpResult(reqId, true, responseBody);
                 } catch (Exception e) {
                     deliverHttpResult(reqId, false, e.getMessage() != null ? e.getMessage() : e.toString());
@@ -679,9 +840,9 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void httpRequest(final String reqId, final String method, final String urlStr,
                                 final String headersJson, final String body) {
-            httpPool.execute(() -> {
+            SamuSyncForegroundService.HTTP_POOL.execute(() -> {
                 try {
-                    String responseBody = executeHttpRequest(urlStr, method, headersJson, body);
+                    String responseBody = SamuSyncForegroundService.executeHttpRequest(urlStr, method, headersJson, body);
                     deliverHttpResult(reqId, true, responseBody);
                 } catch (Exception e) {
                     deliverHttpResult(reqId, false, e.getMessage() != null ? e.getMessage() : e.toString());
@@ -690,88 +851,15 @@ public class MainActivity extends Activity {
         }
 
         private void deliverHttpResult(final String reqId, final boolean ok, final String text) {
-            runOnUiThread(() -> {
-                if (webView != null) {
-                    String js = "window.__onAndroidHttpResult('" + jsEscape(reqId) + "', "
-                            + (ok ? "true" : "false") + ", '" + jsEscape(text) + "');";
-                    webView.evaluateJavascript(js, null);
-                }
-            });
-        }
-
-        private String executeHttpRequest(String targetUrl, String initialMethod, String headersJson, String body) throws Exception {
-            String currentUrl = targetUrl;
-            String method = (initialMethod != null && !initialMethod.isEmpty()) ? initialMethod.toUpperCase() : "GET";
-            byte[] payloadBytes = (body != null) ? body.getBytes(StandardCharsets.UTF_8) : new byte[0];
-
-            for (int hop = 0; hop < 6; hop++) {
-                HttpURLConnection conn = (HttpURLConnection) new URL(currentUrl).openConnection();
-                conn.setInstanceFollowRedirects(false);
-                conn.setConnectTimeout(25000);
-                conn.setReadTimeout(65000);
-                conn.setRequestMethod(method);
-                conn.setRequestProperty("User-Agent", "SAMU192-Orlandia-APK/1.0");
-                conn.setRequestProperty("Accept", "application/json, text/plain, */*");
-
-                boolean hasCustomContentType = false;
-                if (headersJson != null && !headersJson.trim().isEmpty()) {
-                    JSONObject hdrs = new JSONObject(headersJson);
-                    Iterator<String> keys = hdrs.keys();
-                    while (keys.hasNext()) {
-                        String k = keys.next();
-                        String v = hdrs.optString(k, "");
-                        if (!v.isEmpty()) {
-                            conn.setRequestProperty(k, v);
-                            if ("content-type".equalsIgnoreCase(k)) hasCustomContentType = true;
-                        }
+            if (!deliverHttpResultToActiveWebView(reqId, ok, text)) {
+                runOnUiThread(() -> {
+                    if (webView != null) {
+                        String js = "window.__onAndroidHttpResult && window.__onAndroidHttpResult('" + jsEscape(reqId) + "', "
+                                + (ok ? "true" : "false") + ", '" + jsEscape(text) + "');";
+                        webView.evaluateJavascript(js, null);
                     }
-                }
-
-                if ("POST".equals(method) || "PUT".equals(method) || "PATCH".equals(method)) {
-                    conn.setDoOutput(true);
-                    if (!hasCustomContentType) {
-                        conn.setRequestProperty("Content-Type", "PUT".equals(method) ? "application/json; charset=utf-8" : "text/plain; charset=utf-8");
-                    }
-                    conn.setFixedLengthStreamingMode(payloadBytes.length);
-                    try (OutputStream os = conn.getOutputStream()) {
-                        os.write(payloadBytes);
-                    }
-                }
-
-                int status = conn.getResponseCode();
-                if (status == 301 || status == 302 || status == 303) {
-                    String loc = conn.getHeaderField("Location");
-                    conn.disconnect();
-                    if (loc == null) throw new Exception("Redirecionamento sem destino.");
-                    currentUrl = new URL(new URL(currentUrl), loc).toString();
-                    method = "GET"; // Google Apps Script retorna o JSON via GET no Location 302
-                    continue;
-                }
-                if (status == 307 || status == 308) {
-                    String loc = conn.getHeaderField("Location");
-                    conn.disconnect();
-                    if (loc == null) throw new Exception("Redirecionamento 307 sem destino.");
-                    currentUrl = new URL(new URL(currentUrl), loc).toString();
-                    continue;
-                }
-
-                InputStream is = (status >= 200 && status < 400) ? conn.getInputStream() : conn.getErrorStream();
-                StringBuilder sb = new StringBuilder();
-                if (is != null) {
-                    try (BufferedReader br = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8))) {
-                        String line;
-                        while ((line = br.readLine()) != null) {
-                            sb.append(line).append('\n');
-                        }
-                    }
-                }
-                conn.disconnect();
-                if (status >= 400) {
-                    throw new Exception("HTTP " + status + ": " + sb.toString().trim());
-                }
-                return sb.toString().trim();
+                });
             }
-            throw new Exception("Muitos redirecionamentos HTTP.");
         }
 
         /* ===================== AUTO-UPDATE NATIVO VIA GITHUB (LIVE OTA + APK) ===================== */
@@ -870,7 +958,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void downloadAndInstallApk(final String downloadUrl, final String githubToken) {
-            httpPool.execute(() -> {
+            SamuSyncForegroundService.HTTP_POOL.execute(() -> {
                 try {
                     notifyApkProgress(2, "Conectando ao GitHub Releases...");
                     String currentUrl = downloadUrl;
