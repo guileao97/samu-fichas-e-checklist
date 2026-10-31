@@ -165,7 +165,15 @@ public class MainActivity extends Activity {
                 }
             } catch (Exception ignored) {}
         }
-        setContentView(webView);
+        webView.setVerticalScrollBarEnabled(true);
+        webView.setHorizontalScrollBarEnabled(false);
+        setContentView(
+                webView,
+                new android.view.ViewGroup.LayoutParams(
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                )
+        );
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);

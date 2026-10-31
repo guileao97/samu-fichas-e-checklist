@@ -25,18 +25,29 @@
   -webkit-tap-highlight-color: transparent;
 }
 
-html, body {
+html {
   margin: 0;
   padding: 0;
   width: 100%;
   max-width: 100%;
   overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  max-width: 100%;
+  min-height: 100vh;
+  overflow-x: clip;
+  overflow-y: visible;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   background: var(--bg);
   color: var(--text);
   font-size: 16px;
   line-height: 1.45;
-  overscroll-behavior-y: none;
 }
 
 input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]),
@@ -58,7 +69,7 @@ textarea::placeholder {
   min-height: 100vh;
   width: 100%;
   max-width: 100%;
-  overflow-x: hidden;
+  overflow-x: clip;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -125,7 +136,7 @@ textarea::placeholder {
   min-height: 100vh;
   width: 100%;
   max-width: 100%;
-  overflow-x: hidden;
+  overflow-x: clip;
   padding-bottom: 84px;
 }
 
@@ -292,7 +303,7 @@ body.sim-phone-mode .btn-logout { padding: 5px 8px; font-size: 0.74rem; }
   right: 0;
   width: 100%;
   max-width: 100%;
-  overflow-x: hidden;
+  overflow-x: clip;
   box-sizing: border-box;
   z-index: 45;
   background: #ffffff;
@@ -357,7 +368,7 @@ body.sim-phone-mode .btn-logout { padding: 5px 8px; font-size: 0.74rem; }
 .main-container {
   width: 100%;
   max-width: 960px;
-  overflow-x: hidden;
+  overflow-x: clip;
   box-sizing: border-box;
   margin: 0 auto;
   padding: 14px 12px 32px;
