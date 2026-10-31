@@ -209,7 +209,7 @@ function doPost(e) {
     }
 
     // Demais rotas exigem autenticação válida (sincroniza automaticamente usuários já aprovados pelo ADM no APK/GitHub)
-    var caller = authenticateOrProvision_(env.usersSheet, body);
+    var caller = authenticateOrProvision_(env.usersSheet, body, env);
     if (!caller) {
       return jsonResponse_({ ok: false, error: 'Sessão inválida no servidor. Verifique seu login e senha (ou status de aprovação).' });
     }
@@ -506,14 +506,18 @@ function ensureUsersSheet_(ss) {
   var sh = ss.getSheetByName('Usuarios');
   if (!sh) {
     sh = ss.insertSheet('Usuarios');
-    sh.appendRow(['username', 'password', 'name', 'role', 'councilId', 'active', 'updatedAt']);
-    sh.getRange(1, 1, 1, 7).setFontWeight('bold');
+    sh.getRange(1, 1, 200, 7).setNumberFormat('@');
     var now = new Date().toISOString();
-    sh.appendRow(['admin', 'samu192', 'Coordenação SAMU Orlândia', 'admin', 'ADM-192', 'TRUE', now]);
-    sh.appendRow(['condutor', '1234', 'Condutor Socorrista 01', 'condutor', 'COND-01', 'TRUE', now]);
-    sh.appendRow(['condutor2', '1234', 'Condutor Socorrista 02', 'condutor', 'COND-02', 'TRUE', now]);
-    sh.appendRow(['enfermagem', '1234', 'Técnico de Enfermagem 01', 'enfermagem', 'COREN-SP 542.810-TE', 'TRUE', now]);
-    sh.appendRow(['enfermeiro', '1234', 'Enfermeiro(a) 01', 'enfermagem', 'COREN-SP 318.420-ENF', 'TRUE', now]);
+    var initRows = [
+      ['username', 'password', 'name', 'role', 'councilId', 'active', 'updatedAt'],
+      ['admin', 'samu192', 'Coordenação SAMU Orlândia', 'admin', 'ADM-192', 'TRUE', now],
+      ['condutor', '1234', 'Condutor Socorrista 01', 'condutor', 'COND-01', 'TRUE', now],
+      ['condutor2', '1234', 'Condutor Socorrista 02', 'condutor', 'COND-02', 'TRUE', now],
+      ['enfermagem', '1234', 'Técnico de Enfermagem 01', 'enfermagem', 'COREN-SP 542.810-TE', 'TRUE', now],
+      ['enfermeiro', '1234', 'Enfermeiro(a) 01', 'enfermagem', 'COREN-SP 318.420-ENF', 'TRUE', now]
+    ];
+    sh.getRange(1, 1, initRows.length, 7).setValues(initRows);
+    sh.getRange(1, 1, 1, 7).setFontWeight('bold');
   }
   return sh;
 }
@@ -539,13 +543,38 @@ function getAllUsers_(sh) {
   return list;
 }
 
+function passwordsMatchFlexible_(sheetPass, incomingPass) {
+  var sp = String(sheetPass || '');
+  var ip = String(incomingPass || '');
+  if (!ip) return false;
+  if (sp === ip) return true;
+  if (/^0+\d+$/.test(ip) && sp === (ip.replace(/^0+/, '') || '0')) return true;
+  return false;
+}
+
+function findActiveUserInSyncDb_(env, usernameLower) {
+  try {
+    var syncDb = readCachedSyncDb_() || (env ? loadSyncDb_(env) : null);
+    if (!syncDb || !Array.isArray(syncDb.users)) return null;
+    for (var i = 0; i < syncDb.users.length; i++) {
+      var su = syncDb.users[i];
+      if (!su || !su.username) continue;
+      if (String(su.username).trim().toLowerCase() === usernameLower) {
+        if (su.status === 'pending' || su.status === 'rejected' || su.active === false) return null;
+        return su;
+      }
+    }
+  } catch (eDb) {}
+  return null;
+}
+
 function authenticate_(sh, username, password) {
   var u = String(username || '').trim().toLowerCase();
   var p = String(password || '');
   if (!u || !p) return null;
   var users = getAllUsers_(sh);
   for (var i = 0; i < users.length; i++) {
-    if (users[i].username.toLowerCase() === u && users[i].password === p && users[i].active) {
+    if (users[i].username.toLowerCase() === u && passwordsMatchFlexible_(users[i].password, p) && users[i].active) {
       return users[i];
     }
   }
@@ -574,7 +603,7 @@ function normalizeSheetRole_(rawRole) {
   return 'condutor';
 }
 
-function authenticateOrProvision_(sh, body) {
+function authenticateOrProvision_(sh, body, env) {
   var u = String((body && body.authUser) || '').trim().toLowerCase();
   var p = String((body && body.authPass) || '');
   if (!u || !p) return null;
@@ -585,24 +614,58 @@ function authenticateOrProvision_(sh, body) {
   var users = getAllUsers_(sh);
   for (var i = 0; i < users.length; i++) {
     if (users[i].username.toLowerCase() === u) {
-      if (!users[i].active) return null;
-      if (users[i].password !== p) return null;
-      // Mantém o cargo na Planilha sincronizado caso o ADM tenha promovido/alterado o perfil no APK/GitHub
-      if (hasIncomingValidRole && users[i].role !== incomingRoleRaw) {
-        users[i].role = incomingRoleRaw;
-        sh.getRange(users[i].rowIndex, 4).setValue(incomingRoleRaw);
-        sh.getRange(users[i].rowIndex, 7).setValue(new Date().toISOString());
+      if (users[i].active && passwordsMatchFlexible_(users[i].password, p)) {
+        if (users[i].password !== p) {
+          sh.getRange(users[i].rowIndex, 2).setNumberFormat('@').setValue(p);
+          users[i].password = p;
+        }
+        // Mantém o cargo na Planilha sincronizado caso o ADM tenha promovido/alterado o perfil no APK/GitHub
+        if (hasIncomingValidRole && users[i].role !== incomingRoleRaw) {
+          users[i].role = incomingRoleRaw;
+          sh.getRange(users[i].rowIndex, 4).setNumberFormat('@').setValue(incomingRoleRaw);
+          sh.getRange(users[i].rowIndex, 7).setNumberFormat('@').setValue(new Date().toISOString());
+        }
+        return users[i];
       }
-      return users[i];
+
+      // Auto-cura: verifica se a senha/status já foi atualizada em base_dados_samu_drive.json (syncDatabase)
+      var syncedU = findActiveUserInSyncDb_(env, u);
+      if (syncedU && passwordsMatchFlexible_(syncedU.password, p)) {
+        var healedRole = hasIncomingValidRole ? incomingRoleRaw : profileChoiceFromUserObj_(syncedU);
+        var healedName = String(syncedU.name || (body && body.authName) || users[i].name || u);
+        var healedCouncil = String(syncedU.coren || syncedU.councilId || (body && body.authCouncilId) || users[i].councilId || '');
+        var healedPass = String(syncedU.password || p);
+        var healedNow = new Date().toISOString();
+        sh.getRange(users[i].rowIndex, 1, 1, 7).setNumberFormat('@').setValues([[
+          u,
+          healedPass,
+          healedName,
+          healedRole,
+          healedCouncil,
+          'TRUE',
+          healedNow
+        ]]);
+        return {
+          rowIndex: users[i].rowIndex,
+          username: u,
+          password: healedPass,
+          name: healedName,
+          role: healedRole,
+          councilId: healedCouncil,
+          active: true
+        };
+      }
+      return null;
     }
   }
 
-  // Usuário novo aprovado/criado pelo ADM via APK/GitHub: cadastra automaticamente na planilha
+  // Usuário novo aprovado/criado pelo ADM via APK/GitHub: cadastra automaticamente na planilha em formato texto puro
   var safeRole = hasIncomingValidRole ? incomingRoleRaw : 'condutor';
   var safeName = String((body && body.authName) || u).trim() || u;
   var safeCouncil = String((body && body.authCouncilId) || '').trim();
   var now = new Date().toISOString();
-  sh.appendRow([u, p, safeName, safeRole, safeCouncil, 'TRUE', now]);
+  var nextRow = sh.getLastRow() + 1;
+  sh.getRange(nextRow, 1, 1, 7).setNumberFormat('@').setValues([[u, p, safeName, safeRole, safeCouncil, 'TRUE', now]]);
   return {
     username: u,
     password: p,
@@ -637,7 +700,7 @@ function upsertUser_(sh, userData) {
       var pass = (userData.password && String(userData.password).trim() !== '')
         ? String(userData.password)
         : users[i].password;
-      sh.getRange(users[i].rowIndex, 1, 1, 7).setValues([[
+      sh.getRange(users[i].rowIndex, 1, 1, 7).setNumberFormat('@').setValues([[
         uname,
         pass,
         String(userData.name || users[i].name),
@@ -651,7 +714,8 @@ function upsertUser_(sh, userData) {
   }
 
   var newPass = String(userData.password || '1234');
-  sh.appendRow([
+  var nextRow = sh.getLastRow() + 1;
+  sh.getRange(nextRow, 1, 1, 7).setNumberFormat('@').setValues([[
     uname,
     newPass,
     String(userData.name || uname),
@@ -659,7 +723,7 @@ function upsertUser_(sh, userData) {
     councilVal,
     activeStr,
     now
-  ]);
+  ]]);
   return { username: uname, name: userData.name || uname, role: role, councilId: councilVal, active: activeStr === 'TRUE' };
 }
 
@@ -1077,7 +1141,7 @@ function syncUsersToSpreadsheetTab_(sh, usersArr) {
       ]);
     }
     sh.clearContents();
-    sh.getRange(1, 1, rows.length, 7).setValues(rows);
+    sh.getRange(1, 1, rows.length, 7).setNumberFormat('@').setValues(rows);
     sh.getRange(1, 1, 1, 7).setFontWeight('bold');
   } catch (eSyncSh) {}
 }

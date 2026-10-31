@@ -142,21 +142,31 @@ public class SamuSqliteDb extends SQLiteOpenHelper {
 
     public synchronized String getAllRecordsJsonArray() {
         SQLiteDatabase db = getReadableDatabase();
-        StringBuilder sb = new StringBuilder();
-        sb.append('[');
-        boolean first = true;
-        try (Cursor c = db.query("records", new String[]{"json_payload"}, null, null, null, null, "created_at DESC")) {
+        java.util.ArrayList<String> ids = new java.util.ArrayList<>();
+        try (Cursor c = db.query("records", new String[]{"id"}, null, null, null, null, "created_at DESC")) {
             if (c != null) {
                 while (c.moveToNext()) {
-                    String payload = c.getString(0);
-                    if (payload != null && !payload.isEmpty()) {
-                        if (!first) sb.append(',');
-                        sb.append(payload);
-                        first = false;
+                    String id = c.getString(0);
+                    if (id != null && !id.isEmpty()) {
+                        ids.add(id);
                     }
                 }
             }
         } catch (Exception ignored) {}
+
+        StringBuilder sb = new StringBuilder();
+        sb.append('[');
+        boolean first = true;
+        for (int i = 0; i < ids.size(); i++) {
+            try {
+                String payload = getRecordJson(ids.get(i));
+                if (payload != null && !payload.isEmpty()) {
+                    if (!first) sb.append(',');
+                    sb.append(payload);
+                    first = false;
+                }
+            } catch (Exception ignored) {}
+        }
         sb.append(']');
         return sb.toString();
     }

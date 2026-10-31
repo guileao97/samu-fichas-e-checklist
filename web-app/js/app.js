@@ -52,6 +52,35 @@
   let previewGeneratedPdf = null;
   let regPhotoCurrentRecord = null;
   let regPhotoGenerated = null;
+  let isCloudRecordSyncInFlight = false;
+  let pendingQueueRetryTimer = null;
+
+  function isOnlineNow() {
+    if (window.SamuStorage && typeof window.SamuStorage.isOnlineEffective === 'function') {
+      return window.SamuStorage.isOnlineEffective();
+    }
+    return typeof navigator !== 'undefined' ? Boolean(navigator.onLine) : true;
+  }
+
+  function isRecentlyOfflinePassive() {
+    if (window.SamuStorage && typeof window.SamuStorage.isRecentlyConfirmedOffline === 'function') {
+      return window.SamuStorage.isRecentlyConfirmedOffline(12000);
+    }
+    return false;
+  }
+
+  function formatUploadFailurePreviewText(uploadResult) {
+    if (!uploadResult) return '';
+    if (uploadResult.reason === 'no_url') {
+      return '💾 Salvo no aparelho (conecte o Google Drive em Base/Drive para envio automático).';
+    }
+    if (uploadResult.reason === 'offline' || uploadResult.isNetworkError) {
+      return uploadResult.printPendingOffline
+        ? '⏳ Salvo no aparelho! Sem internet agora — enviará ao Google Drive e imprimirá na Base automaticamente.'
+        : '⏳ Salvo no aparelho! Sem internet agora — enviará ao Google Drive automaticamente.';
+    }
+    return `⚠️ Salvo no aparelho (Aguardando Drive): ${uploadResult.error || 'Falha temporária no servidor'} — reenviando automaticamente ou toque em "☁️ Enviar p/ Drive".`;
+  }
 
   function todayISO() {
     const now = new Date();
@@ -1484,6 +1513,10 @@
           }
           previewGeneratedPdf = await window.SamuPDF.generatePdfForRecord(previewCurrentRecord);
         }
+        if (crewPushTimer) {
+          clearTimeout(crewPushTimer);
+          crewPushTimer = null;
+        }
         const res = await window.SamuStorage.uploadRecordToDrive(previewCurrentRecord, previewGeneratedPdf.base64);
         const delAdmBtn = document.getElementById('btn-preview-delete-admin');
         if (delAdmBtn && currentUser && window.SamuStorage.isUserAdmin(currentUser)) {
@@ -1506,10 +1539,16 @@
               ? '☀️ Diurno salvo no Drive! Imprimirá na Base quando o Noturno concluir.'
               : 'PDF enviado ao Google Drive!'));
         } else {
-          document.getElementById('preview-drive-status').textContent = res.printPendingOffline
-            ? '⏳ Sem sinal agora: salvo na fila para enviar ao Drive e imprimir na Base automaticamente.'
-            : '⏳ Sem sinal agora: salvo na fila para envio automático.';
-          showToast('Salvo na fila offline! Enviará assim que conectar.');
+          schedulePendingDriveRetry(6000);
+          if (res.reason === 'offline' || res.isNetworkError) {
+            document.getElementById('preview-drive-status').textContent = res.printPendingOffline
+              ? '⏳ Sem sinal agora: salvo na fila para enviar ao Drive e imprimir na Base automaticamente.'
+              : '⏳ Sem sinal agora: salvo na fila para envio automático.';
+            showToast('Salvo na fila offline! Enviará assim que conectar.');
+          } else {
+            document.getElementById('preview-drive-status').textContent = formatUploadFailurePreviewText(res);
+            showToast('⚠️ Falha ao enviar ao Google Drive: tentando reenviar automaticamente...');
+          }
         }
       } finally {
         btn.disabled = false;
@@ -1567,14 +1606,16 @@
 
     const runAutoUpdateCheck = async (interactive) => {
       if (!window.SamuStorage.checkAndApplyAppUpdate) return;
-      if (!navigator.onLine) {
-        if (interactive) showToast('📴 Sem internet agora para buscar atualizações no GitHub.');
-        return;
-      }
+      if (!interactive && isRecentlyOfflinePassive()) return;
       try {
         if (interactive) showToast('🚀 Consultando atualizações no GitHub...');
         const res = await window.SamuStorage.checkAndApplyAppUpdate();
         updateLoginVersionFooter();
+
+        if (res.status === 'offline') {
+          if (interactive) showToast('📴 Sem internet agora para buscar atualizações no GitHub.');
+          return;
+        }
 
         if (res.status === 'ota_applied') {
           if (!currentUser) {
@@ -1636,7 +1677,7 @@
     }
 
     const pullGitHubWheneverOnline = async () => {
-      if (!navigator.onLine || !window.SamuStorage.hasGitHubConfigured()) return;
+      if (!window.SamuStorage.hasGitHubConfigured() || isRecentlyOfflinePassive()) return;
       try {
         await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: window.SamuStorage.getGitHubMeta().dirty });
         if (currentUser) {
@@ -1662,6 +1703,7 @@
           renderBottomNav();
           await refreshSyncBadge();
           if (activeTab === 'aprovacoes') renderAprovacoesView(true);
+          flushPendingDriveQueueSilently();
         }
       } catch (e) {}
       runAutoUpdateCheck(false);
@@ -1719,9 +1761,8 @@
       const now = Date.now();
       if (now - lastResumeCheckTs < 6000) return;
       lastResumeCheckTs = now;
-      if (navigator.onLine) {
-        pullGitHubWheneverOnline();
-      }
+      pullGitHubWheneverOnline();
+      flushPendingDriveQueueSilently();
     };
     window.__onAndroidNetworkOnline = () => {
       refreshSyncBadge();
@@ -1733,18 +1774,25 @@
       if (!document.hidden) checkOnResumeOrFocus();
     });
 
-    // Consulta inicial ao GitHub na abertura do APK e checagem periódica automática quando online
+    // Consulta inicial ao GitHub/Drive na abertura do APK e checagem periódica automática
     pullGitHubWheneverOnline();
     setInterval(() => {
-      if (!document.hidden && navigator.onLine) {
+      if (!document.hidden) {
         pullGitHubWheneverOnline();
       }
     }, 60000);
 
+    // Reenvio automático em segundo plano de qualquer PDF que esteja "⏳ Aguardando Drive"
+    setInterval(() => {
+      if (!document.hidden && currentUser) {
+        flushPendingDriveQueueSilently();
+      }
+    }, 18000);
+
     // Sincronização ultra-rápida (a cada 2.5s na aba Ficha) entre os celulares da equipe durante o preenchimento
     let crewTickCounter = 0;
     setInterval(async () => {
-      if (!currentUser || !window.SamuStorage.hasOperationalRole(currentUser) || document.hidden || !navigator.onLine) return;
+      if (!currentUser || !window.SamuStorage.hasOperationalRole(currentUser) || document.hidden || isRecentlyOfflinePassive()) return;
       if (!window.SamuStorage.hasGitHubConfigured()) return;
       if (crewPushInFlight) return;
       crewTickCounter++;
@@ -3977,6 +4025,60 @@
     }
   }
 
+  function schedulePendingDriveRetry(delayMs) {
+    if (pendingQueueRetryTimer) {
+      clearTimeout(pendingQueueRetryTimer);
+    }
+    pendingQueueRetryTimer = setTimeout(() => {
+      pendingQueueRetryTimer = null;
+      flushPendingDriveQueueSilently();
+    }, Math.max(1500, Number(delayMs) || 6000));
+  }
+
+  async function flushPendingDriveQueueSilently() {
+    if (!currentUser || isCloudRecordSyncInFlight) return;
+    if (isRecentlyOfflinePassive()) return;
+    const settings = window.SamuStorage.getSettings();
+    if (!settings || !settings.scriptUrl) return;
+
+    let visible = [];
+    try {
+      visible = await window.SamuStorage.getVisibleRecords(currentUser);
+    } catch (e) {
+      return;
+    }
+    const hasPending = Array.isArray(visible) && visible.some(r => r && r.syncStatus === 'pending');
+    if (!hasPending) return;
+
+    isCloudRecordSyncInFlight = true;
+    try {
+      const res = await window.SamuStorage.syncAllWithCloud({ onlyFlushPending: true });
+      if (res && res.uploadedCount > 0) {
+        await refreshSyncBadge();
+        if (activeTab === 'historico') {
+          const activeEl = document.activeElement;
+          const isTyping = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA');
+          if (!isTyping) renderHistoricoView();
+        }
+        if (previewCurrentRecord && previewCurrentRecord.id) {
+          const updatedRec = await window.SamuStorage.getRecordById(previewCurrentRecord.id);
+          if (updatedRec && updatedRec.syncStatus === 'synced') {
+            previewCurrentRecord = updatedRec;
+            const prevModal = document.getElementById('pdf-preview-modal');
+            const stEl = document.getElementById('preview-drive-status');
+            if (prevModal && !prevModal.classList.contains('hidden') && stEl) {
+              stEl.textContent = '✅ Salvo e enviado automaticamente para o Google Drive!';
+            }
+          }
+        }
+        showToast(`☁️ ${res.uploadedCount} PDF(s) pendente(s) enviado(s) automaticamente ao Google Drive!`);
+      }
+    } catch (e) {
+    } finally {
+      isCloudRecordSyncInFlight = false;
+    }
+  }
+
   async function refreshSyncBadge() {
     const btn = document.getElementById('btn-sync-status');
     const txt = document.getElementById('sync-status-text');
@@ -3989,7 +4091,7 @@
 
     const isSql = window.SamuStorage.isNativeSqliteActive && window.SamuStorage.isNativeSqliteActive();
     btn.classList.remove('pending', 'synced');
-    if (!navigator.onLine) {
+    if (!isOnlineNow()) {
       btn.classList.add('pending');
       txt.textContent = pending > 0 ? `📴 ${isSql ? 'SQLite' : 'Base Interna'} (${pending} fila)` : `📴 ${isSql ? 'SQLite Offline' : 'Base Interna'}`;
       return;
@@ -4012,8 +4114,7 @@
     const settings = window.SamuStorage.getSettings();
     const hasGh = window.SamuStorage.hasGitHubConfigured();
 
-    if (!navigator.onLine) {
-      if (interactive) showToast('📴 Sem internet agora: funcionando 100% pela Base Interna Offline! Sincronizará com o Google Drive assim que conectar.');
+    if (!interactive && isRecentlyOfflinePassive()) {
       return;
     }
 
@@ -4031,6 +4132,12 @@
       return;
     }
 
+    if (isCloudRecordSyncInFlight) {
+      if (interactive) showToast('☁️ Sincronização com o Google Drive já está em andamento...');
+      return;
+    }
+
+    isCloudRecordSyncInFlight = true;
     try {
       if (interactive) showToast('☁️ Sincronizando dados e PDFs com Google Drive...');
       const res = await window.SamuStorage.syncAllWithCloud();
@@ -4040,14 +4147,28 @@
       if (activeTab === 'historico') renderHistoricoView();
       if (activeTab === 'aprovacoes') renderAprovacoesView(true);
       if (interactive) {
-        if (res.uploadedCount > 0) {
+        if (res && res.offline) {
+          showToast('📴 Sem internet agora: funcionando 100% pela Base Interna Offline! Sincronizará assim que conectar.');
+        } else if (res && res.uploadedCount > 0) {
           showToast(`✅ Base sincronizada e ${res.uploadedCount} PDF(s) enviado(s) ao Google Drive!`);
+        } else if (res && res.pendingRemaining > 0 && res.lastUploadError) {
+          samuAlert('Atenção ao enviar PDF pendente ao Google Drive:\n\n' + res.lastUploadError);
         } else {
           showToast('✅ Base sincronizada com o Google Drive com sucesso!');
         }
       }
     } catch (err) {
-      if (interactive) samuAlert('Erro na sincronização: ' + err.message);
+      const isNet = window.SamuStorage.isNetworkErrorMessage && window.SamuStorage.isNetworkErrorMessage(err && err.message);
+      if (interactive) {
+        if (isNet) {
+          showToast('📴 Sem internet agora: funcionando 100% pela Base Interna Offline! Sincronizará com o Google Drive assim que conectar.');
+        } else {
+          samuAlert('Erro na sincronização: ' + err.message);
+        }
+      }
+      await refreshSyncBadge();
+    } finally {
+      isCloudRecordSyncInFlight = false;
     }
   }
 
@@ -4139,7 +4260,7 @@
         activeTab = btn.dataset.tab;
         if (activeTab === 'condutor' && !editingCondutorId && condutorState) {
           applySharedDailyToCondutorState(condutorState, { replaceOtherShift: false });
-          if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
+          if (!isRecentlyOfflinePassive() && window.SamuStorage.hasGitHubConfigured()) {
             window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: false }).then(() => {
               if (activeTab === 'condutor' && !editingCondutorId && condutorState) {
                 applySharedDailyToCondutorState(condutorState, { replaceOtherShift: false });
@@ -4150,7 +4271,7 @@
           }
         } else if (activeTab === 'enfermagem' && !editingEnfermagemId && enfermagemState) {
           applySharedDailyToEnfermagemState(enfermagemState, { replaceOtherShift: false });
-          if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
+          if (!isRecentlyOfflinePassive() && window.SamuStorage.hasGitHubConfigured()) {
             window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: false }).then(() => {
               if (activeTab === 'enfermagem' && !editingEnfermagemId && enfermagemState) {
                 applySharedDailyToEnfermagemState(enfermagemState, { replaceOtherShift: false });
@@ -6811,12 +6932,19 @@
         record.isDraft = false;
         record._patientCheckedOnSend = true;
 
+        if (crewPushTimer) {
+          clearTimeout(crewPushTimer);
+          crewPushTimer = null;
+        }
         const generated = await window.SamuPDF.generatePdfForRecord(record);
         await window.SamuStorage.saveRecordLocal(record, { skipPatientUpsert: true });
         if (activeCrew) {
           window.SamuStorage.closeCrewCurrentSession(activeCrew.crewId, currentCrewSessionId, 'submitted', recId, prevKmFinal, false);
         }
         const upRes = await window.SamuStorage.uploadRecordToDrive(record, generated.base64);
+        if (!upRes.synced) {
+          schedulePendingDriveRetry(6000);
+        }
         await window.SamuStorage.clearDraft(currentUser.username, 'ficha');
 
         // Prepara nova ficha limpa para o próximo atendimento (já puxando o último KM Final como KM Inicial e assinaturas da equipe!)
@@ -7481,7 +7609,11 @@
       btn.disabled = true;
       btn.textContent = 'Gerando PDF e Salvando...';
       try {
-        if (!isDiurno && Object.keys(d.itensDiurno || {}).length === 0 && navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
+        if (crewPushTimer) {
+          clearTimeout(crewPushTimer);
+          crewPushTimer = null;
+        }
+        if (!isDiurno && Object.keys(d.itensDiurno || {}).length === 0 && !isRecentlyOfflinePassive() && window.SamuStorage.hasGitHubConfigured()) {
           await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: false }).catch(() => {});
         }
         applySharedDailyToCondutorState(d, { replaceOtherShift: false });
@@ -7490,7 +7622,8 @@
             d.viaturaId || 'master_29',
             d.outraPlaca || '',
             isDiurno ? d.avariasDiurno : d.avariasNoturno,
-            currentUser ? currentUser.username : ''
+            currentUser ? currentUser.username : '',
+            true
           );
         }
         if (window.SamuStorage.saveSharedDailyChecklist) {
@@ -7504,6 +7637,9 @@
         const generated = await window.SamuPDF.generatePdfForRecord(record);
         await window.SamuStorage.saveRecordLocal(record);
         const upRes = await window.SamuStorage.uploadRecordToDrive(record, generated.base64);
+        if (!upRes.synced) {
+          schedulePendingDriveRetry(6000);
+        }
         await window.SamuStorage.clearDraft(currentUser.username, 'checklist_condutor');
 
         editingCondutorId = null;
@@ -7980,7 +8116,11 @@
       btn.disabled = true;
       btn.textContent = 'Gerando PDF e Salvando...';
       try {
-        if (!isDia && Object.keys(d.itensDia || {}).length === 0 && navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
+        if (crewPushTimer) {
+          clearTimeout(crewPushTimer);
+          crewPushTimer = null;
+        }
+        if (!isDia && Object.keys(d.itensDia || {}).length === 0 && !isRecentlyOfflinePassive() && window.SamuStorage.hasGitHubConfigured()) {
           await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: false }).catch(() => {});
         }
         syncActiveShiftFieldsInEnfermagem(d);
@@ -7994,6 +8134,9 @@
         const generated = await window.SamuPDF.generatePdfForRecord(record);
         await window.SamuStorage.saveRecordLocal(record);
         const upRes = await window.SamuStorage.uploadRecordToDrive(record, generated.base64);
+        if (!upRes.synced) {
+          schedulePendingDriveRetry(6000);
+        }
         await window.SamuStorage.clearDraft(currentUser.username, 'checklist_enfermagem');
 
         editingEnfermagemId = null;
@@ -8166,6 +8309,41 @@
     document.getElementById('btn-hist-sync').addEventListener('click', () => triggerBackgroundSync(true));
 
     // Ações dos cards do histórico
+    container.querySelectorAll('[data-h-send-drive]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const rec = await window.SamuStorage.getRecordById(btn.dataset.hSendDrive);
+        if (!rec) return;
+        const origTxt = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = '☁️ Enviando...';
+        try {
+          if (crewPushTimer) {
+            clearTimeout(crewPushTimer);
+            crewPushTimer = null;
+          }
+          const gen = await window.SamuPDF.generatePdfForRecord(rec);
+          const up = await window.SamuStorage.uploadRecordToDrive(rec, gen.base64);
+          await refreshSyncBadge();
+          renderHistoricoView();
+          if (up.synced) {
+            showToast(up.printQueued
+              ? '✅ PDF enviado ao Google Drive e para a Impressora da Base!'
+              : '✅ PDF enviado ao Google Drive com sucesso!');
+          } else if (up.reason === 'offline' || up.isNetworkError) {
+            schedulePendingDriveRetry(6000);
+            showToast('📴 Sem conexão no momento. Continuará tentando enviar automaticamente.');
+          } else {
+            schedulePendingDriveRetry(6000);
+            samuAlert('Não foi possível enviar ao Google Drive agora:\n\n' + (up.error || 'Erro temporário no servidor.'));
+          }
+        } catch (err) {
+          samuAlert('Erro ao enviar PDF ao Google Drive: ' + (err.message || err));
+          btn.disabled = false;
+          btn.textContent = origTxt;
+        }
+      });
+    });
+
     container.querySelectorAll('[data-h-pdf]').forEach(btn => {
       btn.addEventListener('click', async () => {
         const rec = await window.SamuStorage.getRecordById(btn.dataset.hPdf);
@@ -8387,6 +8565,7 @@
           ${isAdmin ? `<br>👤 Enviado por: <strong>${escapeHtml(rec.createdByName || rec.createdBy)}</strong> (${escapeHtml(rec.createdBy)})` : ''}
         </div>
         <div class="history-actions">
+          ${!isDraft && !synced ? `<button type="button" class="btn btn-success btn-sm" data-h-send-drive="${escapeHtml(rec.id)}">☁️ Enviar ao Drive Agora</button>` : ''}
           <button type="button" class="btn btn-outline btn-sm" data-h-edit="${escapeHtml(rec.id)}">${isDraft ? '✏️ Continuar Preenchimento' : '✏️ Abrir / Editar'}</button>
           <button type="button" class="btn btn-primary btn-sm" data-h-pdf="${escapeHtml(rec.id)}">📄 Gerar / Ver PDF</button>
           ${!isDraft ? `<button type="button" class="btn btn-outline btn-sm" style="border-color:#1d4ed8; color:#1d4ed8;" data-h-print-base="${escapeHtml(rec.id)}">${printBtnLabel}</button>` : ''}
@@ -8453,11 +8632,11 @@
     }
 
     window.SamuStorage.deleteLocalUser(cleanUname);
-    if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
-      try { await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true }); } catch (eGh) {}
+    if (window.SamuStorage.hasGitHubConfigured()) {
+      try { await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true, forceTryOnline: true }); } catch (eGh) {}
     }
     const curSettings = window.SamuStorage.getSettings();
-    if (curSettings.scriptUrl && navigator.onLine) {
+    if (curSettings.scriptUrl) {
       try {
         await window.SamuStorage.apiPost({
           action: 'deleteUser',
@@ -9746,11 +9925,11 @@
             updateTopbarUserHeader();
           }
         }
-        if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
-          try { await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true }); } catch (eGh) {}
+        if (window.SamuStorage.hasGitHubConfigured()) {
+          try { await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: true, forceTryOnline: true }); } catch (eGh) {}
         }
         const curSettings = window.SamuStorage.getSettings();
-        if (curSettings.scriptUrl && navigator.onLine) {
+        if (curSettings.scriptUrl) {
           const res = await window.SamuStorage.apiPost({
             action: 'saveUser',
             authUser: currentUser.username,
@@ -9966,10 +10145,18 @@
         if (!upRes.synced) {
           record.pendingAutoPrint = true;
           await window.SamuStorage.saveRecordLocal(record, { skipPatientUpsert: true });
-          if (isShowingThisInPreview) {
-            statusEl.textContent = '⏳ Sem internet agora: salvo na fila — enviará ao Drive e imprimirá na Base automaticamente!';
+          schedulePendingDriveRetry(6000);
+          if (upRes.reason === 'offline' || upRes.isNetworkError) {
+            if (isShowingThisInPreview) {
+              statusEl.textContent = '⏳ Sem internet agora: salvo na fila — enviará ao Drive e imprimirá na Base automaticamente!';
+            }
+            showToast('📴 Sem sinal agora! Salvo na fila para imprimir na Base assim que o 4G voltar.');
+          } else {
+            if (isShowingThisInPreview) {
+              statusEl.textContent = formatUploadFailurePreviewText(upRes);
+            }
+            samuAlert('Não foi possível enviar o PDF ao Google Drive agora para imprimir na Base:\n\n' + (upRes.error || 'Falha temporária no servidor.'));
           }
-          showToast('📴 Sem sinal agora! Salvo na fila para imprimir na Base assim que o 4G voltar.');
           return true;
         }
       }
@@ -10032,12 +10219,8 @@
           : (waitingNight
             ? '✅ Turno Diurno salvo no Google Drive! (Imprimirá automaticamente na Base quando o Noturno concluir a folha)'
             : '✅ Salvo e enviado automaticamente para o Google Drive!');
-      } else if (uploadResult.reason === 'no_url') {
-        statusEl.textContent = '💾 Salvo no aparelho (conecte o Google Drive em Equipe/Drive para envio automático).';
       } else {
-        statusEl.textContent = uploadResult.printPendingOffline
-          ? '⏳ Salvo no aparelho! Sem internet agora — enviará ao Google Drive e imprimirá na Base automaticamente.'
-          : '⏳ Salvo no aparelho! Sem internet agora — enviará ao Google Drive automaticamente.';
+        statusEl.textContent = formatUploadFailurePreviewText(uploadResult);
       }
     } else if (record && record.type === 'checklist_condutor' && !validateCondutorChecklist(record.data).valid) {
       statusEl.textContent = '⚠️ Check List incompleto — preencha todos os campos antes de enviar ou compartilhar.';

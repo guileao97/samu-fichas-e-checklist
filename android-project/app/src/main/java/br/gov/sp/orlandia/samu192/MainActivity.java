@@ -7,6 +7,8 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.net.ConnectivityManager;
 import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.NetworkInfo;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -199,6 +201,7 @@ public class MainActivity extends Activity {
         });
 
         registerNativeNetworkMonitor();
+        webView.setNetworkAvailable(isDeviceNetworkConnected());
         webView.loadUrl(APP_ORIGIN + "/index.html");
     }
 
@@ -213,7 +216,27 @@ public class MainActivity extends Activity {
             }
         }
         if (webView != null) {
+            webView.setNetworkAvailable(isDeviceNetworkConnected());
             webView.evaluateJavascript("window.__onAndroidAppResume && window.__onAndroidAppResume();", null);
+        }
+    }
+
+    private boolean isDeviceNetworkConnected() {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm == null) return true;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Network active = cm.getActiveNetwork();
+                if (active == null) return false;
+                NetworkCapabilities caps = cm.getNetworkCapabilities(active);
+                return caps != null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+            } else {
+                @SuppressWarnings("deprecation")
+                NetworkInfo info = cm.getActiveNetworkInfo();
+                return info != null && info.isConnected();
+            }
+        } catch (Exception e) {
+            return true;
         }
     }
 
@@ -317,10 +340,20 @@ public class MainActivity extends Activity {
                         public void onAvailable(Network network) {
                             runOnUiThread(() -> {
                                 if (webView != null) {
+                                    webView.setNetworkAvailable(true);
                                     webView.evaluateJavascript(
                                         "window.__onAndroidNetworkOnline && window.__onAndroidNetworkOnline();",
                                         null
                                     );
+                                }
+                            });
+                        }
+
+                        @Override
+                        public void onLost(Network network) {
+                            runOnUiThread(() -> {
+                                if (webView != null) {
+                                    webView.setNetworkAvailable(isDeviceNetworkConnected());
                                 }
                             });
                         }
@@ -613,6 +646,11 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public boolean isNetworkConnected() {
+            return isDeviceNetworkConnected();
+        }
+
+        @JavascriptInterface
         public void postJson(final String reqId, final String urlStr, final String jsonPayload) {
             httpPool.execute(() -> {
                 try {
@@ -668,7 +706,7 @@ public class MainActivity extends Activity {
                 HttpURLConnection conn = (HttpURLConnection) new URL(currentUrl).openConnection();
                 conn.setInstanceFollowRedirects(false);
                 conn.setConnectTimeout(25000);
-                conn.setReadTimeout(45000);
+                conn.setReadTimeout(65000);
                 conn.setRequestMethod(method);
                 conn.setRequestProperty("User-Agent", "SAMU192-Orlandia-APK/1.0");
                 conn.setRequestProperty("Accept", "application/json, text/plain, */*");
