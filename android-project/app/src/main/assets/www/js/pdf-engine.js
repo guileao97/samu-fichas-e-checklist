@@ -613,8 +613,11 @@
     g.font = '21px Arial, sans-serif';
     g.textAlign = 'center';
     g.fillText('SINAIS VITAIS', M + 152, y + 42);
+    const fmtPaPdf = String(d.svPa || '').trim()
+      .replace(/^\s*(\d+)\s*[xX/]\s*(\d+)\s*$/, '$1 x $2')
+      .replace(/^\s*[xX/]\s*/, '');
     const svItems = [
-      { label: 'PA', val: d.svPa },
+      { label: 'PA', val: fmtPaPdf },
       { label: 'FC', val: d.svFc },
       { label: 'FR', val: d.svFr },
       { label: 'SAT', val: d.svSat },

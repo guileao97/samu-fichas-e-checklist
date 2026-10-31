@@ -37,6 +37,8 @@
   let historyUserFilter = 'all';
   let medFilterQuery = '';
   let alergiaFilterQuery = '';
+  let medicoFilterQuery = '';
+  let receiverFilterQuery = '';
   let openSelectBoxKey = '';
   let cachedDraftCount = 0;
   let adminCatalogTab = 'patients';
@@ -189,6 +191,25 @@
     if (el) {
       el.innerHTML = buildVictimPhoneKindBadgeHtml(rawVal);
     }
+  }
+
+  function parsePaParts(raw) {
+    const str = String(raw == null ? '' : raw);
+    if (!str.trim()) return { sys: '', dia: '' };
+    const m = str.match(/^\s*([^xX/]*?)\s*[xX/]\s*(.*?)\s*$/);
+    if (m) {
+      return { sys: m[1].trim(), dia: m[2].trim() };
+    }
+    return { sys: str.trim(), dia: '' };
+  }
+
+  function buildPaValue(sysRaw, diaRaw) {
+    const s = String(sysRaw == null ? '' : sysRaw).trim();
+    const d = String(diaRaw == null ? '' : diaRaw).trim();
+    if (!s && !d) return '';
+    if (s && d) return `${s} x ${d}`;
+    if (s) return s;
+    return ` x ${d}`;
   }
 
   function applyCrewToFichaState(targetFicha, crew, forceReplaceSlots) {
@@ -454,6 +475,12 @@
     }
     if (merged.ocorrenciaContato && /^\s*[\d()\s+-]+\s*$/.test(String(merged.ocorrenciaContato))) {
       merged.ocorrenciaContato = formatPhoneBR(merged.ocorrenciaContato, true) || merged.ocorrenciaContato;
+    }
+    if (merged.svPa) {
+      const paP = parsePaParts(merged.svPa);
+      if (paP.sys && paP.dia) {
+        merged.svPa = `${paP.sys} x ${paP.dia}`;
+      }
     }
 
     // Setor Recomendado e Setor Admitido aceitam apenas 1 seleção por vez
@@ -1874,6 +1901,13 @@
         }
       }
     });
+    const paSysLive = document.getElementById('f-sv-pa-sys');
+    const paDiaLive = document.getElementById('f-sv-pa-dia');
+    if (paSysLive && paDiaLive && activeEl !== paSysLive && activeEl !== paDiaLive) {
+      const paLiveParts = parsePaParts(fichaState.svPa);
+      if (paSysLive.value !== paLiveParts.sys) paSysLive.value = paLiveParts.sys;
+      if (paDiaLive.value !== paLiveParts.dia) paDiaLive.value = paLiveParts.dia;
+    }
     container.querySelectorAll('[data-horario]').forEach(inp => {
       if (inp === activeEl) return;
       const hk = inp.dataset.horario;
@@ -4439,7 +4473,31 @@
     `;
   }
 
+  let stickyLayoutObserverBound = false;
+  function syncStickyBarsLayout() {
+    const topbar = document.querySelector('#app-shell .topbar');
+    if (topbar && topbar.offsetHeight > 0) {
+      document.documentElement.style.setProperty('--topbar-h', topbar.offsetHeight + 'px');
+    }
+    const draftBar = document.querySelector('#main-view .quick-draft-bar');
+    if (draftBar && draftBar.offsetHeight > 0) {
+      document.documentElement.style.setProperty('--draftbar-h', draftBar.offsetHeight + 'px');
+    }
+    if (!stickyLayoutObserverBound) {
+      stickyLayoutObserverBound = true;
+      window.addEventListener('resize', () => {
+        requestAnimationFrame(syncStickyBarsLayout);
+      });
+      if (typeof ResizeObserver === 'function' && topbar) {
+        const roTop = new ResizeObserver(() => syncStickyBarsLayout());
+        roTop.observe(topbar);
+      }
+    }
+  }
+
   function bindStepPillsHorizontalScroll(container) {
+    syncStickyBarsLayout();
+    requestAnimationFrame(syncStickyBarsLayout);
     container.querySelectorAll('.step-pills-bar').forEach(bar => {
       if (bar.dataset.scrollBound === '1') return;
       bar.dataset.scrollBound = '1';
@@ -4663,6 +4721,69 @@
     });
   }
 
+  function renderSingleSavedSelectBoxHtml(cfg) {
+    const isOpen = openSelectBoxKey === cfg.boxKey;
+    const items = Array.isArray(cfg.items) ? cfg.items : [];
+    const hasItems = items.length > 0;
+    const summaryText = cfg.selectedSummary
+      ? `✅ ${cfg.selectedSummary}`
+      : (hasItems ? cfg.placeholderText : cfg.emptyTriggerText);
+    const summaryCls = cfg.selectedSummary ? 'is-has-items' : 'is-placeholder';
+    const closedChevron = cfg.selectedSummary
+      ? `Alterar (${items.length}) ▼`
+      : (hasItems ? `Selecionar (${items.length}) ▼` : 'Lista (0) ▼');
+    const qNorm = normStr(String(cfg.filterQuery || '').trim());
+
+    const listHtml = !hasItems
+      ? `<div style="padding:12px 10px; font-size:0.81rem; color:var(--muted); text-align:center;">${escapeHtml(cfg.emptyListText)}</div>`
+      : items.map(it => {
+          const matches = !qNorm || normStr(it.searchBlob || it.label).includes(qNorm);
+          return `
+            <button type="button"
+              class="select-box-option ${it.isSelected ? 'is-selected' : ''} ${matches ? '' : 'hidden'}"
+              data-single-sbox-opt="${escapeHtml(cfg.boxKey)}"
+              data-${cfg.pickAttr}="${escapeHtml(it.id)}"
+              data-sbox-search-blob="${escapeHtml(it.searchBlob || it.label)}">
+              <span class="select-box-check">✓</span>
+              <span>${escapeHtml(it.label)}</span>
+            </button>
+          `;
+        }).join('');
+
+    return `
+      <div class="select-box-wrap ${isOpen ? 'is-open' : ''}" id="select-box-${escapeHtml(cfg.boxKey)}" data-sbox-key="${escapeHtml(cfg.boxKey)}" data-closed-chevron="${escapeHtml(closedChevron)}" style="margin-top:5px; margin-bottom:8px;">
+        <button type="button" class="select-box-trigger" data-single-sbox-toggle="${escapeHtml(cfg.boxKey)}">
+          <span class="select-box-summary ${summaryCls}">${escapeHtml(summaryText)}</span>
+          <span class="select-box-chevron">${isOpen ? 'Fechar ▲' : escapeHtml(closedChevron)}</span>
+        </button>
+        <div class="select-box-panel ${isOpen ? '' : 'hidden'}" data-sbox-panel="${escapeHtml(cfg.boxKey)}">
+          ${hasItems ? `
+            <div class="select-box-panel-top">
+              <input type="search" class="select-box-search" autocomplete="off" data-single-sbox-search="${escapeHtml(cfg.boxKey)}"
+                placeholder="${escapeHtml(cfg.searchPlaceholder)}" value="${escapeHtml(cfg.filterQuery || '')}" />
+              <button type="button" class="select-box-done-btn" data-single-sbox-done="${escapeHtml(cfg.boxKey)}">Fechar ▲</button>
+            </div>
+          ` : ''}
+          <div class="select-box-list" data-sbox-list="${escapeHtml(cfg.boxKey)}">
+            ${listHtml}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function setSingleSelectBoxOpenInPlace(boxKey, makeOpen) {
+    const wrap = document.getElementById(`select-box-${boxKey}`);
+    if (!wrap) return;
+    wrap.classList.toggle('is-open', Boolean(makeOpen));
+    const panel = wrap.querySelector(`[data-sbox-panel="${boxKey}"]`);
+    if (panel) panel.classList.toggle('hidden', !makeOpen);
+    const chev = wrap.querySelector('.select-box-chevron');
+    if (chev) {
+      chev.textContent = makeOpen ? 'Fechar ▲' : (wrap.dataset.closedChevron || 'Selecionar ▼');
+    }
+  }
+
   let outsideSelectBoxBound = false;
   function ensureOutsideSelectBoxCloseListener() {
     if (outsideSelectBoxBound) return;
@@ -4672,7 +4793,11 @@
       if (e.target && e.target.closest && e.target.closest('.select-box-wrap')) return;
       const prevKey = openSelectBoxKey;
       openSelectBoxKey = '';
-      updateSelectBoxInPlace(prevKey);
+      if (prevKey === 'med' || prevKey === 'alergia') {
+        updateSelectBoxInPlace(prevKey);
+      } else {
+        setSingleSelectBoxOpenInPlace(prevKey, false);
+      }
     });
   }
 
@@ -5022,7 +5147,19 @@
 
           <div class="section-subtitle">Sinais Vitais</div>
           <div class="grid-vitals">
-            <div class="field"><label>PA (mmHg)</label><input type="text" placeholder="Ex: 120x80" data-f="svPa" value="${escapeHtml(d.svPa)}" /></div>
+            ${(() => {
+              const paInit = parsePaParts(d.svPa);
+              return `
+                <div class="field">
+                  <label>PA (mmHg)</label>
+                  <div class="pa-input-box" id="pa-compound-box">
+                    <input type="text" inputmode="numeric" id="f-sv-pa-sys" class="pa-part-inp" autocomplete="off" placeholder="120" value="${escapeHtml(paInit.sys)}" aria-label="Pressão arterial sistólica" />
+                    <span class="pa-x-sep">x</span>
+                    <input type="text" inputmode="numeric" id="f-sv-pa-dia" class="pa-part-inp" autocomplete="off" placeholder="80" value="${escapeHtml(paInit.dia)}" aria-label="Pressão arterial diastólica" />
+                  </div>
+                </div>
+              `;
+            })()}
             <div class="field"><label>FC (bpm)</label><input type="text" inputmode="numeric" placeholder="Ex: 84" data-f="svFc" value="${escapeHtml(d.svFc)}" /></div>
             <div class="field"><label>FR (irpm)</label><input type="text" inputmode="numeric" placeholder="Ex: 18" data-f="svFr" value="${escapeHtml(d.svFr)}" /></div>
             <div class="field"><label>SAT (%)</label><input type="text" placeholder="Ex: 98%" data-f="svSat" value="${escapeHtml(d.svSat)}" /></div>
@@ -5103,30 +5240,31 @@
             ${(() => {
               const savedMedicos = window.SamuStorage.getMedicosReguladores ? window.SamuStorage.getMedicosReguladores() : [];
               const curValLower = String(d.medicoRegulador || '').trim().toLowerCase();
-              return `
-                <div class="receiver-saved-box" style="margin-top:4px; margin-bottom:6px;">
-                  <div style="font-size:0.76rem; font-weight:800; color:#334155;">
-                    ⚡ Médicos Reguladores salvos (${savedMedicos.length}) — toque no nome p/ preencher:
-                  </div>
-                  ${savedMedicos.length > 0 ? `
-                    <div class="receiver-chip-wrap">
-                      ${savedMedicos.map(m => {
-                        const mLow = String(m.nome || '').trim().toLowerCase();
-                        const isSel = Boolean(mLow && (curValLower === mLow || curValLower.startsWith(mLow + ' ') || curValLower.startsWith(mLow + '/') || curValLower.startsWith(mLow + '-')));
-                        return `
-                          <span class="receiver-chip ${isSel ? 'active' : ''}" data-pick-medico="${escapeHtml(m.id)}" title="Toque para preencher este Médico Regulador">
-                            <span>👨‍⚕️ ${escapeHtml(m.nome)}</span>
-                          </span>
-                        `;
-                      }).join('')}
-                    </div>
-                  ` : `
-                    <div style="font-size:0.75rem; color:var(--muted); margin-top:4px;">
-                      Nenhum médico regulador salvo ainda. Ao preencher abaixo nas fichas, o nome já vai ficando salvo automaticamente para selecionar com 1 toque!
-                    </div>
-                  `}
-                </div>
-              `;
+              let selectedMedSummary = '';
+              const medicoItems = savedMedicos.map(m => {
+                const mLow = String(m.nome || '').trim().toLowerCase();
+                const isSel = Boolean(mLow && (curValLower === mLow || curValLower.startsWith(mLow + ' ') || curValLower.startsWith(mLow + '/') || curValLower.startsWith(mLow + '-')));
+                if (isSel && !selectedMedSummary) {
+                  selectedMedSummary = `👨‍⚕️ ${m.nome}`;
+                }
+                return {
+                  id: m.id,
+                  label: `👨‍⚕️ ${m.nome}`,
+                  searchBlob: m.nome || '',
+                  isSelected: isSel
+                };
+              });
+              return renderSingleSavedSelectBoxHtml({
+                boxKey: 'medico',
+                items: medicoItems,
+                selectedSummary: selectedMedSummary,
+                placeholderText: '👨‍⚕️ Toque para selecionar Médico Regulador salvo...',
+                emptyTriggerText: '👨‍⚕️ Nenhum médico salvo ainda (digite abaixo p/ salvar)',
+                searchPlaceholder: '🔎 Buscar médico regulador na lista...',
+                emptyListText: 'Nenhum médico regulador salvo ainda. Ao preencher no campo abaixo, o nome fica salvo automaticamente para selecionar nas próximas fichas!',
+                filterQuery: medicoFilterQuery,
+                pickAttr: 'pick-medico'
+              });
             })()}
             <div class="input-action-row">
               <input type="text" id="inp-medico-regulador" placeholder="Dr(a). Nome / CRM (ou Senha de regulação)" data-f="medicoRegulador" value="${escapeHtml(d.medicoRegulador)}" />
@@ -5226,29 +5364,32 @@
               </div>
               ${(() => {
                 const savedReceivers = window.SamuStorage.getHospitalReceivers();
-                return `
-                  <div class="receiver-saved-box">
-                    <div style="font-size:0.76rem; font-weight:800; color:#334155;">
-                      ⚡ Recebedores salvos (${savedReceivers.length}) — toque no nome p/ preencher e só assinar:
-                    </div>
-                    ${savedReceivers.length > 0 ? `
-                      <div class="receiver-chip-wrap">
-                        ${savedReceivers.map(r => {
-                          const isSel = String(d.recebidoPorNome || '').trim().toLowerCase() === String(r.nome || '').trim().toLowerCase();
-                          return `
-                            <span class="receiver-chip ${isSel ? 'active' : ''}" data-pick-receiver="${escapeHtml(r.id)}" title="Toque para preencher Nome + COREN/CRM e abrir assinatura">
-                              <span>👤 ${escapeHtml(r.nome)}${r.corenCrm ? ` • ${escapeHtml(r.corenCrm)}` : ''}</span>
-                            </span>
-                          `;
-                        }).join('')}
-                      </div>
-                    ` : `
-                      <div style="font-size:0.75rem; color:var(--muted); margin-top:4px;">
-                        Nenhum recebedor salvo ainda. Ao preencher Nome e COREN/CRM abaixo, ficará salvo automaticamente para só assinar nas próximas vezes!
-                      </div>
-                    `}
-                  </div>
-                `;
+                const curRecLow = String(d.recebidoPorNome || '').trim().toLowerCase();
+                let selectedRecSummary = '';
+                const recItems = savedReceivers.map(r => {
+                  const isSel = Boolean(curRecLow && curRecLow === String(r.nome || '').trim().toLowerCase());
+                  const lbl = `👤 ${r.nome}${r.corenCrm ? ' • ' + r.corenCrm : ''}`;
+                  if (isSel && !selectedRecSummary) {
+                    selectedRecSummary = lbl;
+                  }
+                  return {
+                    id: r.id,
+                    label: lbl,
+                    searchBlob: `${r.nome || ''} ${r.corenCrm || ''} ${r.hospital || ''}`,
+                    isSelected: isSel
+                  };
+                });
+                return renderSingleSavedSelectBoxHtml({
+                  boxKey: 'receiver',
+                  items: recItems,
+                  selectedSummary: selectedRecSummary,
+                  placeholderText: '👤 Toque para selecionar Recebedor salvo (preenche e assina)...',
+                  emptyTriggerText: '👤 Nenhum recebedor salvo ainda (preencha abaixo p/ salvar)',
+                  searchPlaceholder: '🔎 Buscar recebedor por nome ou COREN/CRM...',
+                  emptyListText: 'Nenhum recebedor salvo ainda. Ao preencher Nome e COREN/CRM abaixo, ficará salvo automaticamente para só assinar nas próximas fichas!',
+                  filterQuery: receiverFilterQuery,
+                  pickAttr: 'pick-receiver'
+                });
               })()}
               <div class="field" style="margin-top:6px;">
                 <label>No&#8204;me do Profissional</label>
@@ -5432,11 +5573,15 @@
 
       ${crewBarHtml}
 
-      ${renderQuickDraftBarHtml('ficha')}
+      <div class="sticky-ficha-nav-stack">
+        ${renderQuickDraftBarHtml('ficha')}
 
-      ${renderStepPillsBarHtml('ficha-steps', steps.map(s => `
-        <button type="button" class="step-pill ${fichaStep === s.n ? 'active' : ''}" data-step="${s.n}">${s.label}</button>
-      `).join(''))}
+        ${renderStepPillsBarHtml('ficha-steps', steps.map(s => `
+          <button type="button" class="step-pill ${fichaStep === s.n ? 'active' : ''}" data-step="${s.n}">${s.label}</button>
+        `).join(''))}
+      </div>
+
+      <div id="ficha-step-anchor"></div>
 
       ${stepHtml}
 
@@ -5467,6 +5612,17 @@
         openSelectBoxKey = '';
         fichaStep = Number(btn.dataset.step);
         renderFichaView();
+        const anchor = document.getElementById('ficha-step-anchor');
+        const stack = container.querySelector('.sticky-ficha-nav-stack');
+        const topbar = document.querySelector('#app-shell .topbar');
+        if (anchor && stack) {
+          const stickyBottom = ((topbar && topbar.offsetHeight) || 58) + stack.offsetHeight + 8;
+          const rect = anchor.getBoundingClientRect();
+          if (rect.top < stickyBottom - 12) {
+            const targetY = Math.max(0, window.scrollY + rect.top - stickyBottom);
+            window.scrollTo({ top: targetY, behavior: 'smooth' });
+          }
+        }
       });
     });
 
@@ -5883,14 +6039,183 @@
       });
     });
 
+    // Caixa composta de PA (Pressão Arterial): [ 120 ] x [ 80 ] -> salva "120 x 80"
+    const paSysEl = document.getElementById('f-sv-pa-sys');
+    const paDiaEl = document.getElementById('f-sv-pa-dia');
+    const paBoxEl = document.getElementById('pa-compound-box');
+    if (paSysEl && paDiaEl) {
+      bindFieldJumpInstantSync(paSysEl, 'f:svPa');
+      bindFieldJumpInstantSync(paDiaEl, 'f:svPa');
+
+      const syncPaFromInputs = () => {
+        fichaState.svPa = buildPaValue(paSysEl.value, paDiaEl.value);
+        persistTypedFieldWithJumpCheck('f:svPa');
+      };
+
+      if (paBoxEl) {
+        paBoxEl.addEventListener('click', (e) => {
+          if (e.target === paSysEl || e.target === paDiaEl) return;
+          if (e.target.classList && e.target.classList.contains('pa-x-sep') && paSysEl.value.trim()) {
+            paDiaEl.focus();
+          } else if (!paSysEl.value.trim()) {
+            paSysEl.focus();
+          } else {
+            paDiaEl.focus();
+          }
+        });
+      }
+
+      paSysEl.addEventListener('keydown', (e) => {
+        if (e.key === 'x' || e.key === 'X' || e.key === '/' || e.key === ' ') {
+          if (paSysEl.value.trim()) {
+            e.preventDefault();
+            paDiaEl.focus();
+            try { paDiaEl.select(); } catch (err) {}
+          }
+        } else if (e.key === 'ArrowRight' && paSysEl.selectionStart === paSysEl.value.length) {
+          e.preventDefault();
+          paDiaEl.focus();
+          try { paDiaEl.setSelectionRange(0, 0); } catch (err) {}
+        }
+      });
+
+      paSysEl.addEventListener('input', () => {
+        const raw = paSysEl.value || '';
+        // Caso o usuário cole "120x80" ou "120 x 80"
+        if (/[xX/]/.test(raw) || /^\s*\d+\s+\d+/.test(raw)) {
+          const parts = raw.split(/[xX/\s]+/).map(s => s.replace(/\D+/g, '')).filter(Boolean);
+          paSysEl.value = (parts[0] || '').slice(0, 3);
+          if (parts[1] !== undefined) {
+            paDiaEl.value = parts[1].slice(0, 3);
+          }
+          syncPaFromInputs();
+          paDiaEl.focus();
+          try {
+            const L = paDiaEl.value.length;
+            paDiaEl.setSelectionRange(L, L);
+          } catch (err) {}
+          return;
+        }
+
+        const jumpedBySep = /[.,;-]\s*$/.test(raw) && raw.replace(/\D+/g, '').length > 0;
+        let digits = raw.replace(/\D+/g, '');
+
+        // Sistólica iniciando em 4..9 tem no máximo 2 dígitos (ex: 90 x 60); se digitar 3º dígito seguido, joga p/ diastólica
+        if (digits.length > 2 && /^[4-9]/.test(digits)) {
+          const overflow = digits.slice(2, 5);
+          digits = digits.slice(0, 2);
+          paSysEl.value = digits;
+          paDiaEl.value = (overflow + paDiaEl.value.replace(/\D+/g, '')).slice(0, 3);
+          syncPaFromInputs();
+          paDiaEl.focus();
+          try {
+            const L = overflow.length;
+            paDiaEl.setSelectionRange(L, L);
+          } catch (err) {}
+          return;
+        }
+
+        if (digits.length > 3) {
+          const overflow = digits.slice(3, 6);
+          digits = digits.slice(0, 3);
+          paSysEl.value = digits;
+          paDiaEl.value = (overflow + paDiaEl.value.replace(/\D+/g, '')).slice(0, 3);
+          syncPaFromInputs();
+          paDiaEl.focus();
+          try {
+            const L = overflow.length;
+            paDiaEl.setSelectionRange(L, L);
+          } catch (err) {}
+          return;
+        }
+
+        paSysEl.value = digits;
+        syncPaFromInputs();
+
+        if (jumpedBySep || digits.length === 3 || (digits.length === 2 && /^[4-9]/.test(digits))) {
+          paDiaEl.focus();
+          try { paDiaEl.select(); } catch (err) {}
+        }
+      });
+
+      paDiaEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Backspace' && paDiaEl.value === '') {
+          e.preventDefault();
+          paSysEl.value = paSysEl.value.slice(0, -1);
+          paSysEl.focus();
+          try {
+            const L = paSysEl.value.length;
+            paSysEl.setSelectionRange(L, L);
+          } catch (err) {}
+          syncPaFromInputs();
+        } else if (e.key === 'ArrowLeft' && paDiaEl.selectionStart === 0 && paDiaEl.selectionEnd === 0) {
+          e.preventDefault();
+          paSysEl.focus();
+          try {
+            const L = paSysEl.value.length;
+            paSysEl.setSelectionRange(L, L);
+          } catch (err) {}
+        }
+      });
+
+      paDiaEl.addEventListener('input', () => {
+        paDiaEl.value = (paDiaEl.value || '').replace(/\D+/g, '').slice(0, 3);
+        syncPaFromInputs();
+      });
+    }
+
     // Caixas de seleção compactas (Medicamentos em Uso e Alergias: "Nega" em 1º + ordem alfabética)
     container.querySelectorAll('[data-sbox-toggle]').forEach(btn => {
       btn.addEventListener('click', () => {
         const key = btn.dataset.sboxToggle;
         const prev = openSelectBoxKey;
         openSelectBoxKey = (openSelectBoxKey === key) ? '' : key;
-        if (prev && prev !== key) updateSelectBoxInPlace(prev);
+        if (prev && prev !== key) {
+          if (prev === 'med' || prev === 'alergia') updateSelectBoxInPlace(prev);
+          else setSingleSelectBoxOpenInPlace(prev, false);
+        }
         updateSelectBoxInPlace(key);
+      });
+    });
+
+    // Caixas de seleção compactas de escolha única (Médico Regulador salvo e Recebido Por Hospital salvo)
+    container.querySelectorAll('[data-single-sbox-toggle]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const key = btn.dataset.singleSboxToggle;
+        const prev = openSelectBoxKey;
+        const makeOpen = (openSelectBoxKey !== key);
+        openSelectBoxKey = makeOpen ? key : '';
+        if (prev && prev !== key) {
+          if (prev === 'med' || prev === 'alergia') updateSelectBoxInPlace(prev);
+          else setSingleSelectBoxOpenInPlace(prev, false);
+        }
+        setSingleSelectBoxOpenInPlace(key, makeOpen);
+      });
+    });
+
+    container.querySelectorAll('[data-single-sbox-done]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const key = btn.dataset.singleSboxDone;
+        if (openSelectBoxKey === key) openSelectBoxKey = '';
+        setSingleSelectBoxOpenInPlace(key, false);
+      });
+    });
+
+    container.querySelectorAll('[data-single-sbox-search]').forEach(inp => {
+      inp.addEventListener('input', () => {
+        const key = inp.dataset.singleSboxSearch;
+        const q = inp.value || '';
+        if (key === 'medico') medicoFilterQuery = q;
+        else if (key === 'receiver') receiverFilterQuery = q;
+        const qNorm = normStr(q.trim());
+        const wrap = document.getElementById(`select-box-${key}`);
+        if (wrap) {
+          wrap.querySelectorAll(`[data-single-sbox-opt="${key}"]`).forEach(optBtn => {
+            const blob = optBtn.dataset.sboxSearchBlob || '';
+            const show = !qNorm || normStr(blob).includes(qNorm);
+            optBtn.classList.toggle('hidden', !show);
+          });
+        }
       });
     });
 
@@ -6228,6 +6553,8 @@
         const medId = chip.dataset.pickMedico;
         const found = (window.SamuStorage.getMedicosReguladores() || []).find(m => m.id === medId);
         if (!found) return;
+        openSelectBoxKey = '';
+        medicoFilterQuery = '';
         fichaState.medicoRegulador = found.nome;
         window.SamuStorage.upsertMedicoRegulador(found);
         persistFichaDraft({ immediate: true });
@@ -6262,6 +6589,8 @@
         const recId = chip.dataset.pickReceiver;
         const found = window.SamuStorage.getHospitalReceivers().find(r => r.id === recId);
         if (!found) return;
+        openSelectBoxKey = '';
+        receiverFilterQuery = '';
         const prevNome = String(fichaState.recebidoPorNome || '').trim().toLowerCase();
         if (prevNome !== String(found.nome || '').trim().toLowerCase()) {
           fichaState.sigRecebido = '';

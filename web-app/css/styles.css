@@ -440,6 +440,54 @@ body.sim-phone-mode .field-full-phone {
   box-shadow: 0 0 0 3px rgba(200, 16, 46, 0.12);
 }
 
+.pa-input-box {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 44px;
+  border: 1.5px solid var(--border);
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 0 6px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  cursor: text;
+}
+
+.pa-input-box:focus-within {
+  border-color: var(--samu-red);
+  box-shadow: 0 0 0 3px rgba(200, 16, 46, 0.12);
+}
+
+.pa-input-box input.pa-part-inp {
+  flex: 1 1 0;
+  width: 0;
+  min-width: 0;
+  min-height: 41px;
+  border: none !important;
+  box-shadow: none !important;
+  background: transparent;
+  padding: 8px 3px;
+  text-align: center;
+  font-size: 0.98rem;
+  font-weight: 700;
+  color: var(--ink-blue);
+}
+
+.pa-input-box input.pa-part-inp:focus {
+  outline: none;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+.pa-input-box .pa-x-sep {
+  flex: 0 0 auto;
+  padding: 0 4px;
+  font-size: 0.96rem;
+  font-weight: 800;
+  color: #475569;
+  user-select: none;
+}
+
 .btn {
   display: inline-flex;
   align-items: center;
@@ -466,6 +514,40 @@ body.sim-phone-mode .field-full-phone {
 .btn-danger-outline:hover { background: #fee2e2; border-color: #f87171; }
 
 /* ===================== NAVEGAÇÃO POR ETAPAS DA FICHA (ROLAGEM HORIZONTAL) ===================== */
+.sticky-ficha-nav-stack {
+  position: sticky;
+  top: var(--topbar-h, 58px);
+  z-index: 44;
+  background: var(--bg);
+  padding: 4px 0 6px;
+  margin-bottom: 10px;
+}
+
+.sticky-ficha-nav-stack .quick-draft-bar {
+  position: static;
+  margin-bottom: 7px;
+}
+
+.sticky-ficha-nav-stack .step-pills-bar {
+  margin-bottom: 0;
+  background: #ffffff;
+  border: 1.5px solid #dbe3ee;
+  border-radius: 12px;
+  padding: 5px 5px 3px;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.09);
+}
+
+.step-pills-bar[data-step-bar="enf-sections"] {
+  position: sticky;
+  top: calc(var(--topbar-h, 58px) + var(--draftbar-h, 52px) + 4px);
+  z-index: 43;
+  background: #ffffff;
+  border: 1.5px solid #dbe3ee;
+  border-radius: 12px;
+  padding: 5px 5px 3px;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.09);
+}
+
 .step-pills-bar {
   display: flex;
   align-items: center;
@@ -1102,8 +1184,8 @@ body.sim-phone-mode .btn-now {
 /* ===================== BARRA FIXA DE ACESSO FÁCIL A RASCUNHOS ===================== */
 .quick-draft-bar {
   position: sticky;
-  top: 56px;
-  z-index: 45;
+  top: var(--topbar-h, 58px);
+  z-index: 44;
   background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
   color: #fff;
   border-radius: 12px;
