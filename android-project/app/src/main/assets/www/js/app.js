@@ -442,6 +442,180 @@
     return d;
   }
 
+  function applySharedDailyToCondutorState(state, opts) {
+    const d = state || condutorState;
+    if (!d || !d.data || !window.SamuStorage.getSharedDailyChecklist) return d;
+    const replaceOtherShift = Boolean(opts && opts.replaceOtherShift);
+    const isDiurno = d.turnoAtivo !== 'NOTURNO';
+
+    if (replaceOtherShift) {
+      if (!isDiurno) {
+        d.condutorDiurno = '';
+        d.itensDiurno = {};
+        d.obsDiurno = '';
+        d.sigCondutorDiurno = '';
+        d.avariasDiurno = [];
+      } else {
+        d.condutorNoturno = '';
+        d.itensNoturno = {};
+        d.obsNoturno = '';
+        d.sigCondutorNoturno = '';
+        d.avariasNoturno = [];
+      }
+      if (d._abastFromShared) {
+        d.abastRealizado = '';
+        d.abastLitros = '';
+        d.abastHora = '';
+        d.abastKm = '';
+        d.abastAss = '';
+        d.sigAbastecimento = '';
+        d._abastFromShared = false;
+      }
+    }
+
+    const shared = window.SamuStorage.getSharedDailyChecklist('condutor', d.data, d.viaturaId || 'master_29', d.outraPlaca || '');
+    if (!shared) return d;
+
+    if (!isDiurno) {
+      if (shared.itensDiurno && Object.keys(shared.itensDiurno).length > 0) {
+        d.itensDiurno = Object.assign({}, shared.itensDiurno, d.itensDiurno || {});
+      }
+      if (shared.condutorDiurno && (!d.condutorDiurno || replaceOtherShift)) {
+        d.condutorDiurno = shared.condutorDiurno;
+      }
+      if (shared.obsDiurno && (!d.obsDiurno || replaceOtherShift)) {
+        d.obsDiurno = shared.obsDiurno;
+      }
+      if (shared.sigCondutorDiurno && (!d.sigCondutorDiurno || replaceOtherShift)) {
+        d.sigCondutorDiurno = shared.sigCondutorDiurno;
+      }
+      if (Array.isArray(shared.avariasDiurno) && shared.avariasDiurno.length > 0 && (!Array.isArray(d.avariasDiurno) || d.avariasDiurno.length === 0 || replaceOtherShift)) {
+        d.avariasDiurno = JSON.parse(JSON.stringify(shared.avariasDiurno));
+      }
+      if (shared.abastRealizado === 'SIM' && (!d.abastRealizado || d._abastFromShared)) {
+        d.abastRealizado = 'SIM';
+        d.abastLitros = shared.abastLitros || '';
+        d.abastHora = shared.abastHora || '';
+        d.abastKm = shared.abastKm || '';
+        d.abastAss = shared.abastAss || '';
+        d.sigAbastecimento = shared.sigAbastecimento || '';
+        d._abastFromShared = true;
+      }
+    } else {
+      if (shared.itensNoturno && Object.keys(shared.itensNoturno).length > 0) {
+        d.itensNoturno = Object.assign({}, shared.itensNoturno, d.itensNoturno || {});
+      }
+      if (shared.condutorNoturno && (!d.condutorNoturno || replaceOtherShift)) {
+        d.condutorNoturno = shared.condutorNoturno;
+      }
+      if (shared.obsNoturno && (!d.obsNoturno || replaceOtherShift)) {
+        d.obsNoturno = shared.obsNoturno;
+      }
+      if (shared.sigCondutorNoturno && (!d.sigCondutorNoturno || replaceOtherShift)) {
+        d.sigCondutorNoturno = shared.sigCondutorNoturno;
+      }
+      if (Array.isArray(shared.avariasNoturno) && shared.avariasNoturno.length > 0 && (!Array.isArray(d.avariasNoturno) || d.avariasNoturno.length === 0 || replaceOtherShift)) {
+        d.avariasNoturno = JSON.parse(JSON.stringify(shared.avariasNoturno));
+      }
+    }
+    return d;
+  }
+
+  function syncActiveShiftFieldsInEnfermagem(state) {
+    const d = state || enfermagemState;
+    if (!d) return d;
+    if (d.turno === 'NOITE') {
+      d.responsavelNoiteNome = d.responsavelNome || '';
+      d.responsavelNoiteCoren = d.responsavelCoren || '';
+      d.obsNoitePagina1 = d.obsPagina1 || '';
+      d.obsNoitePagina2 = d.obsPagina2 || '';
+      d.sigEnfermagemNoite = d.sigEnfermagem || '';
+    } else {
+      d.responsavelDiaNome = d.responsavelNome || '';
+      d.responsavelDiaCoren = d.responsavelCoren || '';
+      d.obsDiaPagina1 = d.obsPagina1 || '';
+      d.obsDiaPagina2 = d.obsPagina2 || '';
+      d.sigEnfermagemDia = d.sigEnfermagem || '';
+    }
+    return d;
+  }
+
+  function applySharedDailyToEnfermagemState(state, opts) {
+    const d = state || enfermagemState;
+    if (!d || !d.data || !window.SamuStorage.getSharedDailyChecklist) return d;
+    const replaceOtherShift = Boolean(opts && opts.replaceOtherShift);
+    const isNoite = d.turno === 'NOITE';
+
+    if (replaceOtherShift) {
+      if (isNoite) {
+        d.itensDia = {};
+        d.responsavelDiaNome = '';
+        d.responsavelDiaCoren = '';
+        d.obsDiaPagina1 = '';
+        d.obsDiaPagina2 = '';
+        d.sigEnfermagemDia = '';
+      } else {
+        d.itensNoite = {};
+        d.responsavelNoiteNome = '';
+        d.responsavelNoiteCoren = '';
+        d.obsNoitePagina1 = '';
+        d.obsNoitePagina2 = '';
+        d.sigEnfermagemNoite = '';
+      }
+    }
+
+    const shared = window.SamuStorage.getSharedDailyChecklist('enfermagem', d.data);
+    if (!shared) return d;
+
+    if (isNoite) {
+      if (shared.itensDia && Object.keys(shared.itensDia).length > 0) {
+        d.itensDia = Object.assign({}, shared.itensDia, d.itensDia || {});
+      }
+      if (shared.responsavelDiaNome && (!d.responsavelDiaNome || replaceOtherShift)) {
+        d.responsavelDiaNome = shared.responsavelDiaNome;
+      }
+      if (shared.responsavelDiaCoren && (!d.responsavelDiaCoren || replaceOtherShift)) {
+        d.responsavelDiaCoren = shared.responsavelDiaCoren;
+      }
+      if (shared.obsDiaPagina1 && (!d.obsDiaPagina1 || replaceOtherShift)) {
+        d.obsDiaPagina1 = shared.obsDiaPagina1;
+      }
+      if (shared.obsDiaPagina2 && (!d.obsDiaPagina2 || replaceOtherShift)) {
+        d.obsDiaPagina2 = shared.obsDiaPagina2;
+      }
+      if (shared.sigEnfermagemDia && (!d.sigEnfermagemDia || replaceOtherShift)) {
+        d.sigEnfermagemDia = shared.sigEnfermagemDia;
+      }
+    } else {
+      if (shared.itensNoite && Object.keys(shared.itensNoite).length > 0) {
+        d.itensNoite = Object.assign({}, shared.itensNoite, d.itensNoite || {});
+      }
+      if (shared.responsavelNoiteNome && (!d.responsavelNoiteNome || replaceOtherShift)) {
+        d.responsavelNoiteNome = shared.responsavelNoiteNome;
+      }
+      if (shared.responsavelNoiteCoren && (!d.responsavelNoiteCoren || replaceOtherShift)) {
+        d.responsavelNoiteCoren = shared.responsavelNoiteCoren;
+      }
+      if (shared.obsNoitePagina1 && (!d.obsNoitePagina1 || replaceOtherShift)) {
+        d.obsNoitePagina1 = shared.obsNoitePagina1;
+      }
+      if (shared.obsNoitePagina2 && (!d.obsNoitePagina2 || replaceOtherShift)) {
+        d.obsNoitePagina2 = shared.obsNoitePagina2;
+      }
+      if (shared.sigEnfermagemNoite && (!d.sigEnfermagemNoite || replaceOtherShift)) {
+        d.sigEnfermagemNoite = shared.sigEnfermagemNoite;
+      }
+    }
+    return d;
+  }
+
+  function isDaytimeChecklistWaitingNightPrint(record) {
+    if (!record || (record.type !== 'checklist_condutor' && record.type !== 'checklist_enfermagem')) return false;
+    const cfg = window.SamuStorage.getRemotePrintConfig ? window.SamuStorage.getRemotePrintConfig() : null;
+    if (!cfg || !cfg.autoPrintChecklists || cfg.checklistPrintShift === 'all') return false;
+    return !(window.SamuStorage.isNightShiftChecklist && window.SamuStorage.isNightShiftChecklist(record));
+  }
+
   function createEmptyCondutor() {
     const h = new Date().getHours();
     const isDiurno = (h >= 6 && h < 18);
@@ -461,6 +635,7 @@
       abastKm: '',
       abastAss: '',
       sigAbastecimento: '',
+      _abastFromShared: false,
       itensDiurno: {},
       itensNoturno: {},
       avariasDiurno: [],
@@ -470,25 +645,39 @@
       sigCondutorDiurno: isDiurno ? savedSig : '',
       sigCondutorNoturno: !isDiurno ? savedSig : ''
     };
-    return applySavedAvariasToCondutorState(blankCond, true);
+    applySavedAvariasToCondutorState(blankCond, true);
+    return applySharedDailyToCondutorState(blankCond, { replaceOtherShift: false });
   }
 
   function createEmptyEnfermagem() {
     const h = new Date().getHours();
     const isDia = (h >= 6 && h < 18);
     const savedSig = currentUser ? window.SamuStorage.getSavedSignature(currentUser.username) : '';
+    const uname = currentUser ? currentUser.name : '';
+    const ucoren = currentUser ? (currentUser.coren || currentUser.councilId || '') : '';
 
-    return {
+    const blankEnf = {
       data: todayISO(),
       turno: isDia ? 'DIA' : 'NOITE',
-      responsavelNome: currentUser ? currentUser.name : '',
-      responsavelCoren: currentUser ? (currentUser.coren || currentUser.councilId || '') : '',
+      responsavelNome: uname,
+      responsavelCoren: ucoren,
+      responsavelDiaNome: isDia ? uname : '',
+      responsavelDiaCoren: isDia ? ucoren : '',
+      responsavelNoiteNome: !isDia ? uname : '',
+      responsavelNoiteCoren: !isDia ? ucoren : '',
       itensDia: {},
       itensNoite: {},
       obsPagina1: '',
       obsPagina2: '',
-      sigEnfermagem: savedSig
+      obsDiaPagina1: '',
+      obsDiaPagina2: '',
+      obsNoitePagina1: '',
+      obsNoitePagina2: '',
+      sigEnfermagem: savedSig,
+      sigEnfermagemDia: isDia ? savedSig : '',
+      sigEnfermagemNoite: !isDia ? savedSig : ''
     };
+    return applySharedDailyToEnfermagemState(blankEnf, { replaceOtherShift: false });
   }
 
   /* ===================== VALIDAÇÃO OBRIGATÓRIA 100% DOS CHECK LISTS ===================== */
@@ -1047,6 +1236,13 @@
       if (!(await ensureChecklistCompleteBeforeAction(previewCurrentRecord, 'imprimir'))) return;
       await window.SamuPDF.printRecord(previewCurrentRecord, previewGeneratedPdf);
     });
+    const btnPreviewPrintBase = document.getElementById('btn-preview-print-base');
+    if (btnPreviewPrintBase) {
+      btnPreviewPrintBase.addEventListener('click', async () => {
+        if (!previewCurrentRecord) return;
+        await sendRecordToBasePrinter(previewCurrentRecord, previewGeneratedPdf, btnPreviewPrintBase);
+      });
+    }
     document.getElementById('btn-preview-drive').addEventListener('click', async () => {
       if (!previewCurrentRecord || !previewGeneratedPdf) return;
       if (!(await ensureChecklistCompleteBeforeAction(previewCurrentRecord, 'enviar ao Google Drive'))) return;
@@ -1078,6 +1274,20 @@
           previewCurrentRecord.isDraft = false;
           previewCurrentRecord.syncStatus = 'pending';
         }
+        if (previewCurrentRecord.type === 'checklist_condutor' && previewCurrentRecord.data) {
+          applySharedDailyToCondutorState(previewCurrentRecord.data, { replaceOtherShift: false });
+          if (window.SamuStorage.saveSharedDailyChecklist) {
+            await window.SamuStorage.saveSharedDailyChecklist('condutor', previewCurrentRecord.data, currentUser);
+          }
+          previewGeneratedPdf = await window.SamuPDF.generatePdfForRecord(previewCurrentRecord);
+        } else if (previewCurrentRecord.type === 'checklist_enfermagem' && previewCurrentRecord.data) {
+          syncActiveShiftFieldsInEnfermagem(previewCurrentRecord.data);
+          applySharedDailyToEnfermagemState(previewCurrentRecord.data, { replaceOtherShift: false });
+          if (window.SamuStorage.saveSharedDailyChecklist) {
+            await window.SamuStorage.saveSharedDailyChecklist('enfermagem', previewCurrentRecord.data, currentUser);
+          }
+          previewGeneratedPdf = await window.SamuPDF.generatePdfForRecord(previewCurrentRecord);
+        }
         const res = await window.SamuStorage.uploadRecordToDrive(previewCurrentRecord, previewGeneratedPdf.base64);
         const delAdmBtn = document.getElementById('btn-preview-delete-admin');
         if (delAdmBtn && currentUser && window.SamuStorage.isUserAdmin(currentUser)) {
@@ -1088,10 +1298,21 @@
         await refreshSyncBadge();
         if (activeTab === 'historico') renderHistoricoView();
         if (res.synced) {
-          document.getElementById('preview-drive-status').textContent = '✅ PDF salvo no Google Drive com sucesso!';
-          showToast('PDF enviado ao Google Drive!');
+          const waitingNight = !res.printQueued && isDaytimeChecklistWaitingNightPrint(previewCurrentRecord);
+          document.getElementById('preview-drive-status').textContent = res.printQueued
+            ? '✅ PDF salvo no Google Drive e enviado automaticamente para a Impressora da Base!'
+            : (waitingNight
+              ? '✅ Turno Diurno salvo no Google Drive! (Imprimirá automaticamente na Base quando o Noturno concluir a folha)'
+              : '✅ PDF salvo no Google Drive com sucesso!');
+          showToast(res.printQueued
+            ? '🖨️ PDF salvo no Drive e enviado p/ Impressora da Base!'
+            : (waitingNight
+              ? '☀️ Diurno salvo no Drive! Imprimirá na Base quando o Noturno concluir.'
+              : 'PDF enviado ao Google Drive!'));
         } else {
-          document.getElementById('preview-drive-status').textContent = '⏳ Sem sinal agora: salvo na fila para envio automático.';
+          document.getElementById('preview-drive-status').textContent = res.printPendingOffline
+            ? '⏳ Sem sinal agora: salvo na fila para enviar ao Drive e imprimir na Base automaticamente.'
+            : '⏳ Sem sinal agora: salvo na fila para envio automático.';
           showToast('Salvo na fila offline! Enviará assim que conectar.');
         }
       } finally {
@@ -1226,10 +1447,19 @@
           await pullAndApplyCrewFichaChanges({ fromNetwork: true });
           if (!editingCondutorId && condutorState) {
             applySavedAvariasToCondutorState(condutorState, false);
+            applySharedDailyToCondutorState(condutorState, { replaceOtherShift: false });
             if (activeTab === 'condutor') {
               const activeEl = document.activeElement;
               const isTyping = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA');
               if (!isTyping) renderCondutorView();
+            }
+          }
+          if (!editingEnfermagemId && enfermagemState) {
+            applySharedDailyToEnfermagemState(enfermagemState, { replaceOtherShift: false });
+            if (activeTab === 'enfermagem') {
+              const activeEl = document.activeElement;
+              const isTyping = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA');
+              if (!isTyping) renderEnfermagemView();
             }
           }
           await refreshDraftCount();
@@ -1259,12 +1489,23 @@
       ) {
         pullAndApplyCrewFichaChanges({ fromStorageEvent: true });
         refreshDraftCount();
-      } else if (ev.key === 'samu_viatura_avarias_v1' && !editingCondutorId && condutorState) {
-        applySavedAvariasToCondutorState(condutorState, true);
-        if (activeTab === 'condutor') {
-          const activeEl = document.activeElement;
-          const isTyping = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA');
-          if (!isTyping) renderCondutorView();
+      } else if (ev.key === 'samu_viatura_avarias_v1') {
+        if (!editingCondutorId && condutorState) {
+          applySavedAvariasToCondutorState(condutorState, true);
+          applySharedDailyToCondutorState(condutorState, { replaceOtherShift: false });
+          if (activeTab === 'condutor') {
+            const activeEl = document.activeElement;
+            const isTyping = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA');
+            if (!isTyping) renderCondutorView();
+          }
+        }
+        if (!editingEnfermagemId && enfermagemState) {
+          applySharedDailyToEnfermagemState(enfermagemState, { replaceOtherShift: false });
+          if (activeTab === 'enfermagem') {
+            const activeEl = document.activeElement;
+            const isTyping = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA');
+            if (!isTyping) renderEnfermagemView();
+          }
         }
       }
     });
@@ -3147,6 +3388,7 @@
                 </div>
                 <div style="display:flex; gap:6px; flex-wrap:wrap;">
                   ${r.data ? `<button type="button" class="btn btn-primary btn-sm" data-drv-preview="${escapeHtml(r.id)}">👁️ Ver PDF no App</button>` : ''}
+                  ${(r.driveUrl || r.driveFileId || r.data) ? `<button type="button" class="btn btn-outline btn-sm" style="border-color:#1d4ed8; color:#1d4ed8;" data-drv-print="${escapeHtml(r.id)}">🖨️ Imprimir na Base</button>` : ''}
                   ${r.driveUrl ? `<a href="${escapeHtml(r.driveUrl)}" target="_blank" class="btn btn-success btn-sm" style="text-decoration:none;">☁️ Abrir PDF Drive</a>` : `<span class="type-badge" style="background:#fef3c7;color:#92400e;">Pendente envio</span>`}
                 </div>
               </div>
@@ -3175,6 +3417,13 @@
           if (!rec) return;
           modal.classList.add('hidden');
           await openPdfPreviewModal(rec);
+        };
+      });
+      body.querySelectorAll('[data-drv-print]').forEach(btn => {
+        btn.onclick = async () => {
+          const rec = records.find(x => x.id === btn.dataset.drvPrint);
+          if (!rec) return;
+          await sendRecordToBasePrinter(rec, null, btn);
         };
       });
     };
@@ -3436,6 +3685,7 @@
     const draftCond = await window.SamuStorage.getDraft(user.username, 'checklist_condutor');
     condutorState = (draftCond && draftCond.data) ? Object.assign(createEmptyCondutor(), draftCond.data) : createEmptyCondutor();
     applySavedAvariasToCondutorState(condutorState, false);
+    applySharedDailyToCondutorState(condutorState, { replaceOtherShift: false });
     editingCondutorId = null;
     condutorValidationActive = false;
 
@@ -3445,6 +3695,8 @@
       if (!enfermagemState.responsavelNome) enfermagemState.responsavelNome = user.name;
       if (!enfermagemState.responsavelCoren && userCoren) enfermagemState.responsavelCoren = userCoren;
     }
+    syncActiveShiftFieldsInEnfermagem(enfermagemState);
+    applySharedDailyToEnfermagemState(enfermagemState, { replaceOtherShift: false });
     editingEnfermagemId = null;
     enfermagemValidationActive = false;
 
@@ -3600,6 +3852,29 @@
       btn.addEventListener('click', () => {
         if (crewDirtySinceLastPush) flushCrewCloudPushNow();
         activeTab = btn.dataset.tab;
+        if (activeTab === 'condutor' && !editingCondutorId && condutorState) {
+          applySharedDailyToCondutorState(condutorState, { replaceOtherShift: false });
+          if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
+            window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: false }).then(() => {
+              if (activeTab === 'condutor' && !editingCondutorId && condutorState) {
+                applySharedDailyToCondutorState(condutorState, { replaceOtherShift: false });
+                const ae = document.activeElement;
+                if (!ae || (ae.tagName !== 'INPUT' && ae.tagName !== 'TEXTAREA')) renderCondutorView();
+              }
+            }).catch(() => {});
+          }
+        } else if (activeTab === 'enfermagem' && !editingEnfermagemId && enfermagemState) {
+          applySharedDailyToEnfermagemState(enfermagemState, { replaceOtherShift: false });
+          if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
+            window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: false }).then(() => {
+              if (activeTab === 'enfermagem' && !editingEnfermagemId && enfermagemState) {
+                applySharedDailyToEnfermagemState(enfermagemState, { replaceOtherShift: false });
+                const ae = document.activeElement;
+                if (!ae || (ae.tagName !== 'INPUT' && ae.tagName !== 'TEXTAREA')) renderEnfermagemView();
+              }
+            }).catch(() => {});
+          }
+        }
         renderBottomNav();
         renderActiveView();
         window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -6039,11 +6314,17 @@
   function renderCondutorView() {
     const container = document.getElementById('main-view');
     const d = condutorState;
+    if (!editingCondutorId) {
+      applySharedDailyToCondutorState(d, { replaceOtherShift: false });
+    }
     const isDiurno = d.turnoAtivo === 'DIURNO';
     const itensMap = isDiurno ? d.itensDiurno : d.itensNoturno;
     const avariasArr = isDiurno ? d.avariasDiurno : d.avariasNoturno;
     const allItems = window.SAMU_SCHEMA.condutorLeftItems.concat(window.SAMU_SCHEMA.condutorRightItems);
     const filledCount = allItems.filter(it => Boolean(String(itensMap[it.id] || '').trim())).length;
+    const diurnoLoadedCount = allItems.filter(it => Boolean(String((d.itensDiurno || {})[it.id] || '').trim())).length;
+    const printCfg = window.SamuStorage.getRemotePrintConfig ? window.SamuStorage.getRemotePrintConfig() : { autoPrintChecklists: true, checklistPrintShift: 'noturno_only' };
+    const isNoturnoOnlyPrint = Boolean(printCfg.autoPrintChecklists && printCfg.checklistPrintShift !== 'all');
 
     const val = validateCondutorChecklist(d);
     if (condutorValidationActive && val.valid) {
@@ -6051,6 +6332,20 @@
     }
     const showErr = condutorValidationActive && !val.valid;
     const abastStatus = getCondutorAbastStatus(d);
+
+    const shiftPrintBannerHtml = isNoturnoOnlyPrint
+      ? (isDiurno
+        ? `<div style="background:#eff6ff; border:1.5px solid #93c5fd; border-radius:10px; padding:8px 11px; margin-bottom:10px; font-size:0.8rem; color:#1e3a8a; line-height:1.35;">
+            ☀️ <strong>Plantão Diurno:</strong> ao salvar e enviar, sua conferência fica arquivada no Google Drive e sincronizada para o <strong>Plantão Noturno</strong> completar a mesma folha. <strong>A impressão automática na Base ocorre à noite</strong> quando o Check List fica 100% preenchido.
+          </div>`
+        : (diurnoLoadedCount > 0
+          ? `<div style="background:#f0fdf4; border:1.5px solid #86efac; border-radius:10px; padding:8px 11px; margin-bottom:10px; font-size:0.8rem; color:#14532d; line-height:1.35;">
+              🌙 <strong>Folha Completa (Diurno + Noturno):</strong> os dados do turno Diurno${d.condutorDiurno ? ` (<strong>${escapeHtml(d.condutorDiurno)}</strong>)` : ''} já estão carregados nesta folha (${diurnoLoadedCount}/${allItems.length} itens)! Ao enviar ao Google Drive, o <strong>PDF completo será impresso automaticamente na Base SAMU</strong>.
+            </div>`
+          : `<div style="background:#fefce8; border:1.5px solid #fde047; border-radius:10px; padding:8px 11px; margin-bottom:10px; font-size:0.8rem; color:#854d0e; line-height:1.35;">
+              🌙 <strong>Plantão Noturno:</strong> ao salvar e enviar ao Google Drive, este Check List será <strong>enviado automaticamente para impressão na Base SAMU</strong>.
+            </div>`))
+      : '';
 
     container.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
@@ -6062,6 +6357,8 @@
       </div>
 
       ${renderQuickDraftBarHtml('condutor')}
+
+      ${shiftPrintBannerHtml}
 
       <div id="cond-validation-banner-slot">${showErr ? renderChecklistValidationBannerHtml(val) : ''}</div>
 
@@ -6294,17 +6591,37 @@
       condutorState.viaturaId = keepViatura;
       condutorState.outraPlaca = keepOutraPlaca;
       applySavedAvariasToCondutorState(condutorState, true);
+      applySharedDailyToCondutorState(condutorState, { replaceOtherShift: true });
       await window.SamuStorage.clearDraft(currentUser.username, 'checklist_condutor');
       renderCondutorView();
     });
 
-    document.getElementById('cond-data').addEventListener('input', e => { d.data = e.target.value; saveCondDraft(); refreshCondValidationInPlace(); });
+    document.getElementById('cond-data').addEventListener('input', e => {
+      d.data = e.target.value;
+      saveCondDraft();
+      refreshCondValidationInPlace();
+    });
+    document.getElementById('cond-data').addEventListener('change', () => {
+      if (!editingCondutorId) {
+        applySharedDailyToCondutorState(d, { replaceOtherShift: true });
+        saveCondDraft();
+        renderCondutorView();
+      }
+    });
     document.getElementById('cond-turno').addEventListener('change', e => {
       d.turnoAtivo = e.target.value;
-      if (d.turnoAtivo === 'DIURNO' && !d.condutorDiurno && currentUser) d.condutorDiurno = currentUser.name;
-      if (d.turnoAtivo === 'NOTURNO' && !d.condutorNoturno && currentUser) d.condutorNoturno = currentUser.name;
+      const mySavedSig = currentUser ? (window.SamuStorage.getSavedSignature(currentUser.username) || '') : '';
+      if (d.turnoAtivo === 'DIURNO' && currentUser) {
+        if (!d.condutorDiurno) d.condutorDiurno = currentUser.name;
+        if (!d.sigCondutorDiurno && mySavedSig) d.sigCondutorDiurno = mySavedSig;
+      }
+      if (d.turnoAtivo === 'NOTURNO' && currentUser) {
+        if (!d.condutorNoturno) d.condutorNoturno = currentUser.name;
+        if (!d.sigCondutorNoturno && mySavedSig) d.sigCondutorNoturno = mySavedSig;
+      }
       if (!editingCondutorId) {
         applySavedAvariasToCondutorState(d, true);
+        applySharedDailyToCondutorState(d, { replaceOtherShift: false });
       }
       saveCondDraft();
       renderCondutorView();
@@ -6315,6 +6632,7 @@
         d.viaturaId = btn.dataset.viatura;
         if (!editingCondutorId) {
           applySavedAvariasToCondutorState(d, true);
+          applySharedDailyToCondutorState(d, { replaceOtherShift: true });
         }
         saveCondDraft();
         renderCondutorView();
@@ -6331,6 +6649,7 @@
       outraInp.addEventListener('change', () => {
         if (!editingCondutorId) {
           applySavedAvariasToCondutorState(d, true);
+          applySharedDailyToCondutorState(d, { replaceOtherShift: true });
           saveCondDraft();
           renderCondutorView();
         }
@@ -6344,6 +6663,7 @@
       btn.addEventListener('click', () => {
         const choice = btn.dataset.abastChoice;
         d.abastRealizado = choice;
+        d._abastFromShared = false;
         if (choice === 'NAO') {
           d.abastLitros = '';
           d.abastHora = '';
@@ -6361,13 +6681,14 @@
     const abastKm = document.getElementById('cond-abast-km');
     const btnAbastHoraNow = document.getElementById('btn-abast-hora-now');
     const abastSigBox = document.getElementById('cond-abast-sig-box');
-    if (abastL) abastL.addEventListener('input', e => { d.abastRealizado = 'SIM'; d.abastLitros = e.target.value; saveCondDraft(); refreshCondValidationInPlace(); });
-    if (abastH) abastH.addEventListener('input', e => { d.abastRealizado = 'SIM'; d.abastHora = e.target.value; saveCondDraft(); refreshCondValidationInPlace(); });
-    if (abastKm) abastKm.addEventListener('input', e => { d.abastRealizado = 'SIM'; d.abastKm = e.target.value; saveCondDraft(); refreshCondValidationInPlace(); });
+    if (abastL) abastL.addEventListener('input', e => { d.abastRealizado = 'SIM'; d._abastFromShared = false; d.abastLitros = e.target.value; saveCondDraft(); refreshCondValidationInPlace(); });
+    if (abastH) abastH.addEventListener('input', e => { d.abastRealizado = 'SIM'; d._abastFromShared = false; d.abastHora = e.target.value; saveCondDraft(); refreshCondValidationInPlace(); });
+    if (abastKm) abastKm.addEventListener('input', e => { d.abastRealizado = 'SIM'; d._abastFromShared = false; d.abastKm = e.target.value; saveCondDraft(); refreshCondValidationInPlace(); });
     if (btnAbastHoraNow && abastH) {
       btnAbastHoraNow.addEventListener('click', () => {
         const t = nowHHMM();
         d.abastRealizado = 'SIM';
+        d._abastFromShared = false;
         d.abastHora = t;
         abastH.value = t;
         saveCondDraft();
@@ -6385,6 +6706,7 @@
           username: currentUser ? currentUser.username : ''
         }, (dataUrl) => {
           d.abastRealizado = 'SIM';
+          d._abastFromShared = false;
           d.sigAbastecimento = dataUrl;
           saveCondDraft();
           renderCondutorView();
@@ -6528,6 +6850,9 @@
     };
 
     document.getElementById('btn-preview-condutor').addEventListener('click', async () => {
+      if (!editingCondutorId) {
+        applySharedDailyToCondutorState(d, { replaceOtherShift: false });
+      }
       await openPdfPreviewModal(buildCondRecord(editingCondutorId || uid('ckcond')));
     });
 
@@ -6548,6 +6873,10 @@
       btn.disabled = true;
       btn.textContent = 'Gerando PDF e Salvando...';
       try {
+        if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
+          await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: false }).catch(() => {});
+        }
+        applySharedDailyToCondutorState(d, { replaceOtherShift: false });
         if (window.SamuStorage.saveViaturaAvarias) {
           window.SamuStorage.saveViaturaAvarias(
             d.viaturaId || 'master_29',
@@ -6555,6 +6884,9 @@
             isDiurno ? d.avariasDiurno : d.avariasNoturno,
             currentUser ? currentUser.username : ''
           );
+        }
+        if (window.SamuStorage.saveSharedDailyChecklist) {
+          await window.SamuStorage.saveSharedDailyChecklist('condutor', d, currentUser);
         }
         const keepViatura = d.viaturaId || 'master_29';
         const keepOutraPlaca = d.outraPlaca || '';
@@ -6572,6 +6904,7 @@
         condutorState.viaturaId = keepViatura;
         condutorState.outraPlaca = keepOutraPlaca;
         applySavedAvariasToCondutorState(condutorState, true);
+        applySharedDailyToCondutorState(condutorState, { replaceOtherShift: false });
         await refreshDraftCount();
         await refreshSyncBadge();
         await openPdfPreviewModal(record, generated, upRes);
@@ -6591,6 +6924,9 @@
   function renderEnfermagemView() {
     const container = document.getElementById('main-view');
     const d = enfermagemState;
+    if (!editingEnfermagemId) {
+      applySharedDailyToEnfermagemState(d, { replaceOtherShift: false });
+    }
     const isDia = d.turno === 'DIA';
     const targetMap = isDia ? d.itensDia : d.itensNoite;
     const sections = window.SAMU_SCHEMA.enfermagemSections;
@@ -6599,12 +6935,29 @@
 
     const totalAll = sections.reduce((acc, s) => acc + s.items.length, 0);
     const doneAll = sections.reduce((acc, s) => acc + s.items.filter(i => Boolean(String(targetMap[i.id] || '').trim())).length, 0);
+    const diaLoadedCount = sections.reduce((acc, s) => acc + s.items.filter(i => Boolean(String((d.itensDia || {})[i.id] || '').trim())).length, 0);
+    const printCfg = window.SamuStorage.getRemotePrintConfig ? window.SamuStorage.getRemotePrintConfig() : { autoPrintChecklists: true, checklistPrintShift: 'noturno_only' };
+    const isNoturnoOnlyPrint = Boolean(printCfg.autoPrintChecklists && printCfg.checklistPrintShift !== 'all');
 
     const val = validateEnfermagemChecklist(d);
     if (enfermagemValidationActive && val.valid) {
       enfermagemValidationActive = false;
     }
     const showErr = enfermagemValidationActive && !val.valid;
+
+    const enfShiftPrintBannerHtml = isNoturnoOnlyPrint
+      ? (isDia
+        ? `<div style="background:#eff6ff; border:1.5px solid #93c5fd; border-radius:10px; padding:8px 11px; margin-bottom:10px; font-size:0.8rem; color:#1e3a8a; line-height:1.35;">
+            ☀️ <strong>Plantão Diurno (CK DIA):</strong> ao salvar e enviar, sua conferência fica arquivada no Google Drive e sincronizada para o <strong>CK NOITE</strong> completar a mesma folha. <strong>A impressão automática na Base ocorre à noite</strong> quando a folha fica 100% preenchida.
+          </div>`
+        : (diaLoadedCount > 0
+          ? `<div style="background:#f0fdf4; border:1.5px solid #86efac; border-radius:10px; padding:8px 11px; margin-bottom:10px; font-size:0.8rem; color:#14532d; line-height:1.35;">
+              🌙 <strong>Folha Completa (CK DIA + CK NOITE):</strong> a conferência do CK DIA${d.responsavelDiaNome ? ` (<strong>${escapeHtml(d.responsavelDiaNome)}</strong>)` : ''} já está carregada nesta folha (${diaLoadedCount}/${totalAll} materiais)! Ao enviar ao Google Drive, o <strong>PDF completo será impresso automaticamente na Base SAMU</strong>.
+            </div>`
+          : `<div style="background:#fefce8; border:1.5px solid #fde047; border-radius:10px; padding:8px 11px; margin-bottom:10px; font-size:0.8rem; color:#854d0e; line-height:1.35;">
+              🌙 <strong>Plantão Noturno (CK NOITE):</strong> ao salvar e enviar ao Google Drive, este Check List será <strong>enviado automaticamente para impressão na Base SAMU</strong>.
+            </div>`))
+      : '';
 
     container.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
@@ -6619,6 +6972,8 @@
       </div>
 
       ${renderQuickDraftBarHtml('enfermagem')}
+
+      ${enfShiftPrintBannerHtml}
 
       <div id="enf-validation-banner-slot">${showErr ? renderChecklistValidationBannerHtml(val) : ''}</div>
 
@@ -6779,14 +7134,50 @@
       });
     };
 
-    document.getElementById('enf-data').addEventListener('input', e => { d.data = e.target.value; saveEnfDraft(); refreshEnfValidationAndCountersInPlace(); });
-    document.getElementById('enf-turno').addEventListener('change', e => { d.turno = e.target.value; saveEnfDraft(); renderEnfermagemView(); });
-    document.getElementById('enf-nome').addEventListener('input', e => { d.responsavelNome = e.target.value; saveEnfDraft(); refreshEnfValidationAndCountersInPlace(); });
-    document.getElementById('enf-coren').addEventListener('input', e => { d.responsavelCoren = e.target.value; saveEnfDraft(); refreshEnfValidationAndCountersInPlace(); });
+    document.getElementById('enf-data').addEventListener('input', e => {
+      d.data = e.target.value;
+      saveEnfDraft();
+      refreshEnfValidationAndCountersInPlace();
+    });
+    document.getElementById('enf-data').addEventListener('change', () => {
+      if (!editingEnfermagemId) {
+        applySharedDailyToEnfermagemState(d, { replaceOtherShift: true });
+        saveEnfDraft();
+        renderEnfermagemView();
+      }
+    });
+    document.getElementById('enf-turno').addEventListener('change', e => {
+      syncActiveShiftFieldsInEnfermagem(d);
+      d.turno = e.target.value;
+      const myName = currentUser ? currentUser.name : '';
+      const myCoren = currentUser ? (currentUser.coren || currentUser.councilId || '') : '';
+      const mySig = currentUser ? (window.SamuStorage.getSavedSignature(currentUser.username) || '') : '';
+      if (d.turno === 'NOITE') {
+        d.responsavelNome = d.responsavelNoiteNome || myName;
+        d.responsavelCoren = d.responsavelNoiteCoren || myCoren;
+        d.obsPagina1 = d.obsNoitePagina1 || '';
+        d.obsPagina2 = d.obsNoitePagina2 || '';
+        d.sigEnfermagem = d.sigEnfermagemNoite || mySig;
+      } else {
+        d.responsavelNome = d.responsavelDiaNome || myName;
+        d.responsavelCoren = d.responsavelDiaCoren || myCoren;
+        d.obsPagina1 = d.obsDiaPagina1 || '';
+        d.obsPagina2 = d.obsDiaPagina2 || '';
+        d.sigEnfermagem = d.sigEnfermagemDia || mySig;
+      }
+      syncActiveShiftFieldsInEnfermagem(d);
+      if (!editingEnfermagemId) {
+        applySharedDailyToEnfermagemState(d, { replaceOtherShift: false });
+      }
+      saveEnfDraft();
+      renderEnfermagemView();
+    });
+    document.getElementById('enf-nome').addEventListener('input', e => { d.responsavelNome = e.target.value; syncActiveShiftFieldsInEnfermagem(d); saveEnfDraft(); refreshEnfValidationAndCountersInPlace(); });
+    document.getElementById('enf-coren').addEventListener('input', e => { d.responsavelCoren = e.target.value; syncActiveShiftFieldsInEnfermagem(d); saveEnfDraft(); refreshEnfValidationAndCountersInPlace(); });
     const obs1Inp = document.getElementById('enf-obs-1');
     const obs2Inp = document.getElementById('enf-obs-2');
-    obs1Inp.addEventListener('input', e => { d.obsPagina1 = e.target.value; saveEnfDraft(); refreshEnfValidationAndCountersInPlace(); });
-    obs2Inp.addEventListener('input', e => { d.obsPagina2 = e.target.value; saveEnfDraft(); refreshEnfValidationAndCountersInPlace(); });
+    obs1Inp.addEventListener('input', e => { d.obsPagina1 = e.target.value; syncActiveShiftFieldsInEnfermagem(d); saveEnfDraft(); refreshEnfValidationAndCountersInPlace(); });
+    obs2Inp.addEventListener('input', e => { d.obsPagina2 = e.target.value; syncActiveShiftFieldsInEnfermagem(d); saveEnfDraft(); refreshEnfValidationAndCountersInPlace(); });
 
     container.querySelectorAll('[data-enf-quick-obs]').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -6800,6 +7191,7 @@
           d.obsPagina2 = cur || 'Sem alterações.';
           obs2Inp.value = d.obsPagina2;
         }
+        syncActiveShiftFieldsInEnfermagem(d);
         saveEnfDraft();
         refreshEnfValidationAndCountersInPlace();
         showToast('Observação preenchida: Sem alterações.');
@@ -6895,6 +7287,7 @@
         username: currentUser ? currentUser.username : ''
       }, (dataUrl) => {
         d.sigEnfermagem = dataUrl;
+        syncActiveShiftFieldsInEnfermagem(d);
         saveEnfDraft();
         renderEnfermagemView();
       });
@@ -6922,6 +7315,10 @@
     });
 
     document.getElementById('btn-preview-enf').addEventListener('click', async () => {
+      syncActiveShiftFieldsInEnfermagem(d);
+      if (!editingEnfermagemId) {
+        applySharedDailyToEnfermagemState(d, { replaceOtherShift: false });
+      }
       await openPdfPreviewModal(buildEnfRecord(editingEnfermagemId || uid('ckenf')));
     });
 
@@ -6945,6 +7342,14 @@
       btn.disabled = true;
       btn.textContent = 'Gerando PDF e Salvando...';
       try {
+        if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
+          await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: false }).catch(() => {});
+        }
+        syncActiveShiftFieldsInEnfermagem(d);
+        applySharedDailyToEnfermagemState(d, { replaceOtherShift: false });
+        if (window.SamuStorage.saveSharedDailyChecklist) {
+          await window.SamuStorage.saveSharedDailyChecklist('enfermagem', d, currentUser);
+        }
         const recId = editingEnfermagemId || uid('ckenf');
         const existing = editingEnfermagemId ? await window.SamuStorage.getRecordById(editingEnfermagemId) : null;
         const record = buildEnfRecord(recId, existing);
@@ -7105,6 +7510,17 @@
       btn.addEventListener('click', async () => {
         const rec = await window.SamuStorage.getRecordById(btn.dataset.hPdf);
         if (rec) await openPdfPreviewModal(rec);
+      });
+    });
+
+    container.querySelectorAll('[data-h-print-base]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const rec = await window.SamuStorage.getRecordById(btn.dataset.hPrintBase);
+        if (!rec) return;
+        const ok = await sendRecordToBasePrinter(rec, null, btn);
+        if (ok && activeTab === 'historico') {
+          renderHistoricoView();
+        }
       });
     });
 
@@ -7274,12 +7690,28 @@
     const dateParts = String(rec.date || '').split('-');
     const dateBR = dateParts.length === 3 ? `${dateParts[2]}/${dateParts[1]}/${dateParts[0]}` : rec.date;
 
+    const printJob = (!isDraft && window.SamuStorage.getRecordPrintStatus)
+      ? window.SamuStorage.getRecordPrintStatus(rec.id)
+      : null;
+    let printBadgeHtml = '';
+    if (!isDraft) {
+      if (printJob && printJob.status === 'printed') {
+        printBadgeHtml = `<span class="type-badge" style="background:#dbeafe; color:#1e40af;" title="Impresso na Base${printJob.printerName ? ' (' + escapeHtml(printJob.printerName) + ')' : ''}">🖨️ Impresso na Base</span>`;
+      } else if ((printJob && printJob.status === 'pending') || rec.pendingAutoPrint) {
+        printBadgeHtml = `<span class="type-badge" style="background:#fef3c7; color:#92400e;">⏳ Fila Impressora Base</span>`;
+      } else if (printJob && printJob.status === 'error') {
+        printBadgeHtml = `<span class="type-badge" style="background:#fee2e2; color:#991b1b;" title="${escapeHtml(printJob.errorMsg || 'Erro ao imprimir')}">⚠️ Erro Impressão Base</span>`;
+      }
+    }
+    const printBtnLabel = (printJob && printJob.status === 'printed') ? '🖨️ Reimprimir na Base' : '🖨️ Imprimir na Base';
+
     return `
       <div class="history-card">
         <div class="history-top">
           <div style="display:flex; gap:6px; flex-wrap:wrap;">
             <span class="type-badge ${badgeClass}">${badgeText}</span>
             ${riskBadge}
+            ${printBadgeHtml}
           </div>
           <span class="status-tag ${statusCls}">
             ${statusLabel}
@@ -7296,7 +7728,8 @@
         </div>
         <div class="history-actions">
           <button type="button" class="btn btn-outline btn-sm" data-h-edit="${escapeHtml(rec.id)}">${isDraft ? '✏️ Continuar Preenchimento' : '✏️ Abrir / Editar'}</button>
-          <button type="button" class="btn btn-primary btn-sm" data-h-pdf="${escapeHtml(rec.id)}">📄 Gerar / Imprimir PDF</button>
+          <button type="button" class="btn btn-primary btn-sm" data-h-pdf="${escapeHtml(rec.id)}">📄 Gerar / Ver PDF</button>
+          ${!isDraft ? `<button type="button" class="btn btn-outline btn-sm" style="border-color:#1d4ed8; color:#1d4ed8;" data-h-print-base="${escapeHtml(rec.id)}">${printBtnLabel}</button>` : ''}
           ${rec.type === 'ficha' ? `<button type="button" class="btn btn-whatsapp btn-sm" data-h-reg="${escapeHtml(rec.id)}">📲 Cabeçalho Regulação</button>` : ''}
           ${rec.driveUrl ? `<a href="${escapeHtml(rec.driveUrl)}" target="_blank" rel="noopener" class="btn btn-success btn-sm" style="text-decoration:none;">☁️ Ver no Google Drive</a>` : ''}
           ${isAdmin
@@ -7768,6 +8201,80 @@
     const medicosRegCount = medicosList.length;
     const patientsCount = patientsList.length;
     const ghMeta = window.SamuStorage.getGitHubMeta();
+    const printCfg = window.SamuStorage.getRemotePrintConfig
+      ? window.SamuStorage.getRemotePrintConfig()
+      : { autoPrintFichas: true, autoPrintChecklists: true, duplexMode: 'duplex', copies: 1 };
+    const printAgent = window.SamuStorage.getRemotePrintAgentStatus
+      ? window.SamuStorage.getRemotePrintAgentStatus()
+      : { configured: false, isOnline: false };
+    const printQueue = window.SamuStorage.getRemotePrintQueue
+      ? window.SamuStorage.getRemotePrintQueue().slice(0, 12)
+      : [];
+
+    const buildPrintAgentBannerHtml = () => {
+      if (printAgent.isOnline) {
+        const dupTag = printAgent.canDuplex ? 'Frente e Verso Ativo' : 'Apenas Frente';
+        return `
+          <div style="background:#dcfce7; border:1.5px solid #86efac; color:#14532d; border-radius:10px; padding:10px 12px; font-size:0.82rem; font-weight:700; margin-bottom:12px;">
+            🟢 <strong>PC da Base Conectado:</strong> ${escapeHtml(printAgent.pcName)} • <strong>Impressora:</strong> ${escapeHtml(printAgent.printerName || 'Padrão do Windows')} (${dupTag})
+            <br><span style="font-weight:600; font-size:0.78rem;">Impressos hoje na Base: <strong>${printAgent.printedCountToday}</strong>${printAgent.lastPrintedTitle ? ` • Último: ${escapeHtml(printAgent.lastPrintedTitle)}` : ''}</span>
+          </div>
+        `;
+      }
+      if (printAgent.configured) {
+        const lastContact = printAgent.updatedAt ? new Date(printAgent.updatedAt).toLocaleString('pt-BR') : '-';
+        const pausedNote = printAgent.status === 'paused' ? ' (Fila pausada localmente no PC da Base)' : '';
+        return `
+          <div style="background:#fef3c7; border:1.5px solid #fcd34d; color:#92400e; border-radius:10px; padding:10px 12px; font-size:0.81rem; font-weight:700; margin-bottom:12px;">
+            🟠 <strong>Servidor do PC da Base sem resposta recente${pausedNote}:</strong> ${escapeHtml(printAgent.pcName)} (${escapeHtml(printAgent.printerName || 'Impressora')}) • Último sinal: ${escapeHtml(lastContact)}
+            <br><span style="font-weight:600; font-size:0.77rem;">Os PDFs enviados pelos celulares ficam guardados na fila da nuvem e imprimem sozinhos assim que o PC da Base ligar!</span>
+          </div>
+        `;
+      }
+      return `
+        <div style="background:#eff6ff; border:1.5px solid #bfdbfe; color:#1e3a8a; border-radius:10px; padding:10px 12px; font-size:0.81rem; font-weight:700; margin-bottom:12px;">
+          🔵 <strong>Como ativar no PC da Base (1 única vez):</strong> execute o arquivo <code>INSTALAR_IMPRESSORA_BASE_SAMU.bat</code> no computador Windows ligado na impressora da Base SAMU. Ele inicia sozinho com o Windows e já puxa todas as impressões enviadas pelo 4G/Wi-Fi!
+        </div>
+      `;
+    };
+
+    const buildPrintQueueListHtml = () => {
+      if (!printQueue.length) {
+        return `<div style="padding:12px; text-align:center; color:var(--muted); font-size:0.81rem;">Nenhuma impressão recente na fila da Base ainda.</div>`;
+      }
+      return printQueue.map(j => {
+        let badge = `<span class="type-badge" style="background:#fef3c7; color:#92400e;">⏳ Aguardando Base</span>`;
+        if (j.status === 'printed') {
+          const hm = j.printedAt ? new Date(j.printedAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : '';
+          badge = `<span class="type-badge" style="background:#dcfce7; color:#14532d;">✅ Impresso${hm ? ' às ' + hm : ''}</span>`;
+        } else if (j.status === 'error') {
+          badge = `<span class="type-badge" style="background:#fee2e2; color:#991b1b;">⚠️ Falha</span>`;
+        } else if (j.status === 'cancelled') {
+          badge = `<span class="type-badge" style="background:#e2e8f0; color:#475569;">🚫 Cancelado</span>`;
+        }
+        const whenStr = j.createdAt ? new Date(j.createdAt).toLocaleString('pt-BR') : (j.date || '');
+        const whoStr = j.requestedByName || j.requestedBy || '';
+        return `
+          <div class="check-item-row" style="flex-wrap:wrap; gap:8px; padding:7px 4px;">
+            <div class="check-item-info">
+              ${badge}
+              <strong style="margin-left:4px;">${escapeHtml(j.title || 'Documento SAMU')}</strong>
+              <br>
+              <small style="color:var(--muted);">
+                ${escapeHtml(whenStr)}${whoStr ? ` • Por: ${escapeHtml(whoStr)}` : ''}
+                ${j.printerName ? ` • Impressora: ${escapeHtml(j.printerName)}` : ''}
+                ${j.duplexMode === 'simplex' ? ' • Folhas Separadas' : ' • Frente e Verso'}
+                ${j.errorMsg ? `<br><span style="color:#b91c1c; font-weight:700;">Motivo: ${escapeHtml(j.errorMsg)}</span>` : ''}
+              </small>
+            </div>
+            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+              ${j.status !== 'pending' ? `<button type="button" class="btn btn-outline btn-sm" data-pjob-retry="${escapeHtml(j.jobId)}">🔄 Reimprimir</button>` : ''}
+              ${j.status === 'pending' ? `<button type="button" class="btn btn-secondary btn-sm" data-pjob-cancel="${escapeHtml(j.jobId)}">✖ Cancelar</button>` : ''}
+            </div>
+          </div>
+        `;
+      }).join('');
+    };
 
     const buildCatalogListHtml = () => {
       const q = normStr(adminCatalogSearch.trim());
@@ -7921,6 +8428,65 @@
           <button type="button" class="btn btn-primary btn-sm" id="btn-adm-test-drive">🔌 Testar e Salvar Conexão Drive</button>
           <button type="button" class="btn btn-success btn-sm" id="btn-adm-open-folders">📁 Abrir Pasta Google Drive</button>
           <button type="button" class="btn btn-orange btn-sm" id="btn-adm-open-sheet">📊 Abrir Planilha de Controle</button>
+        </div>
+      </div>
+
+      <div class="card" id="adm-remote-print-card">
+        <div class="card-title"><span>🖨️ Impressão Automática na Base SAMU (De Qualquer Lugar via 4G / Wi-Fi)</span></div>
+        <p style="margin:0 0 10px; font-size:0.83rem; color:var(--muted);">
+          Envia todas as Fichas e Check Lists automaticamente pela internet (mesmo no 4G na rua, sem abrir portas no roteador) para a impressora conectada ao computador Windows da Base SAMU.
+        </p>
+
+        ${buildPrintAgentBannerHtml()}
+
+        <div style="display:flex; flex-direction:column; gap:8px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px; padding:10px 12px; margin-bottom:10px;">
+          <label style="display:flex; align-items:center; gap:8px; font-size:0.84rem; font-weight:700; color:#0f172a; cursor:pointer;">
+            <input type="checkbox" id="adm-prt-auto-ficha" autocomplete="off" style="width:18px; height:18px;" ${printCfg.autoPrintFichas ? 'checked' : ''} />
+            <span>📋 Imprimir <strong>Fichas de Atendimento</strong> automaticamente na Base ao enviar p/ o Google Drive</span>
+          </label>
+          <label style="display:flex; align-items:center; gap:8px; font-size:0.84rem; font-weight:700; color:#0f172a; cursor:pointer;">
+            <input type="checkbox" id="adm-prt-auto-ck" autocomplete="off" style="width:18px; height:18px;" ${printCfg.autoPrintChecklists ? 'checked' : ''} />
+            <span>🚑🩺 Imprimir <strong>Check Lists (Condutor e Enfermagem)</strong> automaticamente na Base ao enviar p/ o Google Drive</span>
+          </label>
+          <div class="field" style="margin:2px 0 0 26px;">
+            <label style="font-size:0.78rem; color:#334155;">Turno que dispara a impressão automática dos Check Lists na Base</label>
+            <select id="adm-prt-ck-shift" autocomplete="off">
+              <option value="noturno_only" ${printCfg.checklistPrintShift !== 'all' ? 'selected' : ''}>🌙 Somente quando o Plantão Noturno / CK Noite enviar (Folha 100% preenchida Dia + Noite)</option>
+              <option value="all" ${printCfg.checklistPrintShift === 'all' ? 'selected' : ''}>☀️🌙 Imprimir nos dois turnos separadamente (Diurno e Noturno)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="field">
+            <label>Modo das 2 Páginas A4 na Impressora da Base</label>
+            <select id="adm-prt-duplex" autocomplete="off">
+              <option value="duplex" ${printCfg.duplexMode !== 'simplex' ? 'selected' : ''}>🔄 Frente e Verso Automático (quando a impressora suportar)</option>
+              <option value="simplex" ${printCfg.duplexMode === 'simplex' ? 'selected' : ''}>📄 2 Folhas Separadas (Apenas Frente)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Quantidade de Cópias por Envio</label>
+            <select id="adm-prt-copies" autocomplete="off">
+              <option value="1" ${Number(printCfg.copies) === 1 ? 'selected' : ''}>1 cópia</option>
+              <option value="2" ${Number(printCfg.copies) === 2 ? 'selected' : ''}>2 cópias</option>
+              <option value="3" ${Number(printCfg.copies) === 3 ? 'selected' : ''}>3 cópias</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px;">
+          <button type="button" class="btn btn-success btn-sm" id="btn-adm-save-print-cfg">💾 Salvar Config. de Impressão</button>
+          <button type="button" class="btn btn-primary btn-sm" id="btn-adm-test-print-base" style="background:#1d4ed8; border-color:#1d4ed8;">🖨️ Imprimir Página de Teste na Base</button>
+          <button type="button" class="btn btn-orange btn-sm" id="btn-adm-dl-print-bat">💻 Baixar Instalador p/ PC da Base (.BAT)</button>
+          <button type="button" class="btn btn-outline btn-sm" id="btn-adm-refresh-print-queue">🔄 Atualizar Fila</button>
+        </div>
+
+        <div style="font-size:0.79rem; font-weight:800; color:#334155; margin-bottom:6px;">
+          📄 Fila Recente de Impressão da Base (${printQueue.length})
+        </div>
+        <div style="max-height:250px; overflow-y:auto; border:1px solid #e2e8f0; border-radius:10px; padding:4px 10px;">
+          ${buildPrintQueueListHtml()}
         </div>
       </div>
 
@@ -8210,6 +8776,164 @@
       btnOpenSheet.addEventListener('click', () => openInAppControlSheetModal());
     }
 
+    // Eventos do painel de Impressão Automática na Base SAMU
+    const btnSavePrintCfg = document.getElementById('btn-adm-save-print-cfg');
+    if (btnSavePrintCfg && window.SamuStorage.saveRemotePrintConfig) {
+      btnSavePrintCfg.addEventListener('click', async () => {
+        const autoPrintFichas = Boolean(document.getElementById('adm-prt-auto-ficha') && document.getElementById('adm-prt-auto-ficha').checked);
+        const autoPrintChecklists = Boolean(document.getElementById('adm-prt-auto-ck') && document.getElementById('adm-prt-auto-ck').checked);
+        const checklistPrintShift = (document.getElementById('adm-prt-ck-shift') && document.getElementById('adm-prt-ck-shift').value) || 'noturno_only';
+        const duplexMode = (document.getElementById('adm-prt-duplex') && document.getElementById('adm-prt-duplex').value) || 'duplex';
+        const copies = Number((document.getElementById('adm-prt-copies') && document.getElementById('adm-prt-copies').value) || 1) || 1;
+        btnSavePrintCfg.disabled = true;
+        btnSavePrintCfg.textContent = 'Salvando...';
+        try {
+          await window.SamuStorage.saveRemotePrintConfig({
+            autoPrintFichas,
+            autoPrintChecklists,
+            checklistPrintShift,
+            duplexMode,
+            copies
+          }, currentUser.username);
+          await refreshSyncBadge();
+          showToast('✅ Configuração da Impressora da Base salva e sincronizada para toda a equipe!');
+          renderAdminView(true);
+        } catch (err) {
+          samuAlert('Erro ao salvar configuração de impressão: ' + err.message);
+        } finally {
+          btnSavePrintCfg.disabled = false;
+          btnSavePrintCfg.textContent = '💾 Salvar Config. de Impressão';
+        }
+      });
+    }
+
+    const btnTestPrintBase = document.getElementById('btn-adm-test-print-base');
+    if (btnTestPrintBase && window.SamuStorage.enqueueRemoteTestPage) {
+      btnTestPrintBase.addEventListener('click', async () => {
+        if (!window.SamuStorage.getSettings().scriptUrl) {
+          samuAlert('Configure primeiro a URL do Google Drive acima para enviar a Página de Teste para a Base.');
+          return;
+        }
+        btnTestPrintBase.disabled = true;
+        btnTestPrintBase.textContent = '🖨️ Enviando Teste...';
+        try {
+          await window.SamuStorage.enqueueRemoteTestPage();
+          await refreshSyncBadge();
+          const ag = window.SamuStorage.getRemotePrintAgentStatus ? window.SamuStorage.getRemotePrintAgentStatus() : null;
+          showToast(ag && ag.isOnline
+            ? `🖨️ Página de Teste enviada para ${ag.printerName || ag.pcName} na Base!`
+            : '🖨️ Página de Teste colocada na fila da nuvem! Sairá assim que o PC da Base estiver aberto.');
+          renderAdminView(true);
+        } catch (err) {
+          samuAlert('Erro ao enviar Página de Teste: ' + err.message);
+        } finally {
+          btnTestPrintBase.disabled = false;
+          btnTestPrintBase.textContent = '🖨️ Imprimir Página de Teste na Base';
+        }
+      });
+    }
+
+    const btnDlPrintBat = document.getElementById('btn-adm-dl-print-bat');
+    if (btnDlPrintBat) {
+      btnDlPrintBat.addEventListener('click', async () => {
+        const curSet = window.SamuStorage.getSettings();
+        const repo = (curSet.githubRepo || 'guileao97/samu-fichas-e-checklist').trim();
+        const branch = (curSet.githubBranch || 'main').trim();
+        const rawUrl = `https://raw.githubusercontent.com/${repo}/${branch}/INSTALAR_IMPRESSORA_BASE_SAMU.bat`;
+        btnDlPrintBat.disabled = true;
+        btnDlPrintBat.textContent = 'Baixando...';
+        try {
+          if (!navigator.onLine) {
+            throw new Error('Sem conexão no momento para baixar da nuvem.');
+          }
+          const resp = await fetch(rawUrl + '?t=' + Date.now(), { cache: 'no-store' });
+          if (!resp.ok) {
+            throw new Error('HTTP ' + resp.status);
+          }
+          let batText = await resp.text();
+          if (curSet.scriptUrl) {
+            batText = batText.replace(/set "SCRIPT_URL=[^"]*"/, `set "SCRIPT_URL=${curSet.scriptUrl}"`);
+          }
+          if (window.AndroidBridge) {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              try { await navigator.clipboard.writeText(rawUrl); } catch (eC) {}
+            }
+            window.open(rawUrl, '_blank');
+            showToast('💻 Link do Instalador (.BAT) aberto e copiado! Envie no WhatsApp Web do PC da Base.');
+          } else {
+            const blob = new Blob([batText], { type: 'application/octet-stream' });
+            const objUrl = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = objUrl;
+            a.download = 'INSTALAR_IMPRESSORA_BASE_SAMU.bat';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(objUrl), 5000);
+            showToast('💻 Instalador INSTALAR_IMPRESSORA_BASE_SAMU.bat baixado! Execute no PC da Base.');
+          }
+        } catch (err) {
+          samuAlert(
+            '💻 Instalador do Servidor de Impressão da Base SAMU:\n\n' +
+            '• Na pasta do projeto no computador, o arquivo "INSTALAR_IMPRESSORA_BASE_SAMU.bat" já está pronto para copiar/executar no PC da Base!\n' +
+            '• Após publicar a atualização no GitHub (PUBLICAR_ATUALIZACAO_GITHUB.bat), este botão também baixa direto de:\n' +
+            rawUrl
+          );
+        } finally {
+          btnDlPrintBat.disabled = false;
+          btnDlPrintBat.textContent = '💻 Baixar Instalador p/ PC da Base (.BAT)';
+        }
+      });
+    }
+
+    const btnRefreshPrintQueue = document.getElementById('btn-adm-refresh-print-queue');
+    if (btnRefreshPrintQueue) {
+      btnRefreshPrintQueue.addEventListener('click', async () => {
+        btnRefreshPrintQueue.disabled = true;
+        btnRefreshPrintQueue.textContent = '⏳ Atualizando...';
+        try {
+          if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
+            await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: false });
+          }
+          renderAdminView(true);
+          showToast('🔄 Status da Impressora da Base atualizado!');
+        } catch (err) {
+          renderAdminView(true);
+        }
+      });
+    }
+
+    container.querySelectorAll('[data-pjob-retry]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const jid = btn.dataset.pjobRetry;
+        btn.disabled = true;
+        btn.textContent = '🖨️...';
+        try {
+          await window.SamuStorage.retryRemotePrintJob(jid);
+          showToast('🖨️ Reenviado para a Fila da Impressora da Base!');
+          renderAdminView(true);
+        } catch (err) {
+          samuAlert('Erro ao reenviar impressão: ' + err.message);
+          btn.disabled = false;
+          btn.textContent = '🔄 Reimprimir';
+        }
+      });
+    });
+
+    container.querySelectorAll('[data-pjob-cancel]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const jid = btn.dataset.pjobCancel;
+        btn.disabled = true;
+        try {
+          await window.SamuStorage.cancelRemotePrintJob(jid);
+          showToast('✖ Impressão removida da fila pendente.');
+          renderAdminView(true);
+        } catch (err) {
+          btn.disabled = false;
+        }
+      });
+    });
+
     const copyBtn = document.getElementById('btn-adm-copy-url');
     if (copyBtn) {
       copyBtn.addEventListener('click', async () => {
@@ -8439,6 +9163,86 @@
     `;
   }
 
+  async function sendRecordToBasePrinter(record, preGeneratedPdf, triggerBtn) {
+    if (!record) return false;
+    if (!(await ensureChecklistCompleteBeforeAction(record, 'imprimir na Base SAMU'))) return false;
+    const settings = window.SamuStorage.getSettings();
+    if (!settings.scriptUrl) {
+      samuAlert('Configure primeiro a URL do Google Drive (na aba ⚙️ Base/Drive) para enviar impressões remotas para a Base SAMU.');
+      return false;
+    }
+
+    if (record.type === 'ficha' && record.data && !record._patientCheckedOnSend && (record.isDraft || record.syncStatus === 'draft' || !record.driveFileId)) {
+      const patCheck = await handlePatientCadastroOnFichaSend(record.data);
+      if (!patCheck.proceed) {
+        if (patCheck.action === 'cancel') {
+          const prevModal = document.getElementById('pdf-preview-modal');
+          if (prevModal) prevModal.classList.add('hidden');
+          if (activeTab === 'ficha') {
+            fichaStep = 2;
+            renderFichaView();
+          }
+        }
+        return false;
+      }
+      record._patientCheckedOnSend = true;
+    }
+
+    const origText = triggerBtn ? triggerBtn.textContent : '';
+    if (triggerBtn) {
+      triggerBtn.disabled = true;
+      triggerBtn.textContent = '🖨️ Enviando p/ Base...';
+    }
+    try {
+      const statusEl = document.getElementById('preview-drive-status');
+      const isShowingThisInPreview = Boolean(previewCurrentRecord && previewCurrentRecord.id === record.id && statusEl);
+
+      // Se o PDF ainda não foi enviado ao Google Drive, envia agora antes de colocar na fila da impressora
+      if (!record.driveFileId && !record.driveUrl) {
+        if (record.isDraft || record.syncStatus === 'draft') {
+          record.isDraft = false;
+          record.syncStatus = 'pending';
+        }
+        const generated = preGeneratedPdf || await window.SamuPDF.generatePdfForRecord(record);
+        const upRes = await window.SamuStorage.uploadRecordToDrive(record, generated.base64, { skipAutoPrint: true });
+        await refreshDraftCount();
+        await refreshSyncBadge();
+
+        if (!upRes.synced) {
+          record.pendingAutoPrint = true;
+          await window.SamuStorage.saveRecordLocal(record, { skipPatientUpsert: true });
+          if (isShowingThisInPreview) {
+            statusEl.textContent = '⏳ Sem internet agora: salvo na fila — enviará ao Drive e imprimirá na Base automaticamente!';
+          }
+          showToast('📴 Sem sinal agora! Salvo na fila para imprimir na Base assim que o 4G voltar.');
+          return true;
+        }
+      }
+
+      await window.SamuStorage.enqueueRemotePrintJob(record, { trigger: 'manual' });
+      await refreshSyncBadge();
+
+      const ag = window.SamuStorage.getRemotePrintAgentStatus ? window.SamuStorage.getRemotePrintAgentStatus() : null;
+      if (isShowingThisInPreview) {
+        statusEl.textContent = (ag && ag.isOnline)
+          ? `🖨️ Enviado para a Impressora da Base (${ag.printerName || ag.pcName})! Imprimindo em instantes...`
+          : '🖨️ Enviado para a Fila da Impressora da Base na nuvem!';
+      }
+      showToast((ag && ag.isOnline)
+        ? `🖨️ Enviado p/ Impressora da Base (${ag.printerName || ag.pcName})!`
+        : '🖨️ Enviado para a Fila da Impressora da Base SAMU!');
+      return true;
+    } catch (err) {
+      samuAlert('Erro ao enviar para a Impressora da Base: ' + (err.message || err));
+      return false;
+    } finally {
+      if (triggerBtn) {
+        triggerBtn.disabled = false;
+        triggerBtn.textContent = origText;
+      }
+    }
+  }
+
   async function openPdfPreviewModal(record, preGenerated, uploadResult) {
     const modal = document.getElementById('pdf-preview-modal');
     const pagesBox = document.getElementById('preview-pages-container');
@@ -8467,18 +9271,32 @@
 
     if (uploadResult) {
       if (uploadResult.synced) {
-        statusEl.textContent = '✅ Salvo e enviado automaticamente para o Google Drive!';
+        const waitingNight = !uploadResult.printQueued && isDaytimeChecklistWaitingNightPrint(record);
+        statusEl.textContent = uploadResult.printQueued
+          ? '✅ Salvo no Google Drive e enviado automaticamente para a Impressora da Base!'
+          : (waitingNight
+            ? '✅ Turno Diurno salvo no Google Drive! (Imprimirá automaticamente na Base quando o Noturno concluir a folha)'
+            : '✅ Salvo e enviado automaticamente para o Google Drive!');
       } else if (uploadResult.reason === 'no_url') {
         statusEl.textContent = '💾 Salvo no aparelho (conecte o Google Drive em Equipe/Drive para envio automático).';
       } else {
-        statusEl.textContent = '⏳ Salvo no aparelho! Sem internet agora — enviará ao Google Drive automaticamente.';
+        statusEl.textContent = uploadResult.printPendingOffline
+          ? '⏳ Salvo no aparelho! Sem internet agora — enviará ao Google Drive e imprimirá na Base automaticamente.'
+          : '⏳ Salvo no aparelho! Sem internet agora — enviará ao Google Drive automaticamente.';
       }
     } else if (record && record.type === 'checklist_condutor' && !validateCondutorChecklist(record.data).valid) {
       statusEl.textContent = '⚠️ Check List incompleto — preencha todos os campos antes de enviar ou compartilhar.';
     } else if (record && record.type === 'checklist_enfermagem' && !validateEnfermagemChecklist(record.data).valid) {
       statusEl.textContent = '⚠️ Check List incompleto — preencha todos os campos antes de enviar ou compartilhar.';
     } else if (record.driveUrl) {
-      statusEl.textContent = '☁️ Este PDF já está arquivado no Google Drive.';
+      const pJob = (record.id && window.SamuStorage.getRecordPrintStatus) ? window.SamuStorage.getRecordPrintStatus(record.id) : null;
+      if (pJob && pJob.status === 'printed') {
+        statusEl.textContent = `☁️ No Google Drive • 🖨️ Já impresso na Base${pJob.printerName ? ' (' + pJob.printerName + ')' : ''}`;
+      } else if (pJob && pJob.status === 'pending') {
+        statusEl.textContent = '☁️ No Google Drive • ⏳ Na fila de impressão da Base SAMU';
+      } else {
+        statusEl.textContent = '☁️ Este PDF já está arquivado no Google Drive.';
+      }
     } else {
       statusEl.textContent = 'Visualização fiel de impressão (2 páginas A4)';
     }

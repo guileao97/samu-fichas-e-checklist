@@ -46,13 +46,21 @@ VERSION_FILE = os.path.join(ROOT_DIR, "version.json")
 STORAGE_JS_FILE = os.path.join(ROOT_DIR, "web-app", "js", "storage.js")
 
 # Pastas e arquivos incluídos no repositório público de atualização (ZERO base_dados_samu.json e ZERO .jks!)
-INCLUDE_DIRS = ("web-app", "android-project", "google-drive-integracao", ".github")
-INCLUDE_ROOT_FILES = ("version.json", ".gitignore", "PUBLICAR_NO_GITHUB.py", "PUBLICAR_ATUALIZACAO_GITHUB.bat")
+INCLUDE_DIRS = ("web-app", "android-project", "google-drive-integracao", "impressora-base-samu", ".github")
+INCLUDE_ROOT_FILES = (
+    "version.json",
+    ".gitignore",
+    "PUBLICAR_NO_GITHUB.py",
+    "PUBLICAR_ATUALIZACAO_GITHUB.bat",
+    "INSTALAR_IMPRESSORA_BASE_SAMU.bat",
+)
 
 EXCLUDE_NAMES = {
     ".github_token.local",
     ".drive_url.local",
     "base_dados_samu.json",
+    "config_impressora.json",
+    "impressos_historico.json",
     "samu_orlandia_release.jks",
     "__pycache__",
     ".DS_Store",

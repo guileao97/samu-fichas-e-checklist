@@ -1348,18 +1348,57 @@
    * ========================================================================== */
   async function renderEnfermagemCanvases(d) {
     const assets = window.SAMU_ASSETS || {};
-    const [samuLogo, orlandiaLogo, sigEnfImg] = await Promise.all([
+    const isTurnoNoite = String(d.turno || '').trim().toUpperCase() === 'NOITE';
+    const rawSigDia = d.sigEnfermagemDia || (!isTurnoNoite ? d.sigEnfermagem : '');
+    const rawSigNoite = d.sigEnfermagemNoite || (isTurnoNoite ? d.sigEnfermagem : '');
+    const [samuLogo, orlandiaLogo, sigEnfImg, sigDiaImg, sigNoiteImg] = await Promise.all([
       loadImg(assets.samu_logo),
       loadImg(assets.orlandia_logo),
-      loadImg(d.sigEnfermagem)
+      loadImg(d.sigEnfermagem),
+      loadImg(rawSigDia),
+      loadImg(rawSigNoite)
     ]);
 
     const W = 2339, H = 1654, M = 44, CW = W - M * 2;
     const checksDia = d.itensDia || {};
     const checksNoite = d.itensNoite || {};
+    const respDiaNome = String(d.responsavelDiaNome || (!isTurnoNoite ? d.responsavelNome : '') || '').trim();
+    const respDiaCoren = String(d.responsavelDiaCoren || (!isTurnoNoite ? d.responsavelCoren : '') || '').trim();
+    const respNoiteNome = String(d.responsavelNoiteNome || (isTurnoNoite ? d.responsavelNome : '') || '').trim();
+    const respNoiteCoren = String(d.responsavelNoiteCoren || (isTurnoNoite ? d.responsavelCoren : '') || '').trim();
+    const hasDiaData = Object.keys(checksDia).length > 0 || Boolean(respDiaNome) || Boolean(d.sigEnfermagemDia);
+    const hasNoiteData = Object.keys(checksNoite).length > 0 || Boolean(respNoiteNome) || Boolean(d.sigEnfermagemNoite);
+    const hasBothShifts = hasDiaData && hasNoiteData;
+
     const secs = window.SAMU_SCHEMA.enfermagemSections;
     const secById = {};
     secs.forEach(s => { secById[s.id] = s; });
+
+    function buildCombinedEnfObs(pageNum) {
+      const fallback = String((pageNum === 1 ? d.obsPagina1 : d.obsPagina2) || '').trim();
+      const oDia = String(
+        (pageNum === 1 ? d.obsDiaPagina1 : d.obsDiaPagina2)
+        || (!isTurnoNoite ? fallback : '')
+        || ''
+      ).trim();
+      const oNoite = String(
+        (pageNum === 1 ? d.obsNoitePagina1 : d.obsNoitePagina2)
+        || (isTurnoNoite ? fallback : '')
+        || ''
+      ).trim();
+      if (!hasBothShifts) {
+        return fallback || oDia || oNoite;
+      }
+      if (oDia && oNoite) {
+        if (oDia.toLowerCase() === oNoite.toLowerCase()) {
+          return 'DIA / NOITE: ' + oDia;
+        }
+        return 'DIA: ' + oDia + '   |   NOITE: ' + oNoite;
+      }
+      if (oDia) return 'DIA: ' + oDia;
+      if (oNoite) return 'NOITE: ' + oNoite;
+      return fallback;
+    }
 
     function drawEnfHeader(g) {
       g.fillStyle = '#ffffff'; g.fillRect(0, 0, W, H);
@@ -1418,44 +1457,101 @@
     function drawEnfFooter(g, obsText, topY) {
       const fh = H - 36 - topY;
       g.strokeRect(M, topY, CW, fh);
-      const splitX = M + CW * 0.62;
+      const splitX = hasBothShifts ? (M + CW * 0.56) : (M + CW * 0.62);
       g.beginPath(); g.moveTo(splitX, topY); g.lineTo(splitX, topY + fh); g.stroke();
 
       g.font = 'bold 20px Arial, sans-serif';
       g.fillText('OBS:', M + 14, topY + 30);
       g.font = '19px Arial, sans-serif';
+      const maxObsLines = Math.min(6, Math.max(2, Math.floor((fh - 16) / 28)));
       const lines = wrapTextLines(g, obsText || '', (splitX - M) - 90);
-      lines.slice(0, 4).forEach((ln, idx) => {
-        fillTextInk(g, ln, M + 76, topY + 30 + idx * 30, '19px Arial, sans-serif');
+      lines.slice(0, maxObsLines).forEach((ln, idx) => {
+        fillTextInk(g, ln, M + 76, topY + 30 + idx * 28, '19px Arial, sans-serif');
       });
 
-      g.font = 'bold 20px Arial, sans-serif';
-      let fx = splitX + 18;
-      g.fillText('DATA: ', fx, topY + 34);
-      fx += g.measureText('DATA: ').width;
-      const enfDateStr = d.data ? formatDateBR(d.data) : '    /    /      ';
-      if (d.data) {
-        fillTextInk(g, enfDateStr, fx, topY + 34, 'bold 20px Arial, sans-serif');
+      if (hasBothShifts) {
+        const rightW = (M + CW) - splitX;
+        const halfW = rightW / 2;
+        const midSigX = splitX + halfW;
+        const subY = topY + 36;
+        const subH = Math.max(64, fh - 36);
+
+        g.beginPath();
+        g.moveTo(splitX, subY); g.lineTo(M + CW, subY);
+        g.moveTo(midSigX, subY); g.lineTo(midSigX, topY + fh);
+        g.stroke();
+
+        g.font = 'bold 19px Arial, sans-serif';
+        let fx = splitX + 16;
+        g.fillText('DATA: ', fx, topY + 26);
+        fx += g.measureText('DATA: ').width;
+        const enfDateStr = d.data ? formatDateBR(d.data) : '    /    /      ';
+        if (d.data) {
+          fillTextInk(g, enfDateStr, fx, topY + 26, 'bold 19px Arial, sans-serif');
+        } else {
+          g.fillText(enfDateStr, fx, topY + 26);
+        }
+        fx += g.measureText(enfDateStr).width;
+        g.fillText('   |   TURNO: ', fx, topY + 26);
+        fx += g.measureText('   |   TURNO: ').width;
+        fillTextInk(g, 'DIA / NOITE', fx, topY + 26, 'bold 19px Arial, sans-serif');
+
+        g.font = 'bold 13px Arial, sans-serif';
+        g.fillStyle = '#000000';
+        g.fillText('CK DIA', splitX + 10, subY + 16);
+        g.fillText('CK NOITE', midSigX + 10, subY + 16);
+
+        const sigBoxH = Math.max(36, subH - 52);
+        if (sigDiaImg) {
+          drawSignatureFit(g, sigDiaImg, splitX + 20, subY + 18, halfW - 40, sigBoxH);
+        }
+        if (sigNoiteImg) {
+          drawSignatureFit(g, sigNoiteImg, midSigX + 20, subY + 18, halfW - 40, sigBoxH);
+        }
+
+        const respDiaInfo = [respDiaNome, respDiaCoren].filter(Boolean).join(' – ');
+        const respNoiteInfo = [respNoiteNome, respNoiteCoren].filter(Boolean).join(' – ');
+        g.textAlign = 'center';
+        if (respDiaInfo) {
+          fitTextInk(g, respDiaInfo, splitX + halfW / 2, topY + fh - 23, halfW - 18, 'bold 15px Arial, sans-serif');
+        }
+        if (respNoiteInfo) {
+          fitTextInk(g, respNoiteInfo, midSigX + halfW / 2, topY + fh - 23, halfW - 18, 'bold 15px Arial, sans-serif');
+        }
+        g.font = '13px Arial, sans-serif';
+        g.fillStyle = '#000000';
+        g.fillText('ASSINATURA E CARIMBO (DIA)', splitX + halfW / 2, topY + fh - 7);
+        g.fillText('ASSINATURA E CARIMBO (NOITE)', midSigX + halfW / 2, topY + fh - 7);
+        g.textAlign = 'left';
       } else {
-        g.fillText(enfDateStr, fx, topY + 34);
+        g.font = 'bold 20px Arial, sans-serif';
+        let fx = splitX + 18;
+        g.fillText('DATA: ', fx, topY + 34);
+        fx += g.measureText('DATA: ').width;
+        const enfDateStr = d.data ? formatDateBR(d.data) : '    /    /      ';
+        if (d.data) {
+          fillTextInk(g, enfDateStr, fx, topY + 34, 'bold 20px Arial, sans-serif');
+        } else {
+          g.fillText(enfDateStr, fx, topY + 34);
+        }
+        fx += g.measureText(enfDateStr).width;
+        g.fillText('   |   TURNO: ', fx, topY + 34);
+        fx += g.measureText('   |   TURNO: ').width;
+        if (d.turno) {
+          fillTextInk(g, d.turno, fx, topY + 34, 'bold 20px Arial, sans-serif');
+        }
+        if (sigEnfImg) {
+          drawSignatureFit(g, sigEnfImg, splitX + 80, topY + 42, (M + CW - splitX) - 160, fh - 90);
+        }
+        const respInfo = [d.responsavelNome, d.responsavelCoren].filter(Boolean).join(' – ');
+        g.textAlign = 'center';
+        if (respInfo) {
+          fitTextInk(g, respInfo, splitX + (M + CW - splitX) / 2, topY + fh - 30, (M + CW - splitX) - 24, 'bold 18px Arial, sans-serif');
+        }
+        g.font = '16px Arial, sans-serif';
+        g.fillText('ASSINATURA E CARIMBO', splitX + (M + CW - splitX) / 2, topY + fh - 10);
+        g.textAlign = 'left';
       }
-      fx += g.measureText(enfDateStr).width;
-      g.fillText('   |   TURNO: ', fx, topY + 34);
-      fx += g.measureText('   |   TURNO: ').width;
-      if (d.turno) {
-        fillTextInk(g, d.turno, fx, topY + 34, 'bold 20px Arial, sans-serif');
-      }
-      if (sigEnfImg) {
-        drawSignatureFit(g, sigEnfImg, splitX + 80, topY + 42, (M + CW - splitX) - 160, fh - 90);
-      }
-      const respInfo = [d.responsavelNome, d.responsavelCoren].filter(Boolean).join(' – ');
-      g.textAlign = 'center';
-      if (respInfo) {
-        fitTextInk(g, respInfo, splitX + (M + CW - splitX) / 2, topY + fh - 30, (M + CW - splitX) - 24, 'bold 18px Arial, sans-serif');
-      }
-      g.font = '16px Arial, sans-serif';
-      g.fillText('ASSINATURA E CARIMBO', splitX + (M + CW - splitX) / 2, topY + fh - 10);
-      g.textAlign = 'left';
     }
 
     // PÁGINA 1 (3 colunas de mochilas)
@@ -1471,7 +1567,7 @@
     drawSectionTable(g1, secById.mochila_vermelha_trauma, M + col3W + colGap, 150, col3W, rH1);
     const end3a = drawSectionTable(g1, secById.mochila_azul_dago, M + (col3W + colGap) * 2, 150, col3W, rH1);
     const end3b = drawSectionTable(g1, secById.mochila_verde_oxigenio, M + (col3W + colGap) * 2, end3a + 14, col3W, rH1);
-    drawEnfFooter(g1, d.obsPagina1, Math.max(end1, end3b) + 18);
+    drawEnfFooter(g1, buildCombinedEnfObs(1), Math.max(end1, end3b) + 18);
 
     // PÁGINA 2 (4 colunas: Viatura | Gaveta 1 + Gaveta 2 + Bolsa Sinais VT | Armário Superior | Bolsa Punção)
     const c2 = document.createElement('canvas');
@@ -1488,7 +1584,7 @@
     const p2as = drawSectionTable(g2, secById.armario_superior, M + (col4W + colGap) * 2, 148, col4W, rH2);
     drawSectionTable(g2, secById.bolsa_puncao, M + (col4W + colGap) * 3, 148, col4W, rH2);
 
-    drawEnfFooter(g2, d.obsPagina2, Math.max(p2e1, p2bs, p2as) + 16);
+    drawEnfFooter(g2, buildCombinedEnfObs(2), Math.max(p2e1, p2bs, p2as) + 16);
 
     return [c1, c2];
   }

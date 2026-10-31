@@ -57,9 +57,28 @@ function doPost(e) {
       });
     }
 
-    // Sincronização unificada em tempo real (Logins, Aprovações, Equipe do Plantão, Fichas Compartilhadas, Pacientes, Médicos e Avarias - Zero Token!)
+    // Sincronização unificada em tempo real (Logins, Aprovações, Equipe do Plantão, Fichas Compartilhadas, Pacientes, Médicos, Avarias e Fila de Impressão da Base - Zero Token!)
     if (action === 'syncDatabase') {
       return jsonResponse_(handleSyncDatabase_(env, body));
+    }
+
+    // Download direto de PDF por driveFileId (fallback para o Servidor de Impressão da Base SAMU)
+    if (action === 'downloadPdf') {
+      var dlId = String(body.driveFileId || '').trim();
+      if (!dlId) {
+        return jsonResponse_({ ok: false, error: 'Informe driveFileId.' });
+      }
+      try {
+        var dlFile = DriveApp.getFileById(dlId);
+        var dlBlob = dlFile.getBlob();
+        return jsonResponse_({
+          ok: true,
+          fileName: dlFile.getName(),
+          pdfBase64: Utilities.base64Encode(dlBlob.getBytes())
+        });
+      } catch (errDl) {
+        return jsonResponse_({ ok: false, error: String(errDl && errDl.message ? errDl.message : errDl) });
+      }
     }
 
     if (action === 'login') {
@@ -1208,7 +1227,7 @@ function mergeSyncDatabases_(base, incoming) {
   }
   out.patients = patMap;
 
-  // 6. Avarias persistentes por Viatura
+  // 6. Avarias persistentes por Viatura + Fila de Impressão Remota da Base SAMU (__print_cfg__, __print_agent__, __pjob_00..79)
   var avMap = Object.assign({}, out.viaturaAvarias || {});
   if (inc.viaturaAvarias && typeof inc.viaturaAvarias === 'object') {
     Object.keys(inc.viaturaAvarias).forEach(function(vKey) {

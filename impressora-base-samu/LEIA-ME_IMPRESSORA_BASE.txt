@@ -1,0 +1,30 @@
+========================================================================
+  SAMU 192 - ORLANDIA-SP | IMPRESSORA AUTOMATICA DA BASE (VIA 4G / WI-FI)
+========================================================================
+
+COMO INSTALAR NO COMPUTADOR WINDOWS DA BASE DO SAMU (LEVA 10 SEGUNDOS):
+
+1. Copie o arquivo "INSTALAR_IMPRESSORA_BASE_SAMU.bat" para o computador
+   Windows 10 ou Windows 11 que fica ligado na Base do SAMU conectado na
+   impressora (pode enviar por WhatsApp Web, e-mail ou pendrive).
+
+2. De dois cliques em "INSTALAR_IMPRESSORA_BASE_SAMU.bat".
+   - Nao precisa instalar Python, Adobe Reader nem abrir portas no roteador!
+   - Ele cria automaticamente o atalho "Impressora Base SAMU 192" na Area de
+     Trabalho, abre o painel vermelho na tela e ja configura para iniciar
+     sozinho junto com o Windows sempre que o PC reiniciar.
+
+COMO SABER SE DEU CERTO:
+1. Na tela do PC: abre a janela vermelha "SAMU 192 - IMPRESSORA AUTOMATICA
+   DA BASE" mostrando a impressora detectada e "Conectado ao Google Drive SAMU".
+   Voce pode clicar em "Imprimir Pagina de Teste" para testar na hora!
+2. Perto do relogio do Windows (canto inferior direito / setinha ^): fica o
+   icone redondo vermelho com a cruz branca do SAMU 192.
+3. No Celular / APK (aba "Base/Drive"): o painel mostra em verde
+   "Impressora da Base ONLINE" com o nome do PC e da impressora!
+
+QUANDO O PC REINICIAR:
+- Sim! Ele liga sozinho automaticamente junto com o Windows (ja entra
+  minimizado perto do relogio pronto para imprimir, sem precisar abrir o .bat).
+- Se quiser ver a janela novamente, basta clicar duas vezes no icone perto do
+  relogio ou no atalho "Impressora Base SAMU 192" na Area de Trabalho.

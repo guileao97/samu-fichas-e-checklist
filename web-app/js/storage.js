@@ -1256,6 +1256,608 @@
     return cleanMarks;
   }
 
+  /* ===================== FILA DE IMPRESSÃO REMOTA NA BASE SAMU (NUVEM / 4G -> PC DA BASE) ===================== */
+  const PRINT_CFG_KEY = '__print_cfg__';
+  const PRINT_AGENT_KEY = '__print_agent__';
+  const PRINT_SLOT_PREFIX = '__pjob_';
+  const PRINT_SLOT_COUNT = 80;
+  const DAILY_CK_SLOT_PREFIX = '__ckday_';
+  const DAILY_CK_SLOT_COUNT = 12;
+
+  function isPrintSystemKey(k) {
+    return /^(?:__print_|__pjob_|__ckday_)/.test(String(k || ''));
+  }
+
+  function extractDriveFileIdFromAny(driveFileId, driveUrl) {
+    const cleanId = String(driveFileId || '').trim();
+    if (cleanId) return cleanId;
+    const u = String(driveUrl || '').trim();
+    if (!u) return '';
+    const m1 = u.match(/\/d\/([a-zA-Z0-9_-]{15,})/);
+    if (m1) return m1[1];
+    const m2 = u.match(/[?&]id=([a-zA-Z0-9_-]{15,})/);
+    if (m2) return m2[1];
+    return '';
+  }
+
+  function getRemotePrintConfig() {
+    const avMap = getViaturaAvariasMap();
+    const raw = (avMap && avMap[PRINT_CFG_KEY] && typeof avMap[PRINT_CFG_KEY] === 'object')
+      ? avMap[PRINT_CFG_KEY]
+      : {};
+    return {
+      key: PRINT_CFG_KEY,
+      autoPrintFichas: raw.autoPrintFichas !== false,
+      autoPrintChecklists: raw.autoPrintChecklists !== false,
+      checklistPrintShift: raw.checklistPrintShift === 'all' ? 'all' : 'noturno_only',
+      duplexMode: raw.duplexMode === 'simplex' ? 'simplex' : 'duplex',
+      copies: Math.max(1, Math.min(5, Number(raw.copies) || 1)),
+      updatedBy: String(raw.updatedBy || ''),
+      updatedAt: String(raw.updatedAt || '')
+    };
+  }
+
+  async function saveRemotePrintConfig(patch, updatedBy) {
+    const cur = getRemotePrintConfig();
+    const p = (patch && typeof patch === 'object') ? patch : {};
+    const nowIso = new Date().toISOString();
+    const next = {
+      key: PRINT_CFG_KEY,
+      autoPrintFichas: p.autoPrintFichas !== undefined ? Boolean(p.autoPrintFichas) : cur.autoPrintFichas,
+      autoPrintChecklists: p.autoPrintChecklists !== undefined ? Boolean(p.autoPrintChecklists) : cur.autoPrintChecklists,
+      checklistPrintShift: (p.checklistPrintShift || cur.checklistPrintShift) === 'all' ? 'all' : 'noturno_only',
+      duplexMode: (p.duplexMode || cur.duplexMode) === 'simplex' ? 'simplex' : 'duplex',
+      copies: Math.max(1, Math.min(5, Number(p.copies !== undefined ? p.copies : cur.copies) || 1)),
+      updatedBy: String(updatedBy || (getSession() && getSession().username) || cur.updatedBy || ''),
+      updatedAt: nowIso
+    };
+    const avMap = getViaturaAvariasMap();
+    avMap[PRINT_CFG_KEY] = next;
+    setViaturaAvariasMap(avMap);
+    markGitHubDirty();
+    if (navigator.onLine && hasGitHubConfigured()) {
+      try {
+        await syncInternalDbWithGitHub({ pushChanges: true });
+      } catch (e) {}
+    }
+    return next;
+  }
+
+  function getRemotePrintAgentStatus() {
+    const avMap = getViaturaAvariasMap();
+    const raw = (avMap && avMap[PRINT_AGENT_KEY] && typeof avMap[PRINT_AGENT_KEY] === 'object')
+      ? avMap[PRINT_AGENT_KEY]
+      : null;
+    if (!raw || !raw.pcName) {
+      return {
+        configured: false,
+        isOnline: false,
+        pcName: '',
+        printerName: '',
+        canDuplex: false,
+        printedCountToday: 0,
+        lastPrintedTitle: '',
+        lastPrintedAt: '',
+        status: '',
+        updatedAt: ''
+      };
+    }
+    const tsMs = Date.parse(String(raw.updatedAt || ''));
+    const ageMs = Number.isFinite(tsMs) ? (Date.now() - tsMs) : Infinity;
+    const isOnline = raw.status !== 'stopped' && ageMs >= -120000 && ageMs <= 220000;
+    return {
+      configured: true,
+      isOnline,
+      pcName: String(raw.pcName || ''),
+      printerName: String(raw.printerName || ''),
+      canDuplex: Boolean(raw.canDuplex),
+      printedCountToday: Number(raw.printedCountToday) || 0,
+      lastPrintedTitle: String(raw.lastPrintedTitle || ''),
+      lastPrintedAt: String(raw.lastPrintedAt || ''),
+      status: String(raw.status || ''),
+      updatedAt: String(raw.updatedAt || '')
+    };
+  }
+
+  function formatSlotKey(idx) {
+    return PRINT_SLOT_PREFIX + String(idx).padStart(2, '0');
+  }
+
+  function getRemotePrintQueue() {
+    const avMap = getViaturaAvariasMap();
+    const list = [];
+    for (let i = 0; i < PRINT_SLOT_COUNT; i++) {
+      const sk = formatSlotKey(i);
+      const job = avMap[sk];
+      if (job && typeof job === 'object' && job.jobId) {
+        list.push(Object.assign({}, job, { slotKey: sk }));
+      }
+    }
+    list.sort((a, b) => String(b.createdAt || b.updatedAt || '').localeCompare(String(a.createdAt || a.updatedAt || '')));
+    return list;
+  }
+
+  function getRecordPrintStatus(recordId) {
+    const rid = String(recordId || '').trim();
+    if (!rid) return null;
+    const queue = getRemotePrintQueue();
+    const active = queue.find(j => j.recordId === rid && j.status !== 'cancelled');
+    if (active) return active;
+    return queue.find(j => j.recordId === rid) || null;
+  }
+
+  function isNightShiftChecklist(record) {
+    if (!record) return false;
+    if (record.type === 'checklist_condutor') {
+      const sh = String(record.shift || (record.data && record.data.turnoAtivo) || '').trim().toUpperCase();
+      return sh === 'NOTURNO' || sh === 'NOITE';
+    }
+    if (record.type === 'checklist_enfermagem') {
+      const sh = String(record.shift || (record.data && record.data.turno) || '').trim().toUpperCase();
+      return sh === 'NOITE' || sh === 'NOTURNO';
+    }
+    return false;
+  }
+
+  function shouldAutoPrintRecord(record) {
+    if (!record || record.isDraft || record.syncStatus === 'draft') return false;
+    const cfg = getRemotePrintConfig();
+    if (record.type === 'ficha') return Boolean(cfg.autoPrintFichas);
+    if (record.type === 'checklist_condutor' || record.type === 'checklist_enfermagem') {
+      if (!cfg.autoPrintChecklists) return false;
+      if (cfg.checklistPrintShift === 'all') return true;
+      // Regra oficial da Base SAMU: Check Lists só imprimem automaticamente quando o NOTURNO / NOITE conclui a folha completa!
+      return isNightShiftChecklist(record);
+    }
+    return false;
+  }
+
+  /* ===================== FOLHA DIÁRIA COMPARTILHADA DOS CHECK LISTS (DIURNO -> NOTURNO) ===================== */
+  function formatDailyCkSlotKey(idx) {
+    return DAILY_CK_SLOT_PREFIX + String(idx).padStart(2, '0');
+  }
+
+  function buildDailyChecklistKey(kind, dateStr, viaturaId, outraPlaca) {
+    const dt = String(dateStr || '').trim();
+    if (!dt) return '';
+    if (kind === 'condutor') {
+      return 'condutor__' + dt + '__' + getViaturaStorageKey(viaturaId || 'master_29', outraPlaca || '');
+    }
+    return 'enfermagem__' + dt;
+  }
+
+  async function compressSignatureDataUrlForShare(sigDataUrl, ownerUsername) {
+    const raw = String(sigDataUrl || '').trim();
+    if (!raw) return '';
+    const uname = String(ownerUsername || '').trim().toLowerCase();
+    if (uname) {
+      const saved = getSavedSignature(uname);
+      if (saved && saved === raw) {
+        return '__USER_SIG__:' + uname;
+      }
+    }
+    if (raw.length <= 5500 || typeof document === 'undefined') {
+      return raw;
+    }
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const maxW = 340;
+          const maxH = 120;
+          const sc = Math.min(1, maxW / Math.max(1, img.width), maxH / Math.max(1, img.height));
+          const w = Math.max(1, Math.round(img.width * sc));
+          const h = Math.max(1, Math.round(img.height * sc));
+          const cv = document.createElement('canvas');
+          cv.width = w;
+          cv.height = h;
+          const ctx = cv.getContext('2d');
+          ctx.clearRect(0, 0, w, h);
+          ctx.drawImage(img, 0, 0, w, h);
+          resolve(cv.toDataURL('image/png'));
+        } catch (e) {
+          resolve(raw);
+        }
+      };
+      img.onerror = () => resolve(raw);
+      img.src = raw;
+    });
+  }
+
+  function hydrateSharedSignatureRef(sigRef, fallbackUsername) {
+    const ref = String(sigRef || '').trim();
+    if (ref.startsWith('__USER_SIG__:')) {
+      const u = ref.slice('__USER_SIG__:'.length).trim().toLowerCase();
+      return getSavedSignature(u) || '';
+    }
+    if (ref) return ref;
+    if (fallbackUsername) {
+      return getSavedSignature(String(fallbackUsername).trim().toLowerCase()) || '';
+    }
+    return '';
+  }
+
+  function findOrPickDailyCkSlot(dailyKey, avMap) {
+    for (let i = 0; i < DAILY_CK_SLOT_COUNT; i++) {
+      const sk = formatDailyCkSlotKey(i);
+      const cur = avMap[sk];
+      if (cur && cur.dailyKey === dailyKey) return sk;
+    }
+    for (let i = 0; i < DAILY_CK_SLOT_COUNT; i++) {
+      const sk = formatDailyCkSlotKey(i);
+      const cur = avMap[sk];
+      if (!cur || !cur.dailyKey) return sk;
+    }
+    let oldestKey = formatDailyCkSlotKey(0);
+    let oldestTs = '\uffff';
+    for (let i = 0; i < DAILY_CK_SLOT_COUNT; i++) {
+      const sk = formatDailyCkSlotKey(i);
+      const cur = avMap[sk];
+      const ts = String((cur && cur.updatedAt) || '');
+      if (ts < oldestTs) {
+        oldestTs = ts;
+        oldestKey = sk;
+      }
+    }
+    return oldestKey;
+  }
+
+  async function saveSharedDailyChecklist(kind, d, userObj) {
+    if (!d || !d.data) return null;
+    const dailyKey = buildDailyChecklistKey(kind, d.data, d.viaturaId, d.outraPlaca);
+    if (!dailyKey) return null;
+
+    const avMap = getViaturaAvariasMap();
+    const slotKey = findOrPickDailyCkSlot(dailyKey, avMap);
+    const prev = (avMap[slotKey] && avMap[slotKey].dailyKey === dailyKey) ? avMap[slotKey] : {};
+    const nowIso = new Date().toISOString();
+    const uname = String((userObj && userObj.username) || (getSession() && getSession().username) || '').trim().toLowerCase();
+
+    if (kind === 'condutor') {
+      const isDiurno = d.turnoAtivo !== 'NOTURNO';
+      const sigD = isDiurno
+        ? await compressSignatureDataUrlForShare(d.sigCondutorDiurno, uname)
+        : (prev.sigCondutorDiurno || (d.sigCondutorDiurno ? await compressSignatureDataUrlForShare(d.sigCondutorDiurno, prev.diurnoUsername || '') : ''));
+      const sigN = !isDiurno
+        ? await compressSignatureDataUrlForShare(d.sigCondutorNoturno, uname)
+        : (prev.sigCondutorNoturno || (d.sigCondutorNoturno ? await compressSignatureDataUrlForShare(d.sigCondutorNoturno, prev.noturnoUsername || '') : ''));
+      const hasNewAbast = d.abastRealizado === 'SIM';
+      const sigAbast = hasNewAbast
+        ? await compressSignatureDataUrlForShare(d.sigAbastecimento, uname)
+        : (prev.sigAbastecimento || '');
+
+      const nextEntry = {
+        key: slotKey,
+        slotKey,
+        dailyKey,
+        kind: 'condutor',
+        date: String(d.data),
+        viaturaId: String(d.viaturaId || 'master_29'),
+        outraPlaca: String(d.outraPlaca || ''),
+        diurnoUsername: isDiurno ? uname : String(prev.diurnoUsername || ''),
+        noturnoUsername: !isDiurno ? uname : String(prev.noturnoUsername || ''),
+        condutorDiurno: isDiurno ? String(d.condutorDiurno || '') : String(d.condutorDiurno || prev.condutorDiurno || ''),
+        condutorNoturno: !isDiurno ? String(d.condutorNoturno || '') : String(d.condutorNoturno || prev.condutorNoturno || ''),
+        itensDiurno: (isDiurno || (d.itensDiurno && Object.keys(d.itensDiurno).length > 0))
+          ? Object.assign({}, prev.itensDiurno || {}, d.itensDiurno || {})
+          : (prev.itensDiurno || {}),
+        itensNoturno: (!isDiurno || (d.itensNoturno && Object.keys(d.itensNoturno).length > 0))
+          ? Object.assign({}, prev.itensNoturno || {}, d.itensNoturno || {})
+          : (prev.itensNoturno || {}),
+        avariasDiurno: isDiurno ? sanitizeAvariasList(d.avariasDiurno) : sanitizeAvariasList(d.avariasDiurno && d.avariasDiurno.length ? d.avariasDiurno : prev.avariasDiurno),
+        avariasNoturno: !isDiurno ? sanitizeAvariasList(d.avariasNoturno) : sanitizeAvariasList(d.avariasNoturno && d.avariasNoturno.length ? d.avariasNoturno : prev.avariasNoturno),
+        obsDiurno: isDiurno ? String(d.obsDiurno || '') : String(d.obsDiurno || prev.obsDiurno || ''),
+        obsNoturno: !isDiurno ? String(d.obsNoturno || '') : String(d.obsNoturno || prev.obsNoturno || ''),
+        sigCondutorDiurno: sigD,
+        sigCondutorNoturno: sigN,
+        abastRealizado: hasNewAbast ? 'SIM' : (prev.abastRealizado === 'SIM' ? 'SIM' : String(d.abastRealizado || prev.abastRealizado || '')),
+        abastLitros: hasNewAbast ? String(d.abastLitros || '') : String(prev.abastLitros || d.abastLitros || ''),
+        abastHora: hasNewAbast ? String(d.abastHora || '') : String(prev.abastHora || d.abastHora || ''),
+        abastKm: hasNewAbast ? String(d.abastKm || '') : String(prev.abastKm || d.abastKm || ''),
+        abastAss: hasNewAbast ? String(d.abastAss || '') : String(prev.abastAss || d.abastAss || ''),
+        abastUsername: hasNewAbast ? uname : String(prev.abastUsername || ''),
+        sigAbastecimento: sigAbast,
+        updatedAt: nowIso
+      };
+      avMap[slotKey] = nextEntry;
+    } else {
+      const isDia = d.turno !== 'NOITE';
+      const sigDia = isDia
+        ? await compressSignatureDataUrlForShare(d.sigEnfermagemDia || d.sigEnfermagem, uname)
+        : (prev.sigEnfermagemDia || (d.sigEnfermagemDia ? await compressSignatureDataUrlForShare(d.sigEnfermagemDia, prev.diaUsername || '') : ''));
+      const sigNoite = !isDia
+        ? await compressSignatureDataUrlForShare(d.sigEnfermagemNoite || d.sigEnfermagem, uname)
+        : (prev.sigEnfermagemNoite || (d.sigEnfermagemNoite ? await compressSignatureDataUrlForShare(d.sigEnfermagemNoite, prev.noiteUsername || '') : ''));
+
+      const nextEntry = {
+        key: slotKey,
+        slotKey,
+        dailyKey,
+        kind: 'enfermagem',
+        date: String(d.data),
+        diaUsername: isDia ? uname : String(prev.diaUsername || ''),
+        noiteUsername: !isDia ? uname : String(prev.noiteUsername || ''),
+        responsavelDiaNome: isDia ? String(d.responsavelNome || d.responsavelDiaNome || '') : String(d.responsavelDiaNome || prev.responsavelDiaNome || ''),
+        responsavelDiaCoren: isDia ? String(d.responsavelCoren || d.responsavelDiaCoren || '') : String(d.responsavelDiaCoren || prev.responsavelDiaCoren || ''),
+        responsavelNoiteNome: !isDia ? String(d.responsavelNome || d.responsavelNoiteNome || '') : String(d.responsavelNoiteNome || prev.responsavelNoiteNome || ''),
+        responsavelNoiteCoren: !isDia ? String(d.responsavelCoren || d.responsavelNoiteCoren || '') : String(d.responsavelNoiteCoren || prev.responsavelNoiteCoren || ''),
+        itensDia: (isDia || (d.itensDia && Object.keys(d.itensDia).length > 0))
+          ? Object.assign({}, prev.itensDia || {}, d.itensDia || {})
+          : (prev.itensDia || {}),
+        itensNoite: (!isDia || (d.itensNoite && Object.keys(d.itensNoite).length > 0))
+          ? Object.assign({}, prev.itensNoite || {}, d.itensNoite || {})
+          : (prev.itensNoite || {}),
+        obsDiaPagina1: isDia ? String(d.obsPagina1 || d.obsDiaPagina1 || '') : String(d.obsDiaPagina1 || prev.obsDiaPagina1 || ''),
+        obsDiaPagina2: isDia ? String(d.obsPagina2 || d.obsDiaPagina2 || '') : String(d.obsDiaPagina2 || prev.obsDiaPagina2 || ''),
+        obsNoitePagina1: !isDia ? String(d.obsPagina1 || d.obsNoitePagina1 || '') : String(d.obsNoitePagina1 || prev.obsNoitePagina1 || ''),
+        obsNoitePagina2: !isDia ? String(d.obsPagina2 || d.obsNoitePagina2 || '') : String(d.obsNoitePagina2 || prev.obsNoitePagina2 || ''),
+        sigEnfermagemDia: sigDia,
+        sigEnfermagemNoite: sigNoite,
+        updatedAt: nowIso
+      };
+      avMap[slotKey] = nextEntry;
+    }
+
+    setViaturaAvariasMap(avMap);
+    markGitHubDirty();
+    return avMap[slotKey];
+  }
+
+  function getSharedDailyChecklist(kind, dateStr, viaturaId, outraPlaca) {
+    const dailyKey = buildDailyChecklistKey(kind, dateStr, viaturaId, outraPlaca);
+    if (!dailyKey) return null;
+    const avMap = getViaturaAvariasMap();
+    for (let i = 0; i < DAILY_CK_SLOT_COUNT; i++) {
+      const sk = formatDailyCkSlotKey(i);
+      const cur = avMap[sk];
+      if (cur && cur.dailyKey === dailyKey) {
+        if (kind === 'condutor') {
+          return Object.assign({}, cur, {
+            sigCondutorDiurno: hydrateSharedSignatureRef(cur.sigCondutorDiurno, cur.diurnoUsername),
+            sigCondutorNoturno: hydrateSharedSignatureRef(cur.sigCondutorNoturno, cur.noturnoUsername),
+            sigAbastecimento: hydrateSharedSignatureRef(cur.sigAbastecimento, cur.abastUsername)
+          });
+        }
+        return Object.assign({}, cur, {
+          sigEnfermagemDia: hydrateSharedSignatureRef(cur.sigEnfermagemDia, cur.diaUsername),
+          sigEnfermagemNoite: hydrateSharedSignatureRef(cur.sigEnfermagemNoite, cur.noiteUsername)
+        });
+      }
+    }
+    return null;
+  }
+
+  function buildPrintJobTitle(record) {
+    if (!record) return 'Documento SAMU 192';
+    if (record.type === 'checklist_condutor') {
+      return `Check List Condutor - ${record.vehicle || 'Viatura USB'}${record.shift ? ' (' + record.shift + ')' : ''}`;
+    }
+    if (record.type === 'checklist_enfermagem') {
+      return `Check List Enfermagem - ${record.shift || 'Plantão'}${record.createdByName ? ' (' + record.createdByName + ')' : ''}`;
+    }
+    const pName = String(record.patientName || (record.data && record.data.vitimaNome) || 'Paciente não identificado').trim();
+    const riskTxt = record.risk ? ` [${record.risk}]` : '';
+    return `Ficha USB - ${pName}${riskTxt}`;
+  }
+
+  function pickPrintSlotKey(seedStr, avMap) {
+    let h = 0;
+    const s = String(seedStr || Date.now());
+    for (let i = 0; i < s.length; i++) {
+      h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+    }
+    const startIdx = Math.abs(h) % PRINT_SLOT_COUNT;
+
+    // 1ª passagem: slot livre
+    for (let step = 0; step < PRINT_SLOT_COUNT; step++) {
+      const sk = formatSlotKey((startIdx + step) % PRINT_SLOT_COUNT);
+      const cur = avMap[sk];
+      if (!cur || !cur.jobId) return sk;
+    }
+
+    // 2ª passagem: slot já concluído/cancelado/erro mais antigo
+    let bestFinishedKey = '';
+    let bestFinishedTs = '\uffff';
+    for (let step = 0; step < PRINT_SLOT_COUNT; step++) {
+      const sk = formatSlotKey((startIdx + step) % PRINT_SLOT_COUNT);
+      const cur = avMap[sk];
+      if (cur && cur.status !== 'pending') {
+        const ts = String(cur.updatedAt || cur.createdAt || '');
+        if (ts < bestFinishedTs) {
+          bestFinishedTs = ts;
+          bestFinishedKey = sk;
+        }
+      }
+    }
+    if (bestFinishedKey) return bestFinishedKey;
+
+    // 3ª passagem (todos 80 slots pendentes): recicla o mais antigo
+    let oldestKey = formatSlotKey(startIdx);
+    let oldestTs = '\uffff';
+    for (let step = 0; step < PRINT_SLOT_COUNT; step++) {
+      const sk = formatSlotKey((startIdx + step) % PRINT_SLOT_COUNT);
+      const cur = avMap[sk];
+      const ts = String((cur && (cur.updatedAt || cur.createdAt)) || '');
+      if (ts < oldestTs) {
+        oldestTs = ts;
+        oldestKey = sk;
+      }
+    }
+    return oldestKey;
+  }
+
+  async function enqueueRemotePrintJob(record, opts) {
+    const o = (opts && typeof opts === 'object') ? opts : {};
+    const isTest = Boolean(o.isTestPage);
+    const fileId = isTest ? '__TEST_PAGE__' : extractDriveFileIdFromAny(record && record.driveFileId, record && record.driveUrl);
+    const fileUrl = isTest ? '' : String((record && record.driveUrl) || '').trim();
+    if (!isTest && !fileId && !fileUrl) {
+      throw new Error('O PDF precisa estar salvo no Google Drive antes de enviar para a Impressora da Base.');
+    }
+
+    const cfg = getRemotePrintConfig();
+    const sess = getSession();
+    const avMap = getViaturaAvariasMap();
+    const nowIso = new Date().toISOString();
+    const recId = String((record && record.id) || '');
+    const trigger = String(o.trigger || 'manual');
+    const duplexMode = (o.duplexMode || cfg.duplexMode || 'duplex') === 'simplex' ? 'simplex' : 'duplex';
+    const copies = Math.max(1, Math.min(5, Number(o.copies || cfg.copies) || 1));
+
+    // Evita duplicidade caso o mesmo registro já esteja aguardando na fila ou tenha acabado de ser enviado no auto-print
+    if (!isTest && recId) {
+      for (let i = 0; i < PRINT_SLOT_COUNT; i++) {
+        const sk = formatSlotKey(i);
+        const ex = avMap[sk];
+        if (!ex || !ex.jobId || ex.recordId !== recId) continue;
+        const sameFile = (!fileId || ex.driveFileId === fileId);
+        if (ex.status === 'pending' && sameFile) {
+          if (trigger === 'auto') {
+            return { ok: true, deduplicated: true, job: ex };
+          }
+          const refreshed = Object.assign({}, ex, {
+            duplexMode,
+            copies,
+            updatedAt: nowIso
+          });
+          avMap[sk] = refreshed;
+          setViaturaAvariasMap(avMap);
+          markGitHubDirty();
+          if (!o.skipPush && navigator.onLine && hasGitHubConfigured()) {
+            try { await syncInternalDbWithGitHub({ pushChanges: true }); } catch (e) {}
+          }
+          return { ok: true, deduplicated: true, job: refreshed };
+        }
+        if (trigger === 'auto' && ex.status === 'printed' && sameFile) {
+          const ageMs = Date.now() - Date.parse(String(ex.updatedAt || ex.createdAt || ''));
+          if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < 8 * 60 * 1000) {
+            return { ok: true, deduplicated: true, job: ex };
+          }
+        }
+      }
+    }
+
+    const jobId = 'pj_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7);
+    const slotKey = pickPrintSlotKey(jobId + '_' + recId, avMap);
+    const job = {
+      key: slotKey,
+      slotKey,
+      jobId,
+      recordId: recId,
+      recordType: isTest ? 'teste' : String((record && record.type) || 'ficha'),
+      title: String(o.title || buildPrintJobTitle(record)),
+      date: String((record && record.date) || nowIso.slice(0, 10)),
+      driveFileId: fileId,
+      driveUrl: fileUrl,
+      isTestPage: isTest,
+      duplexMode,
+      copies,
+      trigger,
+      requestedBy: String((sess && sess.username) || (record && record.createdBy) || ''),
+      requestedByName: String((sess && sess.name) || (record && record.createdByName) || ''),
+      createdAt: nowIso,
+      status: 'pending',
+      printedAt: '',
+      printedOn: '',
+      printerName: '',
+      errorMsg: '',
+      updatedAt: nowIso
+    };
+
+    avMap[slotKey] = job;
+    setViaturaAvariasMap(avMap);
+    markGitHubDirty();
+
+    let pushed = false;
+    if (!o.skipPush && navigator.onLine && hasGitHubConfigured()) {
+      try {
+        const sRes = await syncInternalDbWithGitHub({ pushChanges: true });
+        pushed = Boolean(sRes && sRes.ok);
+      } catch (e) {}
+    }
+    return { ok: true, pushed, job };
+  }
+
+  async function enqueueRemoteTestPage() {
+    const nowIso = new Date().toISOString();
+    return enqueueRemotePrintJob(
+      {
+        id: 'test_' + Date.now(),
+        type: 'teste',
+        date: nowIso.slice(0, 10),
+        driveFileId: '__TEST_PAGE__',
+        driveUrl: ''
+      },
+      {
+        isTestPage: true,
+        trigger: 'test',
+        title: 'Página de Teste - Impressora da Base SAMU 192'
+      }
+    );
+  }
+
+  async function retryRemotePrintJob(jobId) {
+    const targetId = String(jobId || '').trim();
+    if (!targetId) return null;
+    const avMap = getViaturaAvariasMap();
+    const nowIso = new Date().toISOString();
+    let updatedJob = null;
+
+    for (let i = 0; i < PRINT_SLOT_COUNT; i++) {
+      const sk = formatSlotKey(i);
+      const ex = avMap[sk];
+      if (ex && ex.jobId === targetId) {
+        updatedJob = Object.assign({}, ex, {
+          jobId: 'pj_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7),
+          status: 'pending',
+          errorMsg: '',
+          printedAt: '',
+          createdAt: nowIso,
+          updatedAt: nowIso
+        });
+        avMap[sk] = updatedJob;
+        break;
+      }
+    }
+    if (!updatedJob) return null;
+
+    setViaturaAvariasMap(avMap);
+    markGitHubDirty();
+    if (navigator.onLine && hasGitHubConfigured()) {
+      try { await syncInternalDbWithGitHub({ pushChanges: true }); } catch (e) {}
+    }
+    return updatedJob;
+  }
+
+  async function cancelRemotePrintJob(jobId) {
+    const targetId = String(jobId || '').trim();
+    if (!targetId) return false;
+    const avMap = getViaturaAvariasMap();
+    const nowIso = new Date().toISOString();
+    let found = false;
+
+    for (let i = 0; i < PRINT_SLOT_COUNT; i++) {
+      const sk = formatSlotKey(i);
+      const ex = avMap[sk];
+      if (ex && ex.jobId === targetId) {
+        avMap[sk] = Object.assign({}, ex, {
+          status: 'cancelled',
+          updatedAt: nowIso
+        });
+        found = true;
+        break;
+      }
+    }
+    if (!found) return false;
+
+    setViaturaAvariasMap(avMap);
+    markGitHubDirty();
+    if (navigator.onLine && hasGitHubConfigured()) {
+      try { await syncInternalDbWithGitHub({ pushChanges: true }); } catch (e) {}
+    }
+    return true;
+  }
+
   /* ===================== BASE INTERNA DE PACIENTES (OFFLINE + GITHUB) ===================== */
   function getInternalPatientsMapRaw() {
     try {
@@ -2604,7 +3206,7 @@
       }
     }
 
-    // 7. Mescla avarias salvas de cada viatura (amassados, riscados, danificados)
+    // 7. Mescla avarias salvas de cada viatura (amassados, riscados, danificados) + fila/config de impressão remota na Base SAMU
     if (remote.viaturaAvarias && typeof remote.viaturaAvarias === 'object') {
       const localAv = getViaturaAvariasMap();
       let avChanged = false;
@@ -2612,6 +3214,16 @@
         const rEntry = remote.viaturaAvarias[vKey];
         if (!rEntry || typeof rEntry !== 'object') return;
         const lEntry = localAv[vKey];
+        if (isPrintSystemKey(vKey)) {
+          if (!lEntry || String(rEntry.updatedAt || '') > String(lEntry.updatedAt || '')) {
+            localAv[vKey] = Object.assign({}, rEntry, {
+              key: vKey,
+              updatedAt: rEntry.updatedAt || new Date().toISOString()
+            });
+            avChanged = true;
+          }
+          return;
+        }
         if (!lEntry || String(rEntry.updatedAt || '') > String(lEntry.updatedAt || '')) {
           localAv[vKey] = {
             key: vKey,
@@ -3550,7 +4162,8 @@
     });
   }
 
-  async function uploadRecordToDrive(record, pdfBase64) {
+  async function uploadRecordToDrive(record, pdfBase64, opts) {
+    const upOpts = (opts && typeof opts === 'object') ? opts : {};
     // Se tiver alterações na base interna (novo recebedor do hospital, médico regulador ou paciente), sincroniza no Google Drive em paralelo
     if (navigator.onLine && hasGitHubConfigured() && getGitHubMeta().dirty) {
       syncInternalDbWithGitHub({ pushChanges: true }).catch(() => {});
@@ -3561,13 +4174,17 @@
     if (!settings.scriptUrl || !sess || !navigator.onLine) {
       record.syncStatus = 'pending';
       record.pendingPdfBase64 = pdfBase64 || record.pendingPdfBase64 || '';
+      if (!upOpts.skipAutoPrint && shouldAutoPrintRecord(record)) {
+        record.pendingAutoPrint = true;
+      }
       await saveRecordLocal(record, { skipPatientUpsert: true });
-      return { synced: false, reason: !settings.scriptUrl ? 'no_url' : 'offline' };
+      return { synced: false, reason: !settings.scriptUrl ? 'no_url' : 'offline', printPendingOffline: Boolean(record.pendingAutoPrint) };
     }
 
     try {
       const cleanRecordForCloud = Object.assign({}, record);
       delete cleanRecordForCloud.pendingPdfBase64;
+      delete cleanRecordForCloud.pendingAutoPrint;
 
       const res = await apiPost({
         action: 'uploadRecord',
@@ -3582,12 +4199,22 @@
 
       if (res && res.ok) {
         record.syncStatus = 'synced';
-        record.driveFileId = res.driveFileId || record.driveFileId || '';
         record.driveUrl = res.driveUrl || record.driveUrl || '';
+        record.driveFileId = res.driveFileId || record.driveFileId || extractDriveFileIdFromAny('', record.driveUrl);
         record.syncedAt = res.syncedAt || new Date().toISOString();
         delete record.pendingPdfBase64;
+        const wantAutoPrint = !upOpts.skipAutoPrint && (Boolean(record.pendingAutoPrint) || shouldAutoPrintRecord(record));
+        delete record.pendingAutoPrint;
         await saveRecordLocal(record, { skipPatientUpsert: true });
-        return { synced: true, driveUrl: record.driveUrl };
+
+        let printQueued = false;
+        if (wantAutoPrint && (record.driveFileId || record.driveUrl)) {
+          try {
+            const pRes = await enqueueRemotePrintJob(record, { trigger: 'auto' });
+            printQueued = Boolean(pRes && pRes.ok);
+          } catch (ePrint) {}
+        }
+        return { synced: true, driveUrl: record.driveUrl, driveFileId: record.driveFileId, printQueued };
       } else {
         throw new Error((res && res.error) || 'Falha ao enviar ao Google Drive.');
       }
@@ -3595,8 +4222,11 @@
       record.syncStatus = 'pending';
       record.lastSyncError = err.message;
       record.pendingPdfBase64 = pdfBase64 || record.pendingPdfBase64 || '';
+      if (!upOpts.skipAutoPrint && shouldAutoPrintRecord(record)) {
+        record.pendingAutoPrint = true;
+      }
       await saveRecordLocal(record, { skipPatientUpsert: true });
-      return { synced: false, reason: 'error', error: err.message };
+      return { synced: false, reason: 'error', error: err.message, printPendingOffline: Boolean(record.pendingAutoPrint) };
     }
   }
 
@@ -3903,6 +4533,19 @@
     getViaturaAvariasMap,
     getViaturaAvarias,
     saveViaturaAvarias,
+    getRemotePrintConfig,
+    saveRemotePrintConfig,
+    getRemotePrintAgentStatus,
+    getRemotePrintQueue,
+    getRecordPrintStatus,
+    isNightShiftChecklist,
+    shouldAutoPrintRecord,
+    saveSharedDailyChecklist,
+    getSharedDailyChecklist,
+    enqueueRemotePrintJob,
+    enqueueRemoteTestPage,
+    retryRemotePrintJob,
+    cancelRemotePrintJob,
     getInternalPatientsMap,
     getInternalPatientsList,
     upsertPatientInInternalDb,
