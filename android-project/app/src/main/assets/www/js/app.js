@@ -7323,7 +7323,7 @@
       btn.disabled = true;
       btn.textContent = 'Gerando PDF e Salvando...';
       try {
-        if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
+        if (!isDiurno && Object.keys(d.itensDiurno || {}).length === 0 && navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
           await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: false }).catch(() => {});
         }
         applySharedDailyToCondutorState(d, { replaceOtherShift: false });
@@ -7822,7 +7822,7 @@
       btn.disabled = true;
       btn.textContent = 'Gerando PDF e Salvando...';
       try {
-        if (navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
+        if (!isDia && Object.keys(d.itensDia || {}).length === 0 && navigator.onLine && window.SamuStorage.hasGitHubConfigured()) {
           await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: false }).catch(() => {});
         }
         syncActiveShiftFieldsInEnfermagem(d);

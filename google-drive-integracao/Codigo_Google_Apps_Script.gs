@@ -34,35 +34,140 @@ function doGet(e) {
   return jsonResponse_({ ok: false, error: 'Use POST para operações de dados.' });
 }
 
+function filterDbForPrintQueueOnly_(dbObj) {
+  var srcAv = (dbObj && dbObj.viaturaAvarias) || {};
+  var outAv = {};
+  var keys = Object.keys(srcAv);
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    if (k.indexOf('__pjob_') === 0 || k.indexOf('__print_') === 0) {
+      outAv[k] = srcAv[k];
+    }
+  }
+  return {
+    schemaVersion: (dbObj && dbObj.schemaVersion) || 3,
+    updatedAt: (dbObj && dbObj.updatedAt) || new Date().toISOString(),
+    viaturaAvarias: outAv
+  };
+}
+
+function enqueuePrintJobOnServerDb_(serverDb, rec, driveFileId, driveFileUrl, opts, caller) {
+  var avMap = Object.assign({}, serverDb.viaturaAvarias || {});
+  var nowIso = new Date().toISOString();
+  var recId = String((rec && rec.id) || '');
+
+  // Evita duplicidade caso o mesmo registro já esteja pendente
+  for (var s = 0; s < 80; s++) {
+    var skCheck = '__pjob_' + (s < 10 ? '0' + s : String(s));
+    var ex = avMap[skCheck];
+    if (ex && ex.jobId && ex.recordId === recId && ex.status === 'pending' && (!driveFileId || ex.driveFileId === driveFileId)) {
+      return ex;
+    }
+  }
+
+  var jobId = 'pj_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7);
+  var seed = jobId + '_' + recId;
+  var h = 0;
+  for (var c = 0; c < seed.length; c++) {
+    h = ((h << 5) - h + seed.charCodeAt(c)) | 0;
+  }
+  var startIdx = Math.abs(h) % 80;
+  var chosenSlot = '';
+  for (var step = 0; step < 80; step++) {
+    var sk = '__pjob_' + (((startIdx + step) % 80) < 10 ? '0' + ((startIdx + step) % 80) : String((startIdx + step) % 80));
+    if (!avMap[sk] || !avMap[sk].jobId) {
+      chosenSlot = sk;
+      break;
+    }
+  }
+  if (!chosenSlot) {
+    var oldestFinishedTs = '\uffff';
+    for (var step2 = 0; step2 < 80; step2++) {
+      var sk2 = '__pjob_' + (((startIdx + step2) % 80) < 10 ? '0' + ((startIdx + step2) % 80) : String((startIdx + step2) % 80));
+      var cur2 = avMap[sk2];
+      if (cur2 && cur2.status !== 'pending') {
+        var ts2 = String(cur2.updatedAt || cur2.createdAt || '');
+        if (ts2 < oldestFinishedTs) {
+          oldestFinishedTs = ts2;
+          chosenSlot = sk2;
+        }
+      }
+    }
+  }
+  if (!chosenSlot) {
+    chosenSlot = '__pjob_' + (startIdx < 10 ? '0' + startIdx : String(startIdx));
+  }
+
+  var job = {
+    key: chosenSlot,
+    slotKey: chosenSlot,
+    jobId: jobId,
+    recordId: recId,
+    recordType: String((rec && rec.type) || 'ficha'),
+    title: String((opts && opts.title) || recId),
+    date: String((rec && rec.date) || nowIso.slice(0, 10)),
+    driveFileId: String(driveFileId || ''),
+    driveUrl: String(driveFileUrl || ''),
+    isTestPage: false,
+    duplexMode: (opts && opts.duplexMode === 'simplex') ? 'simplex' : 'duplex',
+    copies: Math.max(1, Math.min(5, Number(opts && opts.copies) || 1)),
+    trigger: String((opts && opts.trigger) || 'auto'),
+    requestedBy: String((opts && opts.requestedBy) || (caller && caller.username) || ''),
+    requestedByName: String((opts && opts.requestedByName) || (caller && caller.name) || ''),
+    createdAt: nowIso,
+    status: 'pending',
+    printedAt: '',
+    printedOn: '',
+    printerName: '',
+    errorMsg: '',
+    updatedAt: nowIso
+  };
+
+  avMap[chosenSlot] = job;
+  serverDb.viaturaAvarias = avMap;
+  return job;
+}
+
 function doPost(e) {
+  if (!e || !e.postData || !e.postData.contents) {
+    return jsonResponse_({ ok: false, error: 'Requisição vazia.' });
+  }
+  var body;
+  try {
+    body = JSON.parse(e.postData.contents);
+  } catch (eJson) {
+    return jsonResponse_({ ok: false, error: 'JSON inválido.' });
+  }
+  var action = body.action || '';
+
+  // FAST-PATH SEM LOCK E SEM ABRIR PLANILHA/DRIVE: leitura instantânea em RAM (CacheService ~50ms) p/ Servidor de Impressão e Equipes!
+  if (action === 'syncDatabase' && !body.pushChanges) {
+    var fastCached = readCachedSyncDb_();
+    if (fastCached && typeof fastCached === 'object') {
+      var propsFast = PropertiesService.getScriptProperties();
+      return jsonResponse_({
+        ok: true,
+        version: 4,
+        fastCacheHit: true,
+        syncDatabaseReady: true,
+        deleteRecordReady: true,
+        pushed: false,
+        rootFolderUrl: propsFast.getProperty('CACHED_ROOT_URL') || '',
+        spreadsheetUrl: propsFast.getProperty('CACHED_SS_URL') || '',
+        db: body.onlyPrintQueue ? filterDbForPrintQueueOnly_(fastCached) : fastCached
+      });
+    }
+  }
+
   var lock = LockService.getScriptLock();
   lock.tryLock(25000);
   try {
-    if (!e || !e.postData || !e.postData.contents) {
-      return jsonResponse_({ ok: false, error: 'Requisição vazia.' });
-    }
-    var body = JSON.parse(e.postData.contents);
-    var action = body.action || '';
-    var env = ensureEnvironment_();
-
-    if (action === 'ping') {
-      migrateExistingPdfsToLinkView_(env);
-      return jsonResponse_({
-        ok: true,
-        version: 3,
-        syncDatabaseReady: true,
-        deleteRecordReady: true,
-        rootFolderUrl: env.rootFolder.getUrl(),
-        spreadsheetUrl: env.ss.getUrl()
-      });
-    }
-
-    // Sincronização unificada em tempo real (Logins, Aprovações, Equipe do Plantão, Fichas Compartilhadas, Pacientes, Médicos, Avarias e Fila de Impressão da Base - Zero Token!)
+    // Sincronização unificada em tempo real (usa abertura leve sem SpreadsheetApp quando não há alteração de planilha)
     if (action === 'syncDatabase') {
-      return jsonResponse_(handleSyncDatabase_(env, body));
+      return jsonResponse_(handleSyncDatabase_(null, body));
     }
 
-    // Download direto de PDF por driveFileId (fallback para o Servidor de Impressão da Base SAMU)
+    // Download direto de PDF por driveFileId (sem precisar abrir Planilha Google)
     if (action === 'downloadPdf') {
       var dlId = String(body.driveFileId || '').trim();
       if (!dlId) {
@@ -79,6 +184,20 @@ function doPost(e) {
       } catch (errDl) {
         return jsonResponse_({ ok: false, error: String(errDl && errDl.message ? errDl.message : errDl) });
       }
+    }
+
+    var env = ensureEnvironment_();
+
+    if (action === 'ping') {
+      migrateExistingPdfsToLinkView_(env);
+      return jsonResponse_({
+        ok: true,
+        version: 4,
+        syncDatabaseReady: true,
+        deleteRecordReady: true,
+        rootFolderUrl: env.rootFolder.getUrl(),
+        spreadsheetUrl: env.ss.getUrl()
+      });
     }
 
     if (action === 'login') {
@@ -163,12 +282,24 @@ function doPost(e) {
       }
 
       var savedMeta = upsertRecord_(env.recordsSheet, rec, caller, driveFileId, driveFileUrl);
+      var printQueued = false;
+      var printJob = null;
+      if (body.autoPrintOpts && body.autoPrintOpts.enabled && (driveFileId || driveFileUrl)) {
+        try {
+          var serverDbPrint = loadSyncDb_(env);
+          printJob = enqueuePrintJobOnServerDb_(serverDbPrint, rec, driveFileId, driveFileUrl, body.autoPrintOpts, caller);
+          saveSyncDb_(env, serverDbPrint);
+          printQueued = Boolean(printJob);
+        } catch (eAutoPrt) {}
+      }
       return jsonResponse_({
         ok: true,
         id: rec.id,
         driveFileId: driveFileId,
         driveUrl: driveFileUrl,
-        syncedAt: savedMeta.syncedAt
+        syncedAt: savedMeta.syncedAt,
+        printQueued: printQueued,
+        printJob: printJob
       });
     }
 
@@ -244,7 +375,7 @@ function setupEstrutura() {
   Logger.log('Planilha Banco de Dados: ' + env.ss.getUrl());
 }
 
-function ensureEnvironment_() {
+function ensureRootFolderOnly_() {
   var props = PropertiesService.getScriptProperties();
   var rootFolder = null;
   var savedFolderId = OPTIONAL_ROOT_FOLDER_ID || props.getProperty('ROOT_FOLDER_ID');
@@ -263,11 +394,20 @@ function ensureEnvironment_() {
     }
     props.setProperty('ROOT_FOLDER_ID', rootFolder.getId());
   }
+  return rootFolder;
+}
 
-  // Garante as 3 pastas principais
-  getOrCreateSubfolder_(rootFolder, 'Fichas de Atendimento');
-  getOrCreateSubfolder_(rootFolder, 'Check List - Condutor Socorrista');
-  getOrCreateSubfolder_(rootFolder, 'Check List - Enfermagem');
+function ensureEnvironment_() {
+  var props = PropertiesService.getScriptProperties();
+  var rootFolder = ensureRootFolderOnly_();
+
+  // Garante as 3 pastas principais apenas na primeira configuração
+  if (!props.getProperty('SUBFOLDERS_READY_V1')) {
+    getOrCreateSubfolder_(rootFolder, 'Fichas de Atendimento');
+    getOrCreateSubfolder_(rootFolder, 'Check List - Condutor Socorrista');
+    getOrCreateSubfolder_(rootFolder, 'Check List - Enfermagem');
+    props.setProperty('SUBFOLDERS_READY_V1', '1');
+  }
 
   // Obtém ou cria a Planilha Google de banco de dados
   var ss = null;
@@ -290,6 +430,11 @@ function ensureEnvironment_() {
     }
     props.setProperty('DB_SPREADSHEET_ID', ss.getId());
   }
+
+  try {
+    if (!props.getProperty('CACHED_ROOT_URL')) props.setProperty('CACHED_ROOT_URL', rootFolder.getUrl());
+    if (!props.getProperty('CACHED_SS_URL')) props.setProperty('CACHED_SS_URL', ss.getUrl());
+  } catch (eUrls) {}
 
   var usersSheet = ensureUsersSheet_(ss);
   var recordsSheet = ensureRecordsSheet_(ss);
@@ -1345,8 +1490,18 @@ function mergeSyncDatabases_(base, incoming) {
 }
 
 function handleSyncDatabase_(env, body) {
-  migrateExistingPdfsToLinkView_(env);
-  var serverDb = loadSyncDb_(env);
+  var props = PropertiesService.getScriptProperties();
+  var cached = readCachedSyncDb_();
+  var fullEnv = env || null;
+
+  if (!cached && !fullEnv) {
+    fullEnv = ensureEnvironment_();
+    migrateExistingPdfsToLinkView_(fullEnv);
+  } else if (fullEnv) {
+    migrateExistingPdfsToLinkView_(fullEnv);
+  }
+
+  var serverDb = cached || loadSyncDb_(fullEnv);
   var pushed = false;
 
   if (body && body.pushChanges && body.clientDb && typeof body.clientDb === 'object') {
@@ -1356,8 +1511,12 @@ function handleSyncDatabase_(env, body) {
     delete serverDb._usersChanged;
     delete serverDb._recordsToPurgeOnDrive;
 
-    if (recordsToPurge.length > 0) {
-      deleteRecordsFromSheetAndDrive_(env, recordsToPurge);
+    if ((recordsToPurge.length > 0 || shouldSyncSheet) && !fullEnv) {
+      fullEnv = ensureEnvironment_();
+    }
+
+    if (recordsToPurge.length > 0 && fullEnv) {
+      deleteRecordsFromSheetAndDrive_(fullEnv, recordsToPurge);
       recordsToPurge.forEach(function(sp) {
         if (sp && sp.id && serverDb.deletedRecordsMap && serverDb.deletedRecordsMap[sp.id]) {
           serverDb.deletedRecordsMap[sp.id].drivePurged = true;
@@ -1365,22 +1524,26 @@ function handleSyncDatabase_(env, body) {
       });
     }
 
-    saveSyncDb_(env, serverDb);
-    if (shouldSyncSheet) {
-      syncUsersToSpreadsheetTab_(env.usersSheet, serverDb.users);
+    var syncEnv = fullEnv || { rootFolder: ensureRootFolderOnly_() };
+    saveSyncDb_(syncEnv, serverDb);
+    if (shouldSyncSheet && fullEnv) {
+      syncUsersToSpreadsheetTab_(fullEnv.usersSheet, serverDb.users);
     }
     pushed = true;
   }
 
+  var rootUrl = fullEnv ? fullEnv.rootFolder.getUrl() : (props.getProperty('CACHED_ROOT_URL') || '');
+  var ssUrl = fullEnv ? fullEnv.ss.getUrl() : (props.getProperty('CACHED_SS_URL') || '');
+
   return {
     ok: true,
-    version: 3,
+    version: 4,
     syncDatabaseReady: true,
     deleteRecordReady: true,
     pushed: pushed,
-    rootFolderUrl: env.rootFolder.getUrl(),
-    spreadsheetUrl: env.ss.getUrl(),
-    db: serverDb
+    rootFolderUrl: rootUrl,
+    spreadsheetUrl: ssUrl,
+    db: (body && body.onlyPrintQueue) ? filterDbForPrintQueueOnly_(serverDb) : serverDb
   };
 }
 

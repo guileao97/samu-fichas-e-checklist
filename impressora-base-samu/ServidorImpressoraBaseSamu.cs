@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Printing;
@@ -20,7 +21,7 @@ using Windows.Storage.Streams;
 [assembly: AssemblyDescription("Servidor automatico de impressao em nuvem (Google Drive -> Impressora da Base SAMU 192)")]
 [assembly: AssemblyCompany("SAMU 192 - Orlandia-SP")]
 [assembly: AssemblyProduct("SAMU 192 Impressora Base")]
-[assembly: AssemblyVersion("1.0.6.0")]
+[assembly: AssemblyVersion("1.0.7.0")]
 
 namespace Samu192PrintServer
 {
@@ -154,8 +155,102 @@ namespace Samu192PrintServer
             act.GetResults();
         }
 
+        private static readonly Regex PagesCountRegex = new Regex(
+            @"/Type\s+/Pages\b[^>]*?/Count\s+(\d+)",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant
+        );
+
+        private static readonly Regex SamuJpegStreamRegex = new Regex(
+            @"/Subtype\s+/Image\s+/Width\s+(\d+)\s+/Height\s+(\d+)\s+/ColorSpace\s+/DeviceRGB\s+/BitsPerComponent\s+8\s+/Filter\s+/DCTDecode\s+/Length\s+(\d+)\s*>>\s*stream\r?\n",
+            RegexOptions.Compiled | RegexOptions.CultureInvariant
+        );
+
+        public static List<Bitmap> TryExtractDirectJpegPagesFromSamuPdf(byte[] pdfBytes)
+        {
+            if (pdfBytes == null || pdfBytes.Length < 256) return null;
+            var extracted = new List<Bitmap>();
+            try
+            {
+                Encoding latin1 = Encoding.GetEncoding(28591);
+                string raw = latin1.GetString(pdfBytes);
+
+                Match pm = PagesCountRegex.Match(raw);
+                if (!pm.Success) return null;
+                int expectedPages;
+                if (!int.TryParse(pm.Groups[1].Value, out expectedPages) || expectedPages <= 0 || expectedPages > 20)
+                {
+                    return null;
+                }
+
+                MatchCollection matches = SamuJpegStreamRegex.Matches(raw);
+                if (matches.Count != expectedPages) return null;
+
+                for (int i = 0; i < matches.Count; i++)
+                {
+                    Match m = matches[i];
+                    int imgW;
+                    int imgH;
+                    int byteLen;
+                    if (!int.TryParse(m.Groups[1].Value, out imgW) ||
+                        !int.TryParse(m.Groups[2].Value, out imgH) ||
+                        !int.TryParse(m.Groups[3].Value, out byteLen))
+                    {
+                        DisposeBitmapList(extracted);
+                        return null;
+                    }
+                    if (imgW < 600 || imgH < 600 || byteLen <= 128)
+                    {
+                        DisposeBitmapList(extracted);
+                        return null;
+                    }
+
+                    int streamOffset = m.Index + m.Length;
+                    if (streamOffset < 0 || streamOffset + byteLen > pdfBytes.Length)
+                    {
+                        DisposeBitmapList(extracted);
+                        return null;
+                    }
+                    // Confirma assinatura JPEG SOI (0xFF 0xD8)
+                    if (pdfBytes[streamOffset] != 0xFF || pdfBytes[streamOffset + 1] != 0xD8)
+                    {
+                        DisposeBitmapList(extracted);
+                        return null;
+                    }
+
+                    using (var ms = new MemoryStream(pdfBytes, streamOffset, byteLen, false))
+                    using (var tmpImg = Image.FromStream(ms))
+                    {
+                        extracted.Add(new Bitmap(tmpImg));
+                    }
+                }
+                return extracted;
+            }
+            catch
+            {
+                DisposeBitmapList(extracted);
+                return null;
+            }
+        }
+
+        private static void DisposeBitmapList(List<Bitmap> list)
+        {
+            if (list == null) return;
+            for (int i = 0; i < list.Count; i++)
+            {
+                try { if (list[i] != null) list[i].Dispose(); } catch { }
+            }
+            list.Clear();
+        }
+
         public static List<Bitmap> RenderPdfPagesToBitmaps(byte[] pdfBytes, uint targetWidthPx)
         {
+            // Fast-path (~18ms): extrai os JPEGs nativos 200 DPI diretamente dos PDFs gerados pelo SAMU sem re-rasterizar em PNG!
+            List<Bitmap> directPages = TryExtractDirectJpegPagesFromSamuPdf(pdfBytes);
+            if (directPages != null && directPages.Count > 0)
+            {
+                return directPages;
+            }
+
             var pages = new List<Bitmap>();
             using (var rasIn = new InMemoryRandomAccessStream())
             {
@@ -177,8 +272,9 @@ namespace Samu192PrintServer
                         var opts = new PdfPageRenderOptions();
                         double w = page.Size.Width > 1.0 ? page.Size.Width : 595.0;
                         double h = page.Size.Height > 1.0 ? page.Size.Height : 842.0;
-                        opts.DestinationWidth = targetWidthPx;
-                        opts.DestinationHeight = (uint)Math.Round((double)targetWidthPx * (h / w));
+                        uint pageTargetW = (w > h) ? Math.Max(targetWidthPx, 2339u) : targetWidthPx;
+                        opts.DestinationWidth = pageTargetW;
+                        opts.DestinationHeight = (uint)Math.Round((double)pageTargetW * (h / w));
 
                         WaitAction(page.RenderToStreamAsync(rasOut, opts), 30000);
                         uint byteLen = (uint)rasOut.Size;
@@ -229,7 +325,9 @@ namespace Samu192PrintServer
         private System.Threading.Timer pollTimer;
         private EventWaitHandle showWindowEvent;
         private RegisteredWaitHandle showWindowWaitHandle;
+        private readonly object statusPushLock = new object();
         private int isPollingFlag = 0;
+        private int pendingImmediatePoll = 0;
         private DateTime lastHeartbeatUtc = DateTime.MinValue;
         private bool allowRealExit = false;
         private bool shownTrayBalloonOnce = false;
@@ -265,10 +363,27 @@ namespace Samu192PrintServer
             LoadInstalledPrinters(config.PrinterName);
             SyncStartupCheckboxState();
 
-            AppendLog("Servidor de Impressao da Base SAMU 192 iniciado no computador: " + Environment.MachineName);
+            AppendLog("Servidor de Impressao da Base SAMU 192 v1.0.7 (Modo Turbo) iniciado em: " + Environment.MachineName);
             AppendLog("Impressora ativa: " + GetSelectedPrinterName());
 
-            pollTimer = new System.Threading.Timer(OnPollTimerTick, null, 1200, 6000);
+            PreWarmDriveConnectionsAsync();
+            pollTimer = new System.Threading.Timer(OnPollTimerTick, null, 250, Timeout.Infinite);
+        }
+
+        private void PreWarmDriveConnectionsAsync()
+        {
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    var req = (HttpWebRequest)WebRequest.Create("https://drive.usercontent.google.com/");
+                    req.Method = "HEAD";
+                    req.AllowAutoRedirect = false;
+                    Program.ApplyFastHttpSettings(req, 5000);
+                    using (var resp = (HttpWebResponse)req.GetResponse()) { }
+                }
+                catch { }
+            });
         }
 
         private void RegisterSingleInstanceWakeListener()
@@ -353,7 +468,7 @@ namespace Samu192PrintServer
 
         private void BuildUi()
         {
-            Text = "SAMU 192 - Orlandia-SP | Servidor de Impressao Automatica da Base";
+            Text = "SAMU 192 - Orlandia-SP | Servidor de Impressao Automatica da Base (v1.0.7 Turbo)";
             Size = new Size(780, 610);
             MinimumSize = new Size(720, 540);
             StartPosition = FormStartPosition.CenterScreen;
@@ -1127,8 +1242,22 @@ namespace Samu192PrintServer
             txtLog.AppendText(line);
         }
 
+        private void ScheduleNextPoll(int delayMs)
+        {
+            if (allowRealExit) return;
+            try
+            {
+                if (pollTimer != null)
+                {
+                    pollTimer.Change(Math.Max(50, delayMs), Timeout.Infinite);
+                }
+            }
+            catch { }
+        }
+
         private void TriggerImmediatePoll()
         {
+            Interlocked.Exchange(ref pendingImmediatePoll, 1);
             ThreadPool.QueueUserWorkItem(delegate { OnPollTimerTick(null); });
         }
 
@@ -1136,6 +1265,7 @@ namespace Samu192PrintServer
         {
             if (allowRealExit) return;
             if (Interlocked.CompareExchange(ref isPollingFlag, 1, 0) != 0) return;
+            Interlocked.Exchange(ref pendingImmediatePoll, 0);
             try
             {
                 PollCloudQueueOnce();
@@ -1147,6 +1277,12 @@ namespace Samu192PrintServer
             finally
             {
                 Interlocked.Exchange(ref isPollingFlag, 0);
+                if (!allowRealExit)
+                {
+                    int fastPending = Interlocked.Exchange(ref pendingImmediatePoll, 0);
+                    int nextMs = fastPending != 0 ? 120 : ((config != null && config.Paused) ? 3500 : 1800);
+                    ScheduleNextPoll(nextMs);
+                }
             }
         }
 
@@ -1186,9 +1322,35 @@ namespace Samu192PrintServer
             var payload = new Dictionary<string, object>();
             payload["action"] = "syncDatabase";
             payload["pushChanges"] = true;
+            payload["onlyPrintQueue"] = true;
             payload["clientDb"] = clientDb;
 
             PostJsonToAppsScript(url, payload);
+        }
+
+        private void QueueStatusPushAsync(string url, Dictionary<string, object> avUpdatesCopy)
+        {
+            if (string.IsNullOrEmpty(url) || avUpdatesCopy == null || avUpdatesCopy.Count == 0) return;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                lock (statusPushLock)
+                {
+                    try
+                    {
+                        var clientDb = new Dictionary<string, object>();
+                        clientDb["viaturaAvarias"] = avUpdatesCopy;
+
+                        var pushPayload = new Dictionary<string, object>();
+                        pushPayload["action"] = "syncDatabase";
+                        pushPayload["pushChanges"] = true;
+                        pushPayload["onlyPrintQueue"] = true;
+                        pushPayload["clientDb"] = clientDb;
+
+                        PostJsonToAppsScript(url, pushPayload);
+                    }
+                    catch { }
+                }
+            });
         }
 
         private void PollCloudQueueOnce()
@@ -1210,6 +1372,7 @@ namespace Samu192PrintServer
             var pullReq = new Dictionary<string, object>();
             pullReq["action"] = "syncDatabase";
             pullReq["pushChanges"] = false;
+            pullReq["onlyPrintQueue"] = true;
 
             Dictionary<string, object> resp = PostJsonToAppsScript(url, pullReq);
             if (resp == null || !GetBool(resp, "ok", false))
@@ -1297,6 +1460,7 @@ namespace Samu192PrintServer
                         printerName));
 
                     SetBannerSafe("Imprimindo agora: " + job.Title + "...", true, false);
+                    Stopwatch swJob = Stopwatch.StartNew();
 
                     try
                     {
@@ -1310,6 +1474,7 @@ namespace Samu192PrintServer
                             PrintPdfBytesOnWindowsPrinter(pdfBytes, printerName, job.Title, job.DuplexMode, job.Copies);
                         }
 
+                        swJob.Stop();
                         string doneIso = DateTime.UtcNow.ToString("o");
                         RecordJobPrintedLocally(job.JobId, job.Title);
 
@@ -1321,10 +1486,11 @@ namespace Samu192PrintServer
                         updatedSlot["updatedAt"] = doneIso;
                         avUpdates[job.SlotKey] = updatedSlot;
 
-                        AppendLog("CONCLUIDO: " + job.Title + " enviado para a impressora!");
+                        AppendLog(string.Format("CONCLUIDO em {0:0.0}s: {1} enviado para a impressora!", swJob.Elapsed.TotalSeconds, job.Title));
                     }
                     catch (Exception exJob)
                     {
+                        swJob.Stop();
                         string errIso = DateTime.UtcNow.ToString("o");
                         updatedSlot["status"] = "error";
                         updatedSlot["printerName"] = printerName;
@@ -1342,16 +1508,8 @@ namespace Samu192PrintServer
             if (needHeartbeat)
             {
                 avUpdates["__print_agent__"] = BuildAgentHeartbeatDict(printerName, null);
-                var clientDb = new Dictionary<string, object>();
-                clientDb["viaturaAvarias"] = avUpdates;
-
-                var pushPayload = new Dictionary<string, object>();
-                pushPayload["action"] = "syncDatabase";
-                pushPayload["pushChanges"] = true;
-                pushPayload["clientDb"] = clientDb;
-
-                PostJsonToAppsScript(url, pushPayload);
                 lastHeartbeatUtc = DateTime.UtcNow;
+                QueueStatusPushAsync(url, avUpdates);
             }
 
             if (config.Paused)
@@ -1365,7 +1523,7 @@ namespace Samu192PrintServer
             else
             {
                 SetBannerSafe(
-                    string.Format("Conectado ao Google Drive SAMU | Monitorando a cada 6s | Impressora: {0}", printerName),
+                    string.Format("Conectado ao Google Drive SAMU | Fila Turbo (1.8s) | Impressora: {0}", printerName),
                     true,
                     false
                 );
@@ -1400,15 +1558,14 @@ namespace Samu192PrintServer
             return false;
         }
 
-        private static byte[] HttpGetBytes(string downloadUrl)
+        private static byte[] HttpGetBytes(string downloadUrl, int timeoutMs)
         {
             var req = (HttpWebRequest)WebRequest.Create(downloadUrl);
             req.Method = "GET";
             req.AllowAutoRedirect = true;
-            req.MaximumAutomaticRedirections = 10;
-            req.Timeout = 45000;
-            req.ReadWriteTimeout = 45000;
-            req.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) SAMU192BasePrinter/1.0";
+            req.MaximumAutomaticRedirections = 8;
+            req.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) SAMU192BasePrinter/1.0.7";
+            Program.ApplyFastHttpSettings(req, timeoutMs);
 
             using (var resp = (HttpWebResponse)req.GetResponse())
             using (Stream s = resp.GetResponseStream())
@@ -1416,7 +1573,7 @@ namespace Samu192PrintServer
             {
                 if (s != null)
                 {
-                    byte[] buf = new byte[16384];
+                    byte[] buf = new byte[32768];
                     int read;
                     while ((read = s.Read(buf, 0, buf.Length)) > 0)
                     {
@@ -1435,10 +1592,11 @@ namespace Samu192PrintServer
                 throw new Exception("O registro nao possui ID de PDF do Google Drive.");
             }
 
+            // CDN direto do Google Drive em primeiro lugar (evita redirecionamentos/HTML lentos de drive.google.com/uc)
             string[] candidateUrls = new string[]
             {
-                "https://drive.google.com/uc?export=download&id=" + Uri.EscapeDataString(fileId),
-                "https://drive.usercontent.google.com/download?id=" + Uri.EscapeDataString(fileId) + "&export=download&confirm=t"
+                "https://drive.usercontent.google.com/download?id=" + Uri.EscapeDataString(fileId) + "&export=download&confirm=t",
+                "https://drive.google.com/uc?export=download&id=" + Uri.EscapeDataString(fileId)
             };
 
             Exception lastErr = null;
@@ -1446,7 +1604,7 @@ namespace Samu192PrintServer
             {
                 try
                 {
-                    byte[] data = HttpGetBytes(candidateUrls[i]);
+                    byte[] data = HttpGetBytes(candidateUrls[i], 15000);
                     if (IsValidPdfHeader(data))
                     {
                         return data;
@@ -1489,7 +1647,7 @@ namespace Samu192PrintServer
 
         private void PrintPdfBytesOnWindowsPrinter(byte[] pdfBytes, string printerName, string docTitle, string jobDuplexMode, int copies)
         {
-            List<Bitmap> pageBitmaps = WinRtHelper.RenderPdfPagesToBitmaps(pdfBytes, 2480);
+            List<Bitmap> pageBitmaps = WinRtHelper.RenderPdfPagesToBitmaps(pdfBytes, 1754);
             if (pageBitmaps.Count == 0)
             {
                 throw new Exception("O PDF baixado nao contem paginas.");
@@ -1548,10 +1706,10 @@ namespace Samu192PrintServer
                     pd.PrintPage += delegate(object s, PrintPageEventArgs pe) {
                         Bitmap bmp = pageBitmaps[pageIdx];
                         pe.Graphics.PageUnit = GraphicsUnit.Display;
-                        pe.Graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                        pe.Graphics.InterpolationMode = InterpolationMode.HighQualityBilinear;
                         pe.Graphics.SmoothingMode = SmoothingMode.HighQuality;
-                        pe.Graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
-                        pe.Graphics.CompositingQuality = CompositingQuality.HighQuality;
+                        pe.Graphics.PixelOffsetMode = PixelOffsetMode.HighSpeed;
+                        pe.Graphics.CompositingQuality = CompositingQuality.HighSpeed;
 
                         RectangleF area = pe.PageSettings.PrintableArea;
                         if (pe.PageSettings.Landscape && area.Height > area.Width)
@@ -1666,9 +1824,8 @@ namespace Samu192PrintServer
             req.ContentType = "text/plain;charset=utf-8";
             req.Accept = "application/json";
             req.AllowAutoRedirect = false;
-            req.Timeout = 45000;
-            req.ReadWriteTimeout = 45000;
-            req.UserAgent = "SAMU192BasePrinter/1.0";
+            req.UserAgent = "SAMU192BasePrinter/1.0.7";
+            Program.ApplyFastHttpSettings(req, 30000);
             req.ContentLength = bodyBytes.Length;
 
             using (Stream reqStream = req.GetRequestStream())
@@ -1690,8 +1847,8 @@ namespace Samu192PrintServer
                     var getReq = (HttpWebRequest)WebRequest.Create(redirectUrl);
                     getReq.Method = "GET";
                     getReq.AllowAutoRedirect = true;
-                    getReq.Timeout = 45000;
-                    getReq.UserAgent = "SAMU192BasePrinter/1.0";
+                    getReq.UserAgent = "SAMU192BasePrinter/1.0.7";
+                    Program.ApplyFastHttpSettings(getReq, 30000);
                     using (var getResp = (HttpWebResponse)getReq.GetResponse())
                     using (var sr = new StreamReader(getResp.GetResponseStream(), Encoding.UTF8))
                     {
@@ -1796,8 +1953,31 @@ namespace Samu192PrintServer
             catch { }
         }
 
-        [STAThread]
-        private static void Main(string[] args)
+        public static bool BypassAutoProxy = false;
+
+        public static void ApplyFastHttpSettings(HttpWebRequest req, int timeoutMs)
+        {
+            if (req == null) return;
+            req.Timeout = timeoutMs;
+            req.ReadWriteTimeout = timeoutMs;
+            req.KeepAlive = true;
+            req.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
+            if (BypassAutoProxy)
+            {
+                req.Proxy = null;
+            }
+            try
+            {
+                if (req.ServicePoint != null)
+                {
+                    req.ServicePoint.Expect100Continue = false;
+                    req.ServicePoint.UseNagleAlgorithm = false;
+                }
+            }
+            catch { }
+        }
+
+        private static void ConfigureFastNetworkStack()
         {
             try
             {
@@ -1805,6 +1985,42 @@ namespace Samu192PrintServer
                 ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072 | SecurityProtocolType.Tls11 | SecurityProtocolType.Tls;
             }
             catch { }
+            try
+            {
+                ServicePointManager.Expect100Continue = false;
+                ServicePointManager.UseNagleAlgorithm = false;
+                ServicePointManager.DefaultConnectionLimit = 24;
+                ServicePointManager.MaxServicePointIdleTime = 90000;
+            }
+            catch { }
+            try
+            {
+                // Desativa a descoberta automatica lenta de proxy WPAD do Windows (que atrasava .NET em 10-20s) quando nao ha proxy manual ativo
+                bool manualProxyEnabled = false;
+                string pacUrl = "";
+                using (RegistryKey rk = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Internet Settings", false))
+                {
+                    if (rk != null)
+                    {
+                        int pe = Convert.ToInt32(rk.GetValue("ProxyEnable", 0) ?? 0);
+                        string ps = Convert.ToString(rk.GetValue("ProxyServer", "") ?? "").Trim();
+                        pacUrl = Convert.ToString(rk.GetValue("AutoConfigURL", "") ?? "").Trim();
+                        manualProxyEnabled = (pe != 0 && !string.IsNullOrEmpty(ps));
+                    }
+                }
+                if (!manualProxyEnabled && string.IsNullOrEmpty(pacUrl))
+                {
+                    BypassAutoProxy = true;
+                    WebRequest.DefaultWebProxy = null;
+                }
+            }
+            catch { }
+        }
+
+        [STAThread]
+        private static void Main(string[] args)
+        {
+            ConfigureFastNetworkStack();
 
             bool minimized = false;
             bool installMode = false;

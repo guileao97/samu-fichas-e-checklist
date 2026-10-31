@@ -1733,6 +1733,86 @@
     return oldestKey;
   }
 
+  let deferredPrintDirtyTimer = null;
+
+  function scheduleDeferredDirtySync(delayMs) {
+    const waitMs = Math.max(400, Number(delayMs) || 3800);
+    if (deferredPrintDirtyTimer) {
+      clearTimeout(deferredPrintDirtyTimer);
+    }
+    deferredPrintDirtyTimer = setTimeout(() => {
+      deferredPrintDirtyTimer = null;
+      if (navigator.onLine && hasGitHubConfigured() && getGitHubMeta().dirty) {
+        syncInternalDbWithGitHub({ pushChanges: true }).catch(() => {});
+      }
+    }, waitMs);
+  }
+
+  async function pushPrintSlotPatchFast(slotKey, jobObj, wasDirtyBefore) {
+    if (!navigator.onLine) {
+      markGitHubDirty();
+      return false;
+    }
+    const curSettings = getSettings();
+    const driveUrl = String((curSettings && curSettings.scriptUrl) || '').trim();
+    if (!driveUrl) {
+      markGitHubDirty();
+      if (hasGitHubConfigured()) {
+        try {
+          const sRes = await syncInternalDbWithGitHub({ pushChanges: true });
+          return Boolean(sRes && sRes.ok);
+        } catch (eGh) {}
+      }
+      return false;
+    }
+
+    const seqBefore = localMutationSeq;
+    try {
+      const patchMap = {};
+      patchMap[slotKey] = jobObj;
+      const res = await apiPost({
+        action: 'syncDatabase',
+        pushChanges: true,
+        fastPrintPatch: true,
+        onlyPrintQueue: true,
+        clientDb: {
+          viaturaAvarias: patchMap
+        }
+      }, driveUrl);
+
+      if (!res || !res.ok) {
+        throw new Error((res && res.error) || 'Falha ao enviar impressão rápida.');
+      }
+
+      if (res.db && res.db.viaturaAvarias && typeof res.db.viaturaAvarias === 'object') {
+        const remoteAg = res.db.viaturaAvarias[PRINT_AGENT_KEY];
+        if (remoteAg && typeof remoteAg === 'object') {
+          const curAv = getViaturaAvariasMap();
+          const locAg = curAv[PRINT_AGENT_KEY];
+          if (!locAg || String(remoteAg.updatedAt || '') >= String(locAg.updatedAt || '')) {
+            curAv[PRINT_AGENT_KEY] = remoteAg;
+            setViaturaAvariasMap(curAv);
+          }
+        }
+      }
+
+      if (wasDirtyBefore || localMutationSeq > seqBefore) {
+        markGitHubDirty();
+        // Aguarda 4s para o PC da Base puxar e imprimir o PDF sem disputa de lock no Google Apps Script
+        scheduleDeferredDirtySync(4000);
+      }
+      return true;
+    } catch (eFast) {
+      markGitHubDirty();
+      try {
+        const sRes = await syncInternalDbWithGitHub({ pushChanges: true });
+        return Boolean(sRes && sRes.ok);
+      } catch (eFallback) {
+        return false;
+      }
+    }
+  }
+
   async function enqueueRemotePrintJob(record, opts) {
     const o = (opts && typeof opts === 'object') ? opts : {};
     const isTest = Boolean(o.isTestPage);
@@ -1742,6 +1822,7 @@
       throw new Error('O PDF precisa estar salvo no Google Drive antes de enviar para a Impressora da Base.');
     }
 
+    const wasDirtyBefore = Boolean(getGitHubMeta().dirty);
     const cfg = getRemotePrintConfig();
     const sess = getSession();
     const avMap = getViaturaAvariasMap();
@@ -1769,11 +1850,13 @@
           });
           avMap[sk] = refreshed;
           setViaturaAvariasMap(avMap);
-          markGitHubDirty();
-          if (!o.skipPush && navigator.onLine && hasGitHubConfigured()) {
-            try { await syncInternalDbWithGitHub({ pushChanges: true }); } catch (e) {}
+          let pushedDup = false;
+          if (!o.skipPush) {
+            pushedDup = await pushPrintSlotPatchFast(sk, refreshed, wasDirtyBefore);
+          } else {
+            markGitHubDirty();
           }
-          return { ok: true, deduplicated: true, job: refreshed };
+          return { ok: true, deduplicated: true, pushed: pushedDup, job: refreshed };
         }
         if (trigger === 'auto' && ex.status === 'printed' && sameFile) {
           const ageMs = Date.now() - Date.parse(String(ex.updatedAt || ex.createdAt || ''));
@@ -1813,14 +1896,12 @@
 
     avMap[slotKey] = job;
     setViaturaAvariasMap(avMap);
-    markGitHubDirty();
 
     let pushed = false;
-    if (!o.skipPush && navigator.onLine && hasGitHubConfigured()) {
-      try {
-        const sRes = await syncInternalDbWithGitHub({ pushChanges: true });
-        pushed = Boolean(sRes && sRes.ok);
-      } catch (e) {}
+    if (!o.skipPush) {
+      pushed = await pushPrintSlotPatchFast(slotKey, job, wasDirtyBefore);
+    } else {
+      markGitHubDirty();
     }
     return { ok: true, pushed, job };
   }
@@ -1846,9 +1927,11 @@
   async function retryRemotePrintJob(jobId) {
     const targetId = String(jobId || '').trim();
     if (!targetId) return null;
+    const wasDirtyBefore = Boolean(getGitHubMeta().dirty);
     const avMap = getViaturaAvariasMap();
     const nowIso = new Date().toISOString();
     let updatedJob = null;
+    let targetSlotKey = '';
 
     for (let i = 0; i < PRINT_SLOT_COUNT; i++) {
       const sk = formatSlotKey(i);
@@ -1863,34 +1946,37 @@
           updatedAt: nowIso
         });
         avMap[sk] = updatedJob;
+        targetSlotKey = sk;
         break;
       }
     }
     if (!updatedJob) return null;
 
     setViaturaAvariasMap(avMap);
-    markGitHubDirty();
-    if (navigator.onLine && hasGitHubConfigured()) {
-      try { await syncInternalDbWithGitHub({ pushChanges: true }); } catch (e) {}
-    }
+    await pushPrintSlotPatchFast(targetSlotKey, updatedJob, wasDirtyBefore);
     return updatedJob;
   }
 
   async function cancelRemotePrintJob(jobId) {
     const targetId = String(jobId || '').trim();
     if (!targetId) return false;
+    const wasDirtyBefore = Boolean(getGitHubMeta().dirty);
     const avMap = getViaturaAvariasMap();
     const nowIso = new Date().toISOString();
     let found = false;
+    let cancelledJob = null;
+    let targetSlotKey = '';
 
     for (let i = 0; i < PRINT_SLOT_COUNT; i++) {
       const sk = formatSlotKey(i);
       const ex = avMap[sk];
       if (ex && ex.jobId === targetId) {
-        avMap[sk] = Object.assign({}, ex, {
+        cancelledJob = Object.assign({}, ex, {
           status: 'cancelled',
           updatedAt: nowIso
         });
+        avMap[sk] = cancelledJob;
+        targetSlotKey = sk;
         found = true;
         break;
       }
@@ -1898,10 +1984,7 @@
     if (!found) return false;
 
     setViaturaAvariasMap(avMap);
-    markGitHubDirty();
-    if (navigator.onLine && hasGitHubConfigured()) {
-      try { await syncInternalDbWithGitHub({ pushChanges: true }); } catch (e) {}
-    }
+    await pushPrintSlotPatchFast(targetSlotKey, cancelledJob, wasDirtyBefore);
     return true;
   }
 
@@ -4214,17 +4297,14 @@
 
   async function uploadRecordToDrive(record, pdfBase64, opts) {
     const upOpts = (opts && typeof opts === 'object') ? opts : {};
-    // Se tiver alterações na base interna (novo recebedor do hospital, médico regulador ou paciente), sincroniza no Google Drive em paralelo
-    if (navigator.onLine && hasGitHubConfigured() && getGitHubMeta().dirty) {
-      syncInternalDbWithGitHub({ pushChanges: true }).catch(() => {});
-    }
-
     const settings = getSettings();
     const sess = getSession();
+    const wantAutoPrint = !upOpts.skipAutoPrint && (Boolean(record && record.pendingAutoPrint) || shouldAutoPrintRecord(record));
+
     if (!settings.scriptUrl || !sess || !navigator.onLine) {
       record.syncStatus = 'pending';
       record.pendingPdfBase64 = pdfBase64 || record.pendingPdfBase64 || '';
-      if (!upOpts.skipAutoPrint && shouldAutoPrintRecord(record)) {
+      if (wantAutoPrint) {
         record.pendingAutoPrint = true;
       }
       await saveRecordLocal(record, { skipPatientUpsert: true });
@@ -4236,6 +4316,18 @@
       delete cleanRecordForCloud.pendingPdfBase64;
       delete cleanRecordForCloud.pendingAutoPrint;
 
+      const prtCfg = wantAutoPrint ? getRemotePrintConfig() : null;
+      const autoPrintOpts = wantAutoPrint ? {
+        enabled: true,
+        title: buildPrintJobTitle(record),
+        duplexMode: (prtCfg && prtCfg.duplexMode === 'simplex') ? 'simplex' : 'duplex',
+        copies: Math.max(1, Math.min(5, Number(prtCfg && prtCfg.copies) || 1)),
+        trigger: 'auto',
+        requestedBy: String((sess && sess.username) || record.createdBy || ''),
+        requestedByName: String((sess && sess.name) || record.createdByName || '')
+      } : null;
+
+      // Prioridade máxima para o upload do PDF (sem disparar syncDatabase concorrente antes, evitando fila de LockService)
       const res = await apiPost({
         action: 'uploadRecord',
         authUser: sess.username,
@@ -4244,7 +4336,8 @@
         authRole: getUserProfileChoice(sess),
         authCouncilId: sess.coren || sess.councilId || '',
         record: cleanRecordForCloud,
-        pdfBase64: pdfBase64 || record.pendingPdfBase64 || ''
+        pdfBase64: pdfBase64 || record.pendingPdfBase64 || '',
+        autoPrintOpts
       });
 
       if (res && res.ok) {
@@ -4253,17 +4346,29 @@
         record.driveFileId = res.driveFileId || record.driveFileId || extractDriveFileIdFromAny('', record.driveUrl);
         record.syncedAt = res.syncedAt || new Date().toISOString();
         delete record.pendingPdfBase64;
-        const wantAutoPrint = !upOpts.skipAutoPrint && (Boolean(record.pendingAutoPrint) || shouldAutoPrintRecord(record));
         delete record.pendingAutoPrint;
         await saveRecordLocal(record, { skipPatientUpsert: true });
 
         let printQueued = false;
         if (wantAutoPrint && (record.driveFileId || record.driveUrl)) {
-          try {
-            const pRes = await enqueueRemotePrintJob(record, { trigger: 'auto' });
-            printQueued = Boolean(pRes && pRes.ok);
-          } catch (ePrint) {}
+          if (res.printQueued && res.printJob && res.printJob.slotKey) {
+            const curAv = getViaturaAvariasMap();
+            curAv[res.printJob.slotKey] = res.printJob;
+            setViaturaAvariasMap(curAv);
+            printQueued = true;
+          } else {
+            try {
+              const pRes = await enqueueRemotePrintJob(record, { trigger: 'auto' });
+              printQueued = Boolean(pRes && pRes.ok);
+            } catch (ePrint) {}
+          }
         }
+
+        // Sincroniza alterações gerais da base interna (paciente/equipe/check list diário) em background sem travar a impressora
+        if (navigator.onLine && hasGitHubConfigured() && getGitHubMeta().dirty) {
+          scheduleDeferredDirtySync(printQueued ? 4000 : 1200);
+        }
+
         return { synced: true, driveUrl: record.driveUrl, driveFileId: record.driveFileId, printQueued };
       } else {
         throw new Error((res && res.error) || 'Falha ao enviar ao Google Drive.');
@@ -4272,7 +4377,7 @@
       record.syncStatus = 'pending';
       record.lastSyncError = err.message;
       record.pendingPdfBase64 = pdfBase64 || record.pendingPdfBase64 || '';
-      if (!upOpts.skipAutoPrint && shouldAutoPrintRecord(record)) {
+      if (wantAutoPrint) {
         record.pendingAutoPrint = true;
       }
       await saveRecordLocal(record, { skipPatientUpsert: true });
