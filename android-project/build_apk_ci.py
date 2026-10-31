@@ -28,7 +28,23 @@ APP_MAIN = os.path.join(ANDROID_PROJECT, "app", "src", "main")
 ASSETS_WWW = os.path.join(APP_MAIN, "assets", "www")
 VERSION_JSON_PATH = os.path.join(REPO_ROOT, "version.json")
 FINAL_APK = os.path.join(REPO_ROOT, "SAMU_192_Orlandia.apk")
-KEYSTORE_PATH = os.path.join(ANDROID_PROJECT, "samu_orlandia_release.jks")
+KEYSTORE_CI_PATH = os.path.join(ANDROID_PROJECT, "samu_orlandia_release.jks")
+WORKSPACE_ROOT = os.path.abspath(os.path.join(REPO_ROOT, "..", ".."))
+KEYSTORE_CONFIG_PATH = os.path.join(WORKSPACE_ROOT, "config", "samu_orlandia_release.jks")
+KEYSTORE_BACKUP_PATH = os.path.join(os.path.expanduser("~"), ".samu192_orlandia_keystore", "samu_orlandia_release.jks")
+INSTALADORES_DIR = os.path.join(WORKSPACE_ROOT, "instaladores-apk")
+
+
+def resolve_keystore_path():
+    for candidate in (KEYSTORE_CI_PATH, KEYSTORE_CONFIG_PATH, KEYSTORE_BACKUP_PATH):
+        if os.path.isfile(candidate) and os.path.getsize(candidate) > 100:
+            return candidate
+    if os.path.isdir(os.path.join(WORKSPACE_ROOT, "config")):
+        return KEYSTORE_CONFIG_PATH
+    return KEYSTORE_CI_PATH
+
+
+KEYSTORE_PATH = resolve_keystore_path()
 
 IS_WIN = os.name == "nt"
 EXE = ".exe" if IS_WIN else ""
@@ -174,8 +190,9 @@ def ensure_keystore_exists(keytool_exe=None):
     Em ambiente CI (GitHub Actions), NUNCA gera certificado aleatório novo para não
     invalidar a atualização por cima nos celulares já instalados!
     """
-    if os.path.isfile(KEYSTORE_PATH) and os.path.getsize(KEYSTORE_PATH) > 100:
-        return KEYSTORE_PATH
+    ks_path = resolve_keystore_path()
+    if os.path.isfile(ks_path) and os.path.getsize(ks_path) > 100:
+        return ks_path
     if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
         raise RuntimeError(
             "Certificado samu_orlandia_release.jks ausente no GitHub Actions! "
@@ -197,9 +214,9 @@ def ensure_keystore_exists(keytool_exe=None):
             "-keypass", "samu192orlandia",
             "-dname", "CN=SAMU 192 Orlandia, OU=USB, O=SAMU Orlandia SP, L=Orlandia, ST=SP, C=BR",
         ])
-        os.makedirs(os.path.dirname(KEYSTORE_PATH), exist_ok=True)
-        shutil.copy2(ks_tmp, KEYSTORE_PATH)
-        return KEYSTORE_PATH
+        os.makedirs(os.path.dirname(ks_path), exist_ok=True)
+        shutil.copy2(ks_tmp, ks_path)
+        return ks_path
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -360,9 +377,9 @@ def main():
         ])
 
         # 9. Keystore consistente (permite atualização por cima no Android sem conflito de assinatura!)
-        ensure_keystore_exists(keytool_exe)
+        ks_actual = ensure_keystore_exists(keytool_exe)
         ks_tmp = os.path.join(build_dir, "samu_orlandia_release.jks")
-        shutil.copy2(KEYSTORE_PATH, ks_tmp)
+        shutil.copy2(ks_actual, ks_tmp)
 
         final_apk_tmp = os.path.join(build_dir, "SAMU_192_Orlandia.apk")
         if os.path.isfile(apksigner_jar):
@@ -386,10 +403,18 @@ def main():
             "verify", "--verbose", final_apk_tmp,
         ])
 
-        shutil.copy2(final_apk_tmp, FINAL_APK)
-        print(f"\nSUCESSO! APK assinado gerado em: {FINAL_APK} ({os.path.getsize(FINAL_APK)} bytes)")
+        if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
+            shutil.copy2(final_apk_tmp, FINAL_APK)
+            print(f"\nSUCESSO! APK assinado gerado em: {FINAL_APK} ({os.path.getsize(FINAL_APK)} bytes)")
+        else:
+            os.makedirs(INSTALADORES_DIR, exist_ok=True)
+            out_apk = os.path.join(INSTALADORES_DIR, "SAMU_192_Orlandia.apk")
+            shutil.copy2(final_apk_tmp, out_apk)
+            print(f"\nSUCESSO! APK assinado gerado em: {out_apk} ({os.path.getsize(out_apk)} bytes)")
     finally:
         shutil.rmtree(build_dir, ignore_errors=True)
+        if os.environ.get("GITHUB_ACTIONS", "").lower() != "true" and os.path.exists(ASSETS_WWW):
+            shutil.rmtree(ASSETS_WWW, ignore_errors=True)
 
 
 if __name__ == "__main__":

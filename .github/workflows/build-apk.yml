@@ -52,7 +52,7 @@ jobs:
           SAMU_KEYSTORE_BASE64: ${{ secrets.SAMU_KEYSTORE_BASE64 }}
         run: |
           if [[ -z "$SAMU_KEYSTORE_BASE64" ]]; then
-            echo "ERRO: Secret SAMU_KEYSTORE_BASE64 ausente! Rode PUBLICAR_ATUALIZACAO_GITHUB.bat no PC oficial para sincronizar o certificado unico (evita conflito de assinatura nos celulares)."
+            echo "ERRO: Secret SAMU_KEYSTORE_BASE64 ausente! Rode PUBLICAR_SAMU.bat no PC oficial para sincronizar o certificado unico (evita conflito de assinatura nos celulares)."
             exit 1
           fi
           echo "$SAMU_KEYSTORE_BASE64" | base64 -d > android-project/samu_orlandia_release.jks

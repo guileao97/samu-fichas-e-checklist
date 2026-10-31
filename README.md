@@ -1,5 +1,5 @@
-# SAMU 192 – Orlândia-SP (Canal Oficial de Auto-Update do APK)
+# SAMU 192 – Orlândia-SP (Canal Oficial de Auto-Update & Versão Web)
 
-Este repositório distribui exclusivamente as atualizações automáticas de código/interface (Live OTA) e o instalador `SAMU_192_Orlandia.apk` para os aparelhos das viaturas.
-
-- **Privacidade Total (LGPD):** Nenhum dado de paciente, CPF, ficha, PDF ou senha é armazenado neste repositório. Toda a sincronização operacional ocorre de forma privada no Google Drive oficial da Central SAMU.
+- **Versão Web Oficial (Android, iPhone e PC):** https://guileao97.github.io/samu-fichas-e-checklist/
+- **Instalador Android Oficial:** https://github.com/guileao97/samu-fichas-e-checklist/releases/latest/download/SAMU_192_Orlandia.apk
+- **Privacidade Total (LGPD):** Nenhum dado de paciente, CPF, ficha, PDF ou senha é armazenado neste repositório.
