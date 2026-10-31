@@ -143,6 +143,54 @@
     return `${d.slice(0, 5)}-${d.slice(5)}`;
   }
 
+  function extractPhoneDigitsBR(raw, autoDefaultDdd) {
+    let d = String(raw || '').replace(/\D+/g, '');
+    if (!d) return '';
+    if ((d.length === 12 || d.length === 13) && d.startsWith('55')) {
+      d = d.slice(2);
+    } else if (d.length === 12 && d.startsWith('0')) {
+      d = d.slice(1);
+    }
+    if (autoDefaultDdd && (d.length === 8 || d.length === 9)) {
+      d = '16' + d;
+    }
+    return d.slice(0, 11);
+  }
+
+  function formatPhoneBR(raw, autoDefaultDdd) {
+    const d = extractPhoneDigitsBR(raw, autoDefaultDdd);
+    if (!d) return '';
+    if (d.length <= 2) return `(${d}`;
+    if (d.length <= 6) return `(${d.slice(0, 2)}) ${d.slice(2)}`;
+    if (d.length <= 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)} ${d.slice(6)}`;
+    return `(${d.slice(0, 2)}) ${d.slice(2, 3)} ${d.slice(3, 7)} ${d.slice(7, 11)}`;
+  }
+
+  function getPhoneKindBR(raw) {
+    const d = extractPhoneDigitsBR(raw, false);
+    if (d.length === 11 || d.length === 9) return 'celular';
+    if (d.length === 10 || d.length === 8) return 'telefone';
+    return '';
+  }
+
+  function buildVictimPhoneKindBadgeHtml(raw) {
+    const kind = getPhoneKindBR(raw);
+    if (kind === 'celular') {
+      return '<span style="background:#dbeafe; color:#1e40af; font-size:0.68rem; font-weight:800; padding:1px 7px; border-radius:999px; margin-left:4px; text-transform:none;">📱 Celu&#8204;lar (9 dígitos)</span>';
+    }
+    if (kind === 'telefone') {
+      return '<span style="background:#fef3c7; color:#92400e; font-size:0.68rem; font-weight:800; padding:1px 7px; border-radius:999px; margin-left:4px; text-transform:none;">☎️ Tele&#8204;fone (8 dígitos)</span>';
+    }
+    return '<span style="font-size:0.68rem; color:var(--muted); font-weight:600; margin-left:4px; text-transform:none;">(auto 8 ou 9 dígitos)</span>';
+  }
+
+  function refreshVictimPhoneKindBadge(rawVal) {
+    const el = document.getElementById('vit-cnt-kind-lbl');
+    if (el) {
+      el.innerHTML = buildVictimPhoneKindBadgeHtml(rawVal);
+    }
+  }
+
   function applyCrewToFichaState(targetFicha, crew, forceReplaceSlots) {
     if (!targetFicha || !crew) return targetFicha;
 
@@ -259,6 +307,7 @@
       vitimaNome: '',
       vitimaIdade: '',
       vitimaDn: '',
+      vitimaTelefone: '',
       vitimaEndereco: '',
       vitimaNumero: '',
       vitimaBairro: '',
@@ -399,6 +448,27 @@
       });
       if (others.length > 0) merged.alergiasOutro = others.join(', ');
     }
+
+    if (merged.vitimaTelefone) {
+      merged.vitimaTelefone = formatPhoneBR(merged.vitimaTelefone, true);
+    }
+    if (merged.ocorrenciaContato && /^\s*[\d()\s+-]+\s*$/.test(String(merged.ocorrenciaContato))) {
+      merged.ocorrenciaContato = formatPhoneBR(merged.ocorrenciaContato, true) || merged.ocorrenciaContato;
+    }
+
+    // Setor Recomendado e Setor Admitido aceitam apenas 1 seleção por vez
+    ['setorRecomendado', 'setorAdmitido'].forEach(sk => {
+      const v = merged[sk];
+      if (Array.isArray(v)) {
+        const clean = v.map(x => String(x || '').trim()).filter(Boolean);
+        merged[sk] = clean.length > 0 ? [clean[clean.length - 1]] : [];
+      } else if (typeof v === 'string' && v.trim()) {
+        merged[sk] = [v.trim()];
+      } else {
+        merged[sk] = [];
+      }
+    });
+
     return merged;
   }
 
@@ -406,7 +476,7 @@
     if (!d) return false;
     const defaultHosp = (window.SamuStorage.getSettings().defaultHospital || 'HBSA').toUpperCase();
     const customDestino = d.destino && String(d.destino).trim().toUpperCase() !== defaultHosp;
-    if (d.vitimaNome || d.vitimaCpf || d.motivoSolicitacao || d.ocorrenciaEndereco || d.kmFinal || d.descricaoCena || d.relatorioEnfermagem || customDestino || d.recebidoPorNome) return true;
+    if (d.vitimaNome || d.vitimaCpf || d.vitimaTelefone || d.motivoSolicitacao || d.ocorrenciaEndereco || d.kmFinal || d.descricaoCena || d.relatorioEnfermagem || customDestino || d.recebidoPorNome) return true;
     if ((d.locaisOcorrencia && d.locaisOcorrencia.length) || (d.tiposAtendimento && d.tiposAtendimento.length) || (d.procedimentos && d.procedimentos.length)) return true;
     if ((d.medicamentosSelecionados && d.medicamentosSelecionados.length) || d.medicamentosOutro || (d.alergiasSelecionadas && d.alergiasSelecionadas.length) || d.alergiasOutro) return true;
     const h = d.horarios || {};
@@ -1490,6 +1560,13 @@
         pullAndApplyCrewFichaChanges({ fromStorageEvent: true });
         refreshDraftCount();
       } else if (ev.key === 'samu_viatura_avarias_v1') {
+        renderBottomNav();
+        refreshDraftCount();
+        if (activeTab === 'historico') {
+          const activeEl = document.activeElement;
+          const isTyping = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA');
+          if (!isTyping) renderHistoricoView();
+        }
         if (!editingCondutorId && condutorState) {
           applySavedAvariasToCondutorState(condutorState, true);
           applySharedDailyToCondutorState(condutorState, { replaceOtherShift: false });
@@ -1555,6 +1632,7 @@
         await window.SamuStorage.syncInternalDbWithGitHub({ pushChanges: window.SamuStorage.getGitHubMeta().dirty });
         await pullAndApplyCrewFichaChanges({ fromNetwork: true });
         await refreshDraftCount();
+        renderBottomNav();
         await refreshSyncBadge();
       } catch (e) {}
     }, 2500);
@@ -1791,6 +1869,9 @@
       const k = inp.dataset.f;
       if (fichaState[k] !== undefined && String(inp.value || '') !== String(fichaState[k] || '')) {
         inp.value = fichaState[k] || '';
+        if (k === 'vitimaTelefone') {
+          refreshVictimPhoneKindBadge(fichaState.vitimaTelefone);
+        }
       }
     });
     container.querySelectorAll('[data-horario]').forEach(inp => {
@@ -2431,6 +2512,7 @@
   }
 
   function openEditMedicoReguladorModal(medId, onDone) {
+    if (!currentUser || !window.SamuStorage.isUserAdmin(currentUser)) return;
     const list = window.SamuStorage.getMedicosReguladores ? window.SamuStorage.getMedicosReguladores() : [];
     const existing = medId ? list.find(m => m.id === medId) : null;
     const { modal, body } = ensureCatalogModal();
@@ -2504,6 +2586,7 @@
   }
 
   function openEditHospitalReceiverModal(recId, onDone) {
+    if (!currentUser || !window.SamuStorage.isUserAdmin(currentUser)) return;
     const list = window.SamuStorage.getHospitalReceivers ? window.SamuStorage.getHospitalReceivers() : [];
     const existing = recId ? list.find(r => r.id === recId) : null;
     const defHosp = (window.SamuStorage.getSettings().defaultHospital || 'HBSA').trim() || 'HBSA';
@@ -2599,6 +2682,7 @@
     fichaState.vitimaCns = savedPatient.vitimaCns || '';
     fichaState.vitimaDn = savedPatient.vitimaDn || '';
     fichaState.vitimaIdade = savedPatient.vitimaIdade || '';
+    fichaState.vitimaTelefone = savedPatient.vitimaTelefone ? formatPhoneBR(savedPatient.vitimaTelefone, true) : '';
     fichaState.vitimaCep = savedPatient.vitimaCep || '';
     fichaState.vitimaCidade = savedPatient.vitimaCidade || 'Orlândia';
     fichaState.vitimaBairro = savedPatient.vitimaBairro || '';
@@ -2613,6 +2697,7 @@
   }
 
   function openEditPatientCadastroModal(rawCpf, onDone, fallbackSource) {
+    if (!currentUser || !window.SamuStorage.isUserAdmin(currentUser)) return;
     const origCpf11 = String(rawCpf || '').replace(/\D+/g, '');
     const patMap = window.SamuStorage.getInternalPatientsMap ? window.SamuStorage.getInternalPatientsMap() : {};
     const existing = (origCpf11.length === 11 && patMap[origCpf11]) ? patMap[origCpf11] : null;
@@ -2645,9 +2730,15 @@
             <input type="date" id="cat-pat-nasc" autocomplete="off" value="${escapeHtml(seed.vitimaDn || '')}" />
           </div>
         </div>
-        <div class="field">
-          <label>No&#8204;me Completo do Paciente</label>
-          <input type="text" id="cat-pat-ident" autocomplete="off" value="${escapeHtml(seed.vitimaNome || '')}" placeholder="No&#8204;me completo" required />
+        <div class="grid-2">
+          <div class="field">
+            <label>No&#8204;me Completo do Paciente</label>
+            <input type="text" id="cat-pat-ident" autocomplete="off" value="${escapeHtml(seed.vitimaNome || '')}" placeholder="No&#8204;me completo" required />
+          </div>
+          <div class="field">
+            <label>Celu&#8204;lar / Tele&#8204;fone</label>
+            <input type="text" inputmode="numeric" id="cat-pat-cnt1" autocomplete="off" value="${escapeHtml(seed.vitimaTelefone ? formatPhoneBR(seed.vitimaTelefone, true) : '')}" placeholder="Ex: (16) 0 0000&#8204; 0000 ou (16) 0000&#8204; 0000" />
+          </div>
         </div>
         <div class="grid-3">
           <div class="field">
@@ -2730,12 +2821,21 @@
     const cpfInp = document.getElementById('cat-pat-doc1');
     const dnInp = document.getElementById('cat-pat-nasc');
     const ageInp = document.getElementById('cat-pat-anos');
+    const telInp = document.getElementById('cat-pat-cnt1');
     const cepInp = document.getElementById('cat-pat-cod');
     const cepBtn = document.getElementById('btn-cat-pat-cep');
 
     cpfInp.addEventListener('input', () => {
       cpfInp.value = window.SamuStorage.formatCpf(cpfInp.value);
     });
+    if (telInp) {
+      telInp.addEventListener('input', () => {
+        telInp.value = formatPhoneBR(telInp.value, false);
+      });
+      telInp.addEventListener('blur', () => {
+        telInp.value = formatPhoneBR(telInp.value, true);
+      });
+    }
     dnInp.addEventListener('input', () => {
       const calc = calcAgeFromDn(dnInp.value);
       if (calc) ageInp.value = calc;
@@ -2789,6 +2889,7 @@
           vitimaNome: document.getElementById('cat-pat-ident').value,
           vitimaDn: dnInp.value,
           vitimaIdade: ageInp.value,
+          vitimaTelefone: telInp ? formatPhoneBR(telInp.value, true) : '',
           vitimaRg: document.getElementById('cat-pat-doc2').value,
           vitimaCns: document.getElementById('cat-pat-doc3').value,
           vitimaCep: cepInp.value,
@@ -2839,6 +2940,7 @@
     { key: 'vitimaNome', label: 'Nome Completo', domId: 'f-vit-ident' },
     { key: 'vitimaDn', label: 'Data de Nascimento (DN)', domId: 'f-vit-nasc', isDate: true },
     { key: 'vitimaIdade', label: 'Idade', domId: 'f-vit-anos' },
+    { key: 'vitimaTelefone', label: 'Celular / Telefone', domId: 'f-vit-cnt1', isPhone: true },
     { key: 'vitimaRg', label: 'RG', domId: 'f-vit-doc2' },
     { key: 'vitimaCns', label: 'Cartão SUS (CNS)', domId: 'f-vit-doc3' },
     { key: 'vitimaCep', label: 'CEP Residencial', domId: 'f-vit-cod', isCep: true },
@@ -2866,6 +2968,7 @@
     const v = collapseSpaces(rawVal);
     if (!v) return '';
     if (key === 'vitimaCep') return formatCep(v);
+    if (key === 'vitimaTelefone') return formatPhoneBR(v, true);
     return v;
   }
 
@@ -2913,7 +3016,9 @@
     if (!fichaState || !p) return;
     const digits = String(rawCpfDigits || fichaState.vitimaCpf || '').replace(/\D+/g, '');
     const setIfPresent = (stateKey, elId, rawVal) => {
-      const val = stateKey === 'vitimaCep' ? formatCep(rawVal) : collapseSpaces(rawVal);
+      const val = stateKey === 'vitimaCep'
+        ? formatCep(rawVal)
+        : (stateKey === 'vitimaTelefone' ? formatPhoneBR(rawVal, true) : collapseSpaces(rawVal));
       if (val !== '') {
         fichaState[stateKey] = val;
         const el = elId ? document.getElementById(elId) : null;
@@ -2925,6 +3030,8 @@
     setIfPresent('vitimaDn', 'f-vit-nasc', p.vitimaDn);
     const calcAge = p.vitimaDn ? calcAgeFromDn(p.vitimaDn) : '';
     setIfPresent('vitimaIdade', 'f-vit-anos', calcAge || p.vitimaIdade);
+    setIfPresent('vitimaTelefone', 'f-vit-cnt1', p.vitimaTelefone);
+    refreshVictimPhoneKindBadge(fichaState.vitimaTelefone);
     setIfPresent('vitimaRg', 'f-vit-doc2', p.vitimaRg);
     setIfPresent('vitimaCns', 'f-vit-doc3', p.vitimaCns);
     setIfPresent('vitimaCep', 'f-vit-cod', p.vitimaCep);
@@ -2969,9 +3076,12 @@
     }
     const dnTxt = p.vitimaDn ? formatDateBRDisplay(p.vitimaDn) : '';
     const ageTxt = (p.vitimaDn ? calcAgeFromDn(p.vitimaDn) : '') || collapseSpaces(p.vitimaIdade);
+    const fmtTel = p.vitimaTelefone ? formatPhoneBR(p.vitimaTelefone, true) : '';
+    const telPrefix = fmtTel ? (getPhoneKindBR(fmtTel) === 'celular' ? 'Cel' : 'Tel') : '';
     const docsArr = [
       dnTxt ? `DN: ${dnTxt}` : '',
       ageTxt ? `Idade: ${ageTxt}` : '',
+      fmtTel ? `${telPrefix}: ${fmtTel}` : '',
       collapseSpaces(p.vitimaRg) ? `RG: ${collapseSpaces(p.vitimaRg)}` : '',
       collapseSpaces(p.vitimaCns) ? `CNS: ${collapseSpaces(p.vitimaCns)}` : ''
     ].filter(Boolean);
@@ -3043,9 +3153,6 @@
               <button type="button" class="btn btn-success btn-sm" id="btn-cpf-accept-suggest" style="flex:1 1 200px; font-weight:800;">
                 ✨ Preencher Automaticamente
               </button>
-              <button type="button" class="btn btn-outline btn-sm" id="btn-cpf-edit-saved" style="background:#fff;">
-                ✏️ Editar Cadastro
-              </button>
               <button type="button" class="btn btn-secondary btn-sm" id="btn-cpf-dismiss-suggest">
                 Não usar
               </button>
@@ -3059,12 +3166,10 @@
         .join(', ');
       return `
         <div class="cpf-manage-bar">
-          <div style="flex:1 1 100%; font-size:0.76rem; color:#0c4a6e; font-weight:700;">
+          <div style="flex:1 1 180px; font-size:0.76rem; color:#0c4a6e; font-weight:700;">
             🪪 Cadastro salvo: <strong>${escapeHtml(saved.vitimaNome)}</strong>${addrSummary ? ` • ${escapeHtml(addrSummary)}` : ''}
           </div>
           <button type="button" class="btn btn-success btn-sm" id="btn-cpf-accept-suggest" style="padding:4px 9px; font-size:0.74rem;">✨ Preencher Dados Salvos</button>
-          <button type="button" class="btn btn-outline btn-sm" id="btn-cpf-edit-saved" style="padding:4px 9px; font-size:0.74rem; background:#fff;">✏️ Editar Endere&#8204;ço / Cadastro</button>
-          <button type="button" class="btn btn-danger-outline btn-sm" id="btn-cpf-delete-saved" style="padding:4px 9px; font-size:0.74rem; background:#fff;">🗑️ Excluir</button>
         </div>
       `;
     }
@@ -3796,6 +3901,28 @@
     }
   }
 
+  function getChecklistModulesCfg() {
+    return window.SamuStorage.getChecklistModulesConfig
+      ? window.SamuStorage.getChecklistModulesConfig()
+      : { condutorEnabled: true, enfermagemEnabled: true };
+  }
+
+  function isChecklistAllowed(kind, user) {
+    const u = user || currentUser;
+    if (!u) return true;
+    if (window.SamuStorage.isChecklistAllowedForUser) {
+      return window.SamuStorage.isChecklistAllowedForUser(kind, u);
+    }
+    return true;
+  }
+
+  function isRecordAllowedForCurrentUser(rec) {
+    if (!rec) return false;
+    if (rec.type === 'checklist_condutor') return isChecklistAllowed('condutor', currentUser);
+    if (rec.type === 'checklist_enfermagem') return isChecklistAllowed('enfermagem', currentUser);
+    return true;
+  }
+
   function getNavTabsForUser(user) {
     if (window.SamuStorage.isUserAdmin(user)) {
       const pendingUsersCount = window.SamuStorage.getPendingUsers().length;
@@ -3824,22 +3951,30 @@
       ];
     }
     if (user && user.role === 'condutor') {
-      return [
-        { id: 'ficha', icon: '📋', label: 'Ficha USB' },
-        { id: 'condutor', icon: '🚑', label: 'Check List' },
-        { id: 'historico', icon: '🔎', label: 'Meu Histórico' }
-      ];
+      const tabs = [{ id: 'ficha', icon: '📋', label: 'Ficha USB' }];
+      if (isChecklistAllowed('condutor', user)) {
+        tabs.push({ id: 'condutor', icon: '🚑', label: 'Check List' });
+      }
+      tabs.push({ id: 'historico', icon: '🔎', label: 'Meu Histórico' });
+      return tabs;
     }
-    return [
-      { id: 'ficha', icon: '📋', label: 'Ficha USB' },
-      { id: 'enfermagem', icon: '🩺', label: 'Check List' },
-      { id: 'historico', icon: '🔎', label: 'Meu Histórico' }
-    ];
+    const tabs = [{ id: 'ficha', icon: '📋', label: 'Ficha USB' }];
+    if (isChecklistAllowed('enfermagem', user)) {
+      tabs.push({ id: 'enfermagem', icon: '🩺', label: 'Check List' });
+    }
+    tabs.push({ id: 'historico', icon: '🔎', label: 'Meu Histórico' });
+    return tabs;
   }
 
-  function renderBottomNav() {
+  function renderBottomNav(opts) {
     const nav = document.getElementById('bottom-nav');
+    if (!nav) return;
     const tabs = getNavTabsForUser(currentUser);
+    let redirectedFromDisabledTab = false;
+    if (tabs.length > 0 && !tabs.some(t => t.id === activeTab)) {
+      activeTab = tabs[0].id;
+      redirectedFromDisabledTab = true;
+    }
     nav.innerHTML = tabs.map(t => `
       <button type="button" class="nav-tab ${activeTab === t.id ? 'active' : ''}" data-tab="${t.id}">
         ${t.badge > 0 ? `<span class="nav-badge">${t.badge}</span>` : ''}
@@ -3880,6 +4015,11 @@
         window.scrollTo({ top: 0, behavior: 'smooth' });
       });
     });
+
+    if (redirectedFromDisabledTab && !(opts && opts.skipRedirectRender)) {
+      renderActiveView();
+      showToast('ℹ️ Check List desativado pela Coordenação/ADM.');
+    }
   }
 
   function renderActiveView() {
@@ -3927,7 +4067,7 @@
       return 0;
     }
     const vis = await window.SamuStorage.getVisibleRecords(currentUser);
-    cachedDraftCount = vis.filter(r => r.syncStatus === 'draft').length;
+    cachedDraftCount = vis.filter(r => r.syncStatus === 'draft' && isRecordAllowedForCurrentUser(r)).length;
     document.querySelectorAll('.js-draft-count').forEach(el => {
       el.textContent = String(cachedDraftCount);
       el.style.display = cachedDraftCount > 0 ? 'inline-block' : 'none';
@@ -4119,7 +4259,7 @@
     }
 
     const vis = await window.SamuStorage.getVisibleRecords(currentUser);
-    const drafts = vis.filter(r => r.syncStatus === 'draft');
+    const drafts = vis.filter(r => r.syncStatus === 'draft' && isRecordAllowedForCurrentUser(r));
     cachedDraftCount = drafts.length;
 
     const cardsHtml = drafts.length === 0
@@ -4181,7 +4321,7 @@
       btn.addEventListener('click', async () => {
         const targetId = btn.dataset.resumeDraft;
         const rec = await window.SamuStorage.getRecordById(targetId);
-        if (!rec) return;
+        if (!rec || !isRecordAllowedForCurrentUser(rec)) return;
 
         // Se o usuário estava digitando outra ficha nova ainda não salva na lista, salva automaticamente antes de trocar!
         if (rec.type === 'ficha' && !editingFichaId && hasMeaningfulFichaData(fichaState)) {
@@ -4647,7 +4787,7 @@
             </div>
             <div class="field">
               <label>Conta&#8204;to / Tele&#8204;fone</label>
-              <input type="text" inputmode="numeric" id="f-occ-cnt1" autocomplete="off" placeholder="(16) 999&#8204;99-9999" data-f="ocorrenciaContato" value="${escapeHtml(d.ocorrenciaContato)}" />
+              <input type="text" inputmode="numeric" id="f-occ-cnt1" autocomplete="off" placeholder="Ex: (16) 0 0000&#8204; 0000 / (16) 0000&#8204; 0000" data-f="ocorrenciaContato" value="${escapeHtml(d.ocorrenciaContato)}" />
             </div>
           </div>
         </div>
@@ -4691,7 +4831,7 @@
             <label>No&#8204;me Completo da Vítima (usado na busca do histórico)</label>
             <input type="text" id="f-vit-ident" autocomplete="off" placeholder="Digite o no&#8204;me do paciente" data-f="vitimaNome" value="${escapeHtml(d.vitimaNome)}" />
           </div>
-          <div class="grid-dn-age">
+          <div class="grid-dn-age-cnt">
             <div class="field">
               <label>Data de Nascimento (DN)</label>
               <input type="date" id="f-vit-nasc" autocomplete="off" data-f="vitimaDn" value="${escapeHtml(d.vitimaDn)}" />
@@ -4699,6 +4839,10 @@
             <div class="field">
               <label>Idade</label>
               <input type="text" id="f-vit-anos" autocomplete="off" placeholder="Ex: 54 anos" data-f="vitimaIdade" value="${escapeHtml(d.vitimaIdade)}" />
+            </div>
+            <div class="field field-full-phone">
+              <label style="display:flex; align-items:center; flex-wrap:wrap;">Celu&#8204;lar / Tele&#8204;fone <span id="vit-cnt-kind-lbl">${buildVictimPhoneKindBadgeHtml(d.vitimaTelefone)}</span></label>
+              <input type="text" inputmode="numeric" id="f-vit-cnt1" autocomplete="off" placeholder="Ex: (16) 0 0000&#8204; 0000 ou (16) 0000&#8204; 0000" data-f="vitimaTelefone" value="${escapeHtml(d.vitimaTelefone || '')}" />
             </div>
           </div>
 
@@ -4972,8 +5116,6 @@
                         return `
                           <span class="receiver-chip ${isSel ? 'active' : ''}" data-pick-medico="${escapeHtml(m.id)}" title="Toque para preencher este Médico Regulador">
                             <span>👨‍⚕️ ${escapeHtml(m.nome)}</span>
-                            <button type="button" class="receiver-chip-edit" data-edit-medico="${escapeHtml(m.id)}" title="Editar Médico Regulador">✏️</button>
-                            <button type="button" class="receiver-chip-del" data-del-medico="${escapeHtml(m.id)}" title="Excluir da lista">×</button>
                           </span>
                         `;
                       }).join('')}
@@ -5039,7 +5181,7 @@
           <div class="card-title"><span>🏥 Admissão Hospitalar &amp; Assinaturas Finais</span></div>
           <div class="grid-2">
             <div>
-              <div class="section-subtitle" style="margin-top:0;">Setor Recomendado (SAMU)</div>
+              <div class="section-subtitle" style="margin-top:0;">Setor Recomendado (SAMU) <small style="font-weight:700; text-transform:none; color:var(--muted);">— apenas 1</small></div>
               <div class="chips-wrap">
                 ${window.SAMU_SCHEMA.setoresHospital.map(s => `
                   <button type="button" class="chip-btn ${(d.setorRecomendado || []).includes(s) ? 'selected' : ''}" data-arr="setorRecomendado" data-val="${escapeHtml(s)}">${s}</button>
@@ -5047,7 +5189,7 @@
               </div>
             </div>
             <div>
-              <div class="section-subtitle" style="margin-top:0;">Setor Admitido (Hospital)</div>
+              <div class="section-subtitle" style="margin-top:0;">Setor Admitido (Hospital) <small style="font-weight:700; text-transform:none; color:var(--muted);">— apenas 1</small></div>
               <div class="chips-wrap">
                 ${window.SAMU_SCHEMA.setoresHospital.map(s => `
                   <button type="button" class="chip-btn ${(d.setorAdmitido || []).includes(s) ? 'selected' : ''}" data-arr="setorAdmitido" data-val="${escapeHtml(s)}">${s}</button>
@@ -5096,8 +5238,6 @@
                           return `
                             <span class="receiver-chip ${isSel ? 'active' : ''}" data-pick-receiver="${escapeHtml(r.id)}" title="Toque para preencher Nome + COREN/CRM e abrir assinatura">
                               <span>👤 ${escapeHtml(r.nome)}${r.corenCrm ? ` • ${escapeHtml(r.corenCrm)}` : ''}</span>
-                              <button type="button" class="receiver-chip-edit" data-edit-receiver="${escapeHtml(r.id)}" title="Editar Nome / COREN">✏️</button>
-                              <button type="button" class="receiver-chip-del" data-del-receiver="${escapeHtml(r.id)}" title="Excluir da lista">×</button>
                             </span>
                           `;
                         }).join('')}
@@ -5567,15 +5707,6 @@
         });
       }
 
-      const editBtn = document.getElementById('btn-cpf-edit-saved');
-      if (editBtn) {
-        editBtn.addEventListener('click', () => {
-          openEditPatientCadastroModal(fichaState.vitimaCpf, () => {
-            renderFichaView();
-          }, fichaState);
-        });
-      }
-
       const overwriteBtn = document.getElementById('btn-cpf-overwrite-from-ficha');
       if (overwriteBtn) {
         overwriteBtn.addEventListener('click', () => {
@@ -5601,27 +5732,6 @@
           } catch (err) {
             samuAlert(err.message || 'Erro ao salvar pré-cadastro do CPF.');
           }
-        });
-      }
-
-      const delBtn = document.getElementById('btn-cpf-delete-saved');
-      if (delBtn) {
-        delBtn.addEventListener('click', async () => {
-          const digits = String(fichaState.vitimaCpf || '').replace(/\D+/g, '');
-          const patMap = window.SamuStorage.getInternalPatientsMap ? window.SamuStorage.getInternalPatientsMap() : {};
-          const saved = patMap[digits];
-          const nm = (saved && saved.vitimaNome) || fichaState.vitimaNome || digits;
-          if (!(await samuConfirm(`Excluir permanentemente o pré-cadastro salvo de "${nm}" (CPF ${window.SamuStorage.formatCpf(digits)}) da base e do Google Drive?`))) return;
-          window.SamuStorage.deletePatientFromInternalDb(digits);
-          if (pendingCpfSuggestion && pendingCpfSuggestion.cpf11 === digits) {
-            pendingCpfSuggestion = null;
-          }
-          cpfAutoFilledFromSaved = '';
-          if (fichaState && fichaState._cpfAutoFilled === digits) {
-            fichaState._cpfAutoFilled = '';
-          }
-          refreshCpfManageSlot();
-          showToast('🗑️ Pré-cadastro deste CPF excluído e sincronizado!');
         });
       }
     };
@@ -5673,9 +5783,35 @@
     container.querySelectorAll('[data-f]').forEach(inp => {
       const fieldKey = 'f:' + inp.dataset.f;
       bindFieldJumpInstantSync(inp, fieldKey);
+      if (inp.dataset.f === 'vitimaTelefone' || inp.dataset.f === 'ocorrenciaContato') {
+        inp.addEventListener('blur', () => {
+          const key = inp.dataset.f;
+          const raw = inp.value;
+          if (key === 'vitimaTelefone' || /^\s*[\d()\s+-]+\s*$/.test(String(raw || ''))) {
+            const completed = formatPhoneBR(raw, true);
+            if (completed !== raw) {
+              inp.value = completed;
+              fichaState[key] = completed;
+              if (key === 'vitimaTelefone') refreshVictimPhoneKindBadge(completed);
+              persistFichaDraft({ immediate: true });
+            }
+          }
+        });
+      }
       inp.addEventListener('input', () => {
         const key = inp.dataset.f;
         let val = inp.value;
+
+        if (key === 'vitimaTelefone' || (key === 'ocorrenciaContato' && /^\s*[\d()\s+-]*\s*$/.test(String(val || '')))) {
+          val = formatPhoneBR(val, false);
+          inp.value = val;
+          fichaState[key] = val;
+          if (key === 'vitimaTelefone') {
+            refreshVictimPhoneKindBadge(val);
+          }
+          persistTypedFieldWithJumpCheck(fieldKey);
+          return;
+        }
 
         if (key === 'ocorrenciaCep' || key === 'vitimaCep') {
           const prevDigits = String(fichaState[key] || '').replace(/\D+/g, '');
@@ -5839,16 +5975,20 @@
       });
     });
 
-    // Arrays de multi-seleção (chips)
+    // Arrays de seleção (chips) — Setor Recomendado e Setor Admitido permitem apenas 1 seleção
     container.querySelectorAll('[data-arr]').forEach(btn => {
       btn.addEventListener('click', () => {
         const arrKey = btn.dataset.arr;
         const val = btn.dataset.val;
         const cur = Array.isArray(fichaState[arrKey]) ? fichaState[arrKey].slice() : [];
-        const i = cur.indexOf(val);
-        if (i >= 0) cur.splice(i, 1);
-        else cur.push(val);
-        fichaState[arrKey] = cur;
+        if (arrKey === 'setorRecomendado' || arrKey === 'setorAdmitido') {
+          fichaState[arrKey] = cur.includes(val) ? [] : [val];
+        } else {
+          const i = cur.indexOf(val);
+          if (i >= 0) cur.splice(i, 1);
+          else cur.push(val);
+          fichaState[arrKey] = cur;
+        }
         persistFichaDraft({ immediate: true });
         renderFichaView();
       });
@@ -6083,24 +6223,6 @@
       });
     }
 
-    container.querySelectorAll('[data-edit-medico]').forEach(editBtn => {
-      editBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        openEditMedicoReguladorModal(editBtn.dataset.editMedico, () => renderFichaView());
-      });
-    });
-
-    container.querySelectorAll('[data-del-medico]').forEach(delBtn => {
-      delBtn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        const medId = delBtn.dataset.delMedico;
-        if (!(await samuConfirm('Excluir permanentemente este Médico Regulador da lista rápida em todos os celulares?'))) return;
-        window.SamuStorage.deleteMedicoRegulador(medId);
-        renderFichaView();
-        showToast('🗑️ Médico Regulador excluído e sincronizado!');
-      });
-    });
-
     container.querySelectorAll('[data-pick-medico]').forEach(chip => {
       chip.addEventListener('click', () => {
         const medId = chip.dataset.pickMedico;
@@ -6134,24 +6256,6 @@
         showToast(`✅ ${nome} salvo! Nas próximas fichas é só tocar no nome e assinar.`);
       });
     }
-
-    container.querySelectorAll('[data-edit-receiver]').forEach(editBtn => {
-      editBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        openEditHospitalReceiverModal(editBtn.dataset.editReceiver, () => renderFichaView());
-      });
-    });
-
-    container.querySelectorAll('[data-del-receiver]').forEach(delBtn => {
-      delBtn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        const recId = delBtn.dataset.delReceiver;
-        if (!(await samuConfirm('Excluir permanentemente este profissional da lista rápida do hospital em todos os celulares?'))) return;
-        window.SamuStorage.deleteHospitalReceiver(recId);
-        renderFichaView();
-        showToast('🗑️ Profissional removido da lista do hospital e sincronizado!');
-      });
-    });
 
     container.querySelectorAll('[data-pick-receiver]').forEach(chip => {
       chip.addEventListener('click', () => {
@@ -6312,7 +6416,22 @@
    * ABA 2: CHECK LIST – CONDUTOR / SOCORRISTA
    * ========================================================================== */
   function renderCondutorView() {
+    if (!isChecklistAllowed('condutor', currentUser)) {
+      activeTab = 'ficha';
+      renderBottomNav({ skipRedirectRender: true });
+      return renderFichaView();
+    }
     const container = document.getElementById('main-view');
+    const isAdminUser = window.SamuStorage.isUserAdmin(currentUser);
+    const modCfg = getChecklistModulesCfg();
+    const admDisabledBannerHtml = (isAdminUser && !modCfg.condutorEnabled)
+      ? `<div style="background:#fef2f2; border:1.5px solid #fca5a5; border-radius:10px; padding:9px 12px; margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+          <div style="font-size:0.81rem; color:#991b1b; line-height:1.35;">
+            🔒 <strong>Visão Exclusiva ADM:</strong> O Check List dos <strong>Motoristas / Condutores</strong> está <strong>DESATIVADO</strong> e não aparece para funcionários não-ADM.
+          </div>
+          <button type="button" class="btn btn-success btn-sm" id="btn-adm-quick-enable-cond">✅ Ativar p/ Motoristas</button>
+        </div>`
+      : '';
     const d = condutorState;
     if (!editingCondutorId) {
       applySharedDailyToCondutorState(d, { replaceOtherShift: false });
@@ -6355,6 +6474,8 @@
         </div>
         <button type="button" class="btn btn-secondary btn-sm" id="btn-reset-condutor">🗑️ Limpar</button>
       </div>
+
+      ${admDisabledBannerHtml}
 
       ${renderQuickDraftBarHtml('condutor')}
 
@@ -6916,13 +7037,41 @@
         btn.textContent = '💾 Salvar e Enviar PDF ao Google Drive';
       }
     });
+
+    const btnQuickEnCond = document.getElementById('btn-adm-quick-enable-cond');
+    if (btnQuickEnCond) {
+      btnQuickEnCond.addEventListener('click', async () => {
+        btnQuickEnCond.disabled = true;
+        await window.SamuStorage.saveChecklistModulesConfig({ condutorEnabled: true }, currentUser && currentUser.username);
+        renderBottomNav();
+        await refreshDraftCount();
+        await refreshSyncBadge();
+        renderCondutorView();
+        showToast('✅ Check List dos Motoristas ATIVADO para os funcionários!');
+      });
+    }
   }
 
   /* ==========================================================================
    * ABA 3: CHECK LIST – ENFERMAGEM (CHECAGEM DIÁRIA USB – 10 COMPARTIMENTOS)
    * ========================================================================== */
   function renderEnfermagemView() {
+    if (!isChecklistAllowed('enfermagem', currentUser)) {
+      activeTab = 'ficha';
+      renderBottomNav({ skipRedirectRender: true });
+      return renderFichaView();
+    }
     const container = document.getElementById('main-view');
+    const isAdminUser = window.SamuStorage.isUserAdmin(currentUser);
+    const modCfg = getChecklistModulesCfg();
+    const admDisabledBannerHtml = (isAdminUser && !modCfg.enfermagemEnabled)
+      ? `<div style="background:#fef2f2; border:1.5px solid #fca5a5; border-radius:10px; padding:9px 12px; margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+          <div style="font-size:0.81rem; color:#991b1b; line-height:1.35;">
+            🔒 <strong>Visão Exclusiva ADM:</strong> O Check List da <strong>Enfermagem</strong> está <strong>DESATIVADO</strong> e não aparece para funcionários não-ADM.
+          </div>
+          <button type="button" class="btn btn-success btn-sm" id="btn-adm-quick-enable-enf">✅ Ativar p/ Enfermagem</button>
+        </div>`
+      : '';
     const d = enfermagemState;
     if (!editingEnfermagemId) {
       applySharedDailyToEnfermagemState(d, { replaceOtherShift: false });
@@ -6970,6 +7119,8 @@
           <button type="button" class="btn btn-secondary btn-sm" id="btn-reset-enf">🗑️ Limpar</button>
         </div>
       </div>
+
+      ${admDisabledBannerHtml}
 
       ${renderQuickDraftBarHtml('enfermagem')}
 
@@ -7372,6 +7523,19 @@
         btn.textContent = '💾 Salvar e Enviar PDF ao Google Drive';
       }
     });
+
+    const btnQuickEnEnf = document.getElementById('btn-adm-quick-enable-enf');
+    if (btnQuickEnEnf) {
+      btnQuickEnEnf.addEventListener('click', async () => {
+        btnQuickEnEnf.disabled = true;
+        await window.SamuStorage.saveChecklistModulesConfig({ enfermagemEnabled: true }, currentUser && currentUser.username);
+        renderBottomNav();
+        await refreshDraftCount();
+        await refreshSyncBadge();
+        renderEnfermagemView();
+        showToast('✅ Check List da Enfermagem ATIVADO para os funcionários!');
+      });
+    }
   }
 
   /* ==========================================================================
@@ -7380,7 +7544,12 @@
   async function renderHistoricoView() {
     const container = document.getElementById('main-view');
     const isAdmin = window.SamuStorage.isUserAdmin(currentUser);
-    const visibleRecords = await window.SamuStorage.getVisibleRecords(currentUser);
+    const rawVisibleRecords = await window.SamuStorage.getVisibleRecords(currentUser);
+    const visibleRecords = rawVisibleRecords.filter(r => isRecordAllowedForCurrentUser(r));
+    const allowCondHist = isAdmin || (currentUser && currentUser.role === 'condutor' && isChecklistAllowed('condutor', currentUser));
+    const allowEnfHist = isAdmin || (currentUser && currentUser.role === 'enfermagem' && isChecklistAllowed('enfermagem', currentUser));
+    if (historyTypeFilter === 'checklist_condutor' && !allowCondHist) historyTypeFilter = 'all';
+    if (historyTypeFilter === 'checklist_enfermagem' && !allowEnfHist) historyTypeFilter = 'all';
 
     // Lista de profissionais únicos (para filtro do Admin)
     const uniqueUsers = [];
@@ -7422,12 +7591,14 @@
       { id: 'drafts', label: `📌 Rascunhos (${draftsTotal})` },
       { id: 'ficha', label: 'Fichas de Atendimento' }
     ];
-    if (isAdmin || currentUser.role === 'condutor') {
+    if (allowCondHist) {
       typeFilterOptions.push({ id: 'checklist_condutor', label: 'Check List Condutor' });
     }
-    if (isAdmin || currentUser.role === 'enfermagem') {
+    if (allowEnfHist) {
       typeFilterOptions.push({ id: 'checklist_enfermagem', label: 'Check List Enfermagem' });
     }
+
+    const nonAdmHasAnyCk = allowCondHist || allowEnfHist;
 
     container.innerHTML = `
       <div class="card" style="padding:14px;">
@@ -7437,7 +7608,9 @@
             <div style="font-size:0.79rem; color:var(--muted);">
               ${isAdmin
                 ? 'Acesso total: pesquisando em todas as fichas e checklists de condutores e técnicos.'
-                : 'Privacidade ativa: exibindo apenas as fichas e checklists feitos no seu login.'}
+                : (nonAdmHasAnyCk
+                    ? 'Privacidade ativa: exibindo apenas as fichas e checklists feitos no seu login.'
+                    : 'Privacidade ativa: exibindo apenas as fichas feitas no seu login.')}
             </div>
           </div>
           <button type="button" class="btn btn-outline btn-sm" id="btn-hist-sync">🔄 Atualizar Drive</button>
@@ -7534,7 +7707,7 @@
     container.querySelectorAll('[data-h-edit]').forEach(btn => {
       btn.addEventListener('click', async () => {
         const rec = await window.SamuStorage.getRecordById(btn.dataset.hEdit);
-        if (!rec) return;
+        if (!rec || !isRecordAllowedForCurrentUser(rec)) return;
         if (rec.type === 'ficha') {
           fichaState = normalizeFichaData(rec.data);
           if (activeCrew) {
@@ -8201,6 +8374,7 @@
     const medicosRegCount = medicosList.length;
     const patientsCount = patientsList.length;
     const ghMeta = window.SamuStorage.getGitHubMeta();
+    const modCfg = getChecklistModulesCfg();
     const printCfg = window.SamuStorage.getRemotePrintConfig
       ? window.SamuStorage.getRemotePrintConfig()
       : { autoPrintFichas: true, autoPrintChecklists: true, duplexMode: 'duplex', copies: 1 };
@@ -8324,8 +8498,8 @@
 
       const filtered = patientsList.filter(p => {
         if (!q) return true;
-        if (qDigits && String(p.cpf11 || '').includes(qDigits)) return true;
-        const blob = `${p.vitimaNome || ''} ${p.vitimaCpf || ''} ${p.vitimaEndereco || ''} ${p.vitimaNumero || ''} ${p.vitimaBairro || ''} ${p.vitimaCidade || ''} ${p.vitimaCep || ''}`;
+        if (qDigits && (String(p.cpf11 || '').includes(qDigits) || String(p.vitimaTelefone || '').replace(/\D+/g, '').includes(qDigits))) return true;
+        const blob = `${p.vitimaNome || ''} ${p.vitimaCpf || ''} ${p.vitimaTelefone || ''} ${p.vitimaEndereco || ''} ${p.vitimaNumero || ''} ${p.vitimaBairro || ''} ${p.vitimaCidade || ''} ${p.vitimaCep || ''}`;
         return normStr(blob).includes(q);
       });
       if (!filtered.length) {
@@ -8338,11 +8512,13 @@
           p.vitimaCidade || '',
           p.vitimaCep ? `CEP ${p.vitimaCep}` : ''
         ].filter(Boolean).join(' • ');
+        const fmtPatTel = p.vitimaTelefone ? formatPhoneBR(p.vitimaTelefone, true) : '';
+        const patTelIcon = fmtPatTel ? (getPhoneKindBR(fmtPatTel) === 'celular' ? '📱' : '☎️') : '';
         return `
           <div class="check-item-row" style="flex-wrap:wrap; gap:8px;">
             <div class="check-item-info">
               <strong>🪪 ${escapeHtml(p.vitimaNome)}</strong>
-              <small style="color:var(--muted);"> • CPF: <code>${escapeHtml(p.vitimaCpf)}</code>${p.vitimaIdade ? ` • ${escapeHtml(p.vitimaIdade)}` : ''}</small>
+              <small style="color:var(--muted);"> • CPF: <code>${escapeHtml(p.vitimaCpf)}</code>${p.vitimaIdade ? ` • ${escapeHtml(p.vitimaIdade)}` : ''}${fmtPatTel ? ` • ${patTelIcon} ${escapeHtml(fmtPatTel)}` : ''}</small>
               <br>
               <small style="color:var(--muted);">
                 📍 ${addrParts ? escapeHtml(addrParts) : '<em>Sem endereço residencial preenchido</em>'}
@@ -8379,6 +8555,8 @@
           <span class="type-badge type-condutor">🏥 Recebedores Salvos: ${receiversCount}</span>
           <span class="type-badge" style="background:#e0f2fe; color:#0369a1;">👨‍⚕️ Médicos Reguladores: ${medicosRegCount}</span>
           <span class="type-badge type-ficha">🪪 CPFs na Base: ${patientsCount}</span>
+          <span class="type-badge" style="${modCfg.condutorEnabled ? 'background:#dcfce7; color:#14532d;' : 'background:#fee2e2; color:#991b1b;'}">🚑 CK Motoristas: ${modCfg.condutorEnabled ? 'Ativo' : 'Desativado'}</span>
+          <span class="type-badge" style="${modCfg.enfermagemEnabled ? 'background:#dcfce7; color:#14532d;' : 'background:#fee2e2; color:#991b1b;'}">🩺 CK Enfermagem: ${modCfg.enfermagemEnabled ? 'Ativo' : 'Desativado'}</span>
         </div>
 
         <div class="grid-3">
@@ -8409,6 +8587,44 @@
           <button type="button" class="btn btn-outline btn-sm" id="btn-adm-import-db">📂 Importar Backup JSON</button>
           <input type="file" id="inp-adm-import-file" accept=".json,application/json" class="hidden" />
         </div>
+      </div>
+
+      <div class="card" id="adm-checklist-modules-card">
+        <div class="card-title"><span>🎛️ Ativar / Desativar Check Lists (Motoristas e Enfermagem)</span></div>
+        <p style="margin:0 0 12px; font-size:0.83rem; color:var(--muted);">
+          Controle quais Check Lists ficam liberados nos celulares da equipe. Quando <strong>desativado</strong>, o Check List <strong>não aparece para os funcionários que não são ADM</strong> (continua visível apenas para ADM) e sincroniza em tempo real com todos os celulares pelo Google Drive.
+        </p>
+
+        <div style="display:flex; flex-direction:column; gap:10px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; padding:11px 13px; border-radius:10px; border:1.5px solid ${modCfg.condutorEnabled ? '#86efac' : '#fca5a5'}; background:${modCfg.condutorEnabled ? '#f0fdf4' : '#fef2f2'};">
+            <div>
+              <div style="font-weight:800; font-size:0.93rem; color:#0f172a; margin-bottom:4px;">🚑 Check List – Motoristas / Condutores</div>
+              <span class="type-badge" style="${modCfg.condutorEnabled ? 'background:#dcfce7; color:#14532d;' : 'background:#fee2e2; color:#991b1b;'}">
+                ${modCfg.condutorEnabled ? '✅ ATIVADO (Visível para Motoristas e ADM)' : '🔒 DESATIVADO (Oculto para funcionários não-ADM)'}
+              </span>
+            </div>
+            <button type="button" class="btn ${modCfg.condutorEnabled ? 'btn-secondary' : 'btn-success'} btn-sm" id="btn-adm-toggle-ck-cond">
+              ${modCfg.condutorEnabled ? '🔒 Desativar Check List Motoristas' : '✅ Ativar Check List Motoristas'}
+            </button>
+          </div>
+
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; padding:11px 13px; border-radius:10px; border:1.5px solid ${modCfg.enfermagemEnabled ? '#86efac' : '#fca5a5'}; background:${modCfg.enfermagemEnabled ? '#f0fdf4' : '#fef2f2'};">
+            <div>
+              <div style="font-weight:800; font-size:0.93rem; color:#0f172a; margin-bottom:4px;">🩺 Check List – Enfermagem (Técnicos e Enfermeiros)</div>
+              <span class="type-badge" style="${modCfg.enfermagemEnabled ? 'background:#dcfce7; color:#14532d;' : 'background:#fee2e2; color:#991b1b;'}">
+                ${modCfg.enfermagemEnabled ? '✅ ATIVADO (Visível para Enfermagem e ADM)' : '🔒 DESATIVADO (Oculto para funcionários não-ADM)'}
+              </span>
+            </div>
+            <button type="button" class="btn ${modCfg.enfermagemEnabled ? 'btn-secondary' : 'btn-success'} btn-sm" id="btn-adm-toggle-ck-enf">
+              ${modCfg.enfermagemEnabled ? '🔒 Desativar Check List Enfermagem' : '✅ Ativar Check List Enfermagem'}
+            </button>
+          </div>
+        </div>
+        ${modCfg.updatedAt ? `
+          <div style="margin-top:8px; font-size:0.76rem; color:var(--muted);">
+            🕒 Última alteração: <strong>${escapeHtml(new Date(modCfg.updatedAt).toLocaleString('pt-BR'))}</strong>${modCfg.updatedBy ? ` por <strong>${escapeHtml(modCfg.updatedBy)}</strong>` : ''}
+          </div>
+        ` : ''}
       </div>
 
       <div class="card">
@@ -8627,6 +8843,58 @@
         window.SamuStorage.saveSettings({ githubRepo, githubBranch, githubToken });
         if (window.__samuCheckAppUpdate) {
           await window.__samuCheckAppUpdate(true);
+        }
+      });
+    }
+
+    const btnToggleCkCond = document.getElementById('btn-adm-toggle-ck-cond');
+    if (btnToggleCkCond) {
+      btnToggleCkCond.addEventListener('click', async () => {
+        const curCfg = getChecklistModulesCfg();
+        const nextVal = !curCfg.condutorEnabled;
+        btnToggleCkCond.disabled = true;
+        btnToggleCkCond.textContent = 'Salvando e sincronizando...';
+        try {
+          await window.SamuStorage.saveChecklistModulesConfig(
+            { condutorEnabled: nextVal },
+            currentUser && currentUser.username
+          );
+          renderBottomNav();
+          await refreshDraftCount();
+          await refreshSyncBadge();
+          renderAdminView(true);
+          showToast(nextVal
+            ? '✅ Check List dos Motoristas ATIVADO para todos os motoristas!'
+            : '🔒 Check List dos Motoristas DESATIVADO (oculto para funcionários não-ADM)!');
+        } catch (err) {
+          samuAlert('Erro ao atualizar configuração do Check List: ' + err.message);
+          renderAdminView(true);
+        }
+      });
+    }
+
+    const btnToggleCkEnf = document.getElementById('btn-adm-toggle-ck-enf');
+    if (btnToggleCkEnf) {
+      btnToggleCkEnf.addEventListener('click', async () => {
+        const curCfg = getChecklistModulesCfg();
+        const nextVal = !curCfg.enfermagemEnabled;
+        btnToggleCkEnf.disabled = true;
+        btnToggleCkEnf.textContent = 'Salvando e sincronizando...';
+        try {
+          await window.SamuStorage.saveChecklistModulesConfig(
+            { enfermagemEnabled: nextVal },
+            currentUser && currentUser.username
+          );
+          renderBottomNav();
+          await refreshDraftCount();
+          await refreshSyncBadge();
+          renderAdminView(true);
+          showToast(nextVal
+            ? '✅ Check List da Enfermagem ATIVADO para toda a equipe de Enfermagem!'
+            : '🔒 Check List da Enfermagem DESATIVADO (oculto para funcionários não-ADM)!');
+        } catch (err) {
+          samuAlert('Erro ao atualizar configuração do Check List: ' + err.message);
+          renderAdminView(true);
         }
       });
     }

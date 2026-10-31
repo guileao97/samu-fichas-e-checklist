@@ -357,17 +357,42 @@
     g.fillText('MÃE:', M + 715, y + 141);
     fitTextInk(g, d.vitimaMae || '', M + 780, y + 141, 755, 'bold 20px Arial, sans-serif');
 
-    // Linha 5: CPF | RG | CNS (opcional)
-    g.font = '21px Arial, sans-serif';
-    g.fillText('CPF:', M + 12, y + 179);
-    fitTextInk(g, d.vitimaCpf || '', M + 72, y + 179, 440, 'bold 20px Arial, sans-serif');
-    g.font = '21px Arial, sans-serif';
-    g.fillText('RG:', M + 540, y + 179);
-    fitTextInk(g, d.vitimaRg || '', M + 590, y + 179, 410, 'bold 20px Arial, sans-serif');
-    if (d.vitimaCns) {
+    // Linha 5: CPF | RG | CNS / CELULAR / TELEFONE
+    const vitTelStr = String(d.vitimaTelefone || '').trim();
+    const vitTelDigits = vitTelStr.replace(/\D+/g, '');
+    const isVitCel = vitTelDigits.length === 11 || vitTelDigits.length === 9;
+    if (d.vitimaCns && vitTelStr) {
       g.font = '21px Arial, sans-serif';
-      g.fillText('CNS:', M + 1025, y + 179);
-      fitTextInk(g, d.vitimaCns, M + 1088, y + 179, 445, 'bold 20px Arial, sans-serif');
+      g.fillText('CPF:', M + 12, y + 179);
+      fitTextInk(g, d.vitimaCpf || '', M + 70, y + 179, 290, 'bold 20px Arial, sans-serif');
+      g.font = '21px Arial, sans-serif';
+      g.fillText('RG:', M + 372, y + 179);
+      fitTextInk(g, d.vitimaRg || '', M + 420, y + 179, 255, 'bold 20px Arial, sans-serif');
+      g.font = '21px Arial, sans-serif';
+      g.fillText('CNS:', M + 688, y + 179);
+      fitTextInk(g, d.vitimaCns, M + 748, y + 179, 315, 'bold 20px Arial, sans-serif');
+      const shortTelLbl = isVitCel ? 'CEL:' : 'TEL:';
+      g.font = '21px Arial, sans-serif';
+      g.fillText(shortTelLbl, M + 1076, y + 179);
+      fitTextInk(g, vitTelStr, M + 1134, y + 179, 404, 'bold 20px Arial, sans-serif');
+    } else {
+      g.font = '21px Arial, sans-serif';
+      g.fillText('CPF:', M + 12, y + 179);
+      fitTextInk(g, d.vitimaCpf || '', M + 72, y + 179, 440, 'bold 20px Arial, sans-serif');
+      g.font = '21px Arial, sans-serif';
+      g.fillText('RG:', M + 540, y + 179);
+      fitTextInk(g, d.vitimaRg || '', M + 590, y + 179, 395, 'bold 20px Arial, sans-serif');
+      if (d.vitimaCns) {
+        g.font = '21px Arial, sans-serif';
+        g.fillText('CNS:', M + 1005, y + 179);
+        fitTextInk(g, d.vitimaCns, M + 1068, y + 179, 465, 'bold 20px Arial, sans-serif');
+      } else if (vitTelStr) {
+        const fullTelLbl = isVitCel ? 'CELULAR:' : 'TELEFONE:';
+        const valX = isVitCel ? (M + 1118) : (M + 1134);
+        g.font = '21px Arial, sans-serif';
+        g.fillText(fullTelLbl, M + 1005, y + 179);
+        fitTextInk(g, vitTelStr, valX, y + 179, M + CW - 14 - valX, 'bold 20px Arial, sans-serif');
+      }
     }
 
     y += vitH + 14;
@@ -876,12 +901,14 @@
     g2.textAlign = 'left';
 
     const setores = window.SAMU_SCHEMA.setoresHospital;
-    const recSel = d.setorRecomendado || [];
-    const admSel = d.setorAdmitido || [];
+    const recArr = Array.isArray(d.setorRecomendado) ? d.setorRecomendado.filter(Boolean) : (d.setorRecomendado ? [d.setorRecomendado] : []);
+    const admArr = Array.isArray(d.setorAdmitido) ? d.setorAdmitido.filter(Boolean) : (d.setorAdmitido ? [d.setorAdmitido] : []);
+    const recOne = recArr.length > 0 ? recArr[recArr.length - 1] : '';
+    const admOne = admArr.length > 0 ? admArr[admArr.length - 1] : '';
     setores.forEach((st, idx) => {
       const sy = y2 + setorHeadH + 10 + idx * 30;
-      drawCheckbox(g2, M + 18, sy, 20, Array.isArray(recSel) ? recSel.includes(st) : recSel === st, st, '20px Arial');
-      drawCheckbox(g2, M + CW / 2 + 18, sy, 20, Array.isArray(admSel) ? admSel.includes(st) : admSel === st, st, '20px Arial');
+      drawCheckbox(g2, M + 18, sy, 20, recOne === st, st, '20px Arial');
+      drawCheckbox(g2, M + CW / 2 + 18, sy, 20, admOne === st, st, '20px Arial');
     });
 
     // OBS (3 linhas)

@@ -1263,9 +1263,10 @@
   const PRINT_SLOT_COUNT = 80;
   const DAILY_CK_SLOT_PREFIX = '__ckday_';
   const DAILY_CK_SLOT_COUNT = 12;
+  const MODULES_CFG_KEY = '__modules_cfg__';
 
   function isPrintSystemKey(k) {
-    return /^(?:__print_|__pjob_|__ckday_)/.test(String(k || ''));
+    return /^(?:__print_|__pjob_|__ckday_|__modules_)/.test(String(k || ''));
   }
 
   function extractDriveFileIdFromAny(driveFileId, driveUrl) {
@@ -1321,6 +1322,52 @@
       } catch (e) {}
     }
     return next;
+  }
+
+  function getChecklistModulesConfig() {
+    const avMap = getViaturaAvariasMap();
+    const raw = (avMap && avMap[MODULES_CFG_KEY] && typeof avMap[MODULES_CFG_KEY] === 'object')
+      ? avMap[MODULES_CFG_KEY]
+      : {};
+    return {
+      key: MODULES_CFG_KEY,
+      condutorEnabled: raw.condutorEnabled !== false,
+      enfermagemEnabled: raw.enfermagemEnabled !== false,
+      updatedBy: String(raw.updatedBy || ''),
+      updatedAt: String(raw.updatedAt || '')
+    };
+  }
+
+  async function saveChecklistModulesConfig(patch, updatedBy) {
+    const cur = getChecklistModulesConfig();
+    const p = (patch && typeof patch === 'object') ? patch : {};
+    const nowIso = new Date().toISOString();
+    const next = {
+      key: MODULES_CFG_KEY,
+      condutorEnabled: p.condutorEnabled !== undefined ? Boolean(p.condutorEnabled) : cur.condutorEnabled,
+      enfermagemEnabled: p.enfermagemEnabled !== undefined ? Boolean(p.enfermagemEnabled) : cur.enfermagemEnabled,
+      updatedBy: String(updatedBy || (getSession() && getSession().username) || cur.updatedBy || ''),
+      updatedAt: nowIso
+    };
+    const avMap = getViaturaAvariasMap();
+    avMap[MODULES_CFG_KEY] = next;
+    setViaturaAvariasMap(avMap);
+    markGitHubDirty();
+    if (navigator.onLine && hasGitHubConfigured()) {
+      try {
+        await syncInternalDbWithGitHub({ pushChanges: true });
+      } catch (e) {}
+    }
+    return next;
+  }
+
+  function isChecklistAllowedForUser(kind, userObj) {
+    const u = userObj || getSession();
+    if (u && isUserAdmin(u)) return true;
+    const cfg = getChecklistModulesConfig();
+    if (kind === 'condutor' || kind === 'checklist_condutor') return Boolean(cfg.condutorEnabled);
+    if (kind === 'enfermagem' || kind === 'checklist_enfermagem') return Boolean(cfg.enfermagemEnabled);
+    return true;
   }
 
   function getRemotePrintAgentStatus() {
@@ -1942,6 +1989,7 @@
       vitimaCns: fichaData.vitimaCns || prev.vitimaCns || '',
       vitimaDn: fichaData.vitimaDn || prev.vitimaDn || '',
       vitimaIdade: fichaData.vitimaIdade || prev.vitimaIdade || '',
+      vitimaTelefone: fichaData.vitimaTelefone || prev.vitimaTelefone || '',
       vitimaCep: fichaData.vitimaCep || prev.vitimaCep || '',
       vitimaCidade: fichaData.vitimaCidade || prev.vitimaCidade || 'Orlândia',
       vitimaBairro: fichaData.vitimaBairro || prev.vitimaBairro || '',
@@ -1993,6 +2041,7 @@
       vitimaCns: pickStr('vitimaCns', ''),
       vitimaDn: pickStr('vitimaDn', ''),
       vitimaIdade: pickStr('vitimaIdade', ''),
+      vitimaTelefone: pickStr('vitimaTelefone', ''),
       vitimaCep: pickStr('vitimaCep', ''),
       vitimaCidade: pickStr('vitimaCidade', 'Orlândia'),
       vitimaBairro: pickStr('vitimaBairro', ''),
@@ -2037,6 +2086,7 @@
       vitimaCns: '',
       vitimaDn: '',
       vitimaIdade: '',
+      vitimaTelefone: '',
       vitimaCep: '',
       vitimaCidade: '',
       vitimaBairro: '',
@@ -2456,7 +2506,7 @@
   function hasMeaningfulFichaProgress(fichaData) {
     if (!fichaData || typeof fichaData !== 'object') return false;
     const checkKeys = [
-      'numOcorrencia', 'motivoQueixa', 'vitimaNome', 'vitimaCpf', 'vitimaEndereco',
+      'numOcorrencia', 'motivoQueixa', 'vitimaNome', 'vitimaCpf', 'vitimaTelefone', 'vitimaEndereco',
       'svPa', 'svFc', 'svSpo2', 'svDxt', 'relatorioEnfermagem', 'procedimentosTexto',
       'recebidoPorNome', 'sigHospital', 'sigPacienteRecusa'
     ];
@@ -4535,6 +4585,9 @@
     saveViaturaAvarias,
     getRemotePrintConfig,
     saveRemotePrintConfig,
+    getChecklistModulesConfig,
+    saveChecklistModulesConfig,
+    isChecklistAllowedForUser,
     getRemotePrintAgentStatus,
     getRemotePrintQueue,
     getRecordPrintStatus,
