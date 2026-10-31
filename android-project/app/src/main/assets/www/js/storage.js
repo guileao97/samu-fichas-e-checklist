@@ -4459,29 +4459,14 @@
   }
 
   function ensureBatteryOptimizationDisabled() {
-    try {
-      if (window.AndroidBridge && typeof window.AndroidBridge.ensureBatteryOptimizationDisabled === 'function') {
-        window.AndroidBridge.ensureBatteryOptimizationDisabled();
-      }
-    } catch (e) {}
+    // Otimizador de bateria padrão do Android permanece ativo p/ economizar bateria
   }
 
   function isBatteryOptimizationDisabled() {
-    try {
-      if (window.AndroidBridge && typeof window.AndroidBridge.isIgnoringBatteryOptimizations === 'function') {
-        return Boolean(window.AndroidBridge.isIgnoringBatteryOptimizations());
-      }
-    } catch (e) {}
     return true;
   }
 
   function requestDisableBatteryOptimization() {
-    try {
-      if (window.AndroidBridge && typeof window.AndroidBridge.requestIgnoreBatteryOptimizations === 'function') {
-        window.AndroidBridge.requestIgnoreBatteryOptimizations();
-        return true;
-      }
-    } catch (e) {}
     return false;
   }
 
@@ -4509,9 +4494,6 @@
       if (window.AndroidBridge && typeof window.AndroidBridge.setBackgroundSyncProgress === 'function') {
         const st = (state && typeof state === 'object') ? state : {};
         const active = Boolean(st.active);
-        if (active) {
-          ensureBatteryOptimizationDisabled();
-        }
         window.AndroidBridge.setBackgroundSyncProgress(
           active,
           String(st.title || ''),
@@ -4542,7 +4524,6 @@
           const jsonStr = JSON.stringify(wirePayload);
           const act = String((wirePayload && wirePayload.action) || '');
           if (act === 'uploadRecord' && typeof window.AndroidBridge.postRecordUploadNative === 'function') {
-            ensureBatteryOptimizationDisabled();
             const recObj = (wirePayload && wirePayload.record) || {};
             const recId = String(recObj.id || '');
             const jobTitle = describeRecordShortLabel(recObj);
@@ -4552,9 +4533,6 @@
             (Boolean(wirePayload && wirePayload.pushChanges) || isFgDbSync) &&
             typeof window.AndroidBridge.postDatabaseSyncNative === 'function'
           ) {
-            if (Boolean(wirePayload && wirePayload.pushChanges)) {
-              ensureBatteryOptimizationDisabled();
-            }
             window.AndroidBridge.postDatabaseSyncNative(reqId, url, jsonStr, Boolean(wirePayload && wirePayload.pushChanges));
           } else {
             window.AndroidBridge.postJson(reqId, url, jsonStr);

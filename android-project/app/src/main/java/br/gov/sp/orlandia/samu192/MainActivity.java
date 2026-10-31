@@ -96,8 +96,6 @@ public class MainActivity extends Activity {
     private static volatile boolean sPromptedNotifThisProcess = false;
     private static volatile boolean sPromptedUnknownSourcesThisProcess = false;
     private static volatile boolean sWaitingUnknownSourcesSettingsReturn = false;
-    private static volatile boolean sPromptedBatteryOptThisProcess = false;
-    private static volatile long sLastBatteryPromptMs = 0L;
 
     private WebView webView;
     private SamuSqliteDb sqliteDb;
@@ -301,14 +299,6 @@ public class MainActivity extends Activity {
             if (!sPromptedUnknownSourcesThisProcess && !canInstallUnknownPackagesInternal()) {
                 sPromptedUnknownSourcesThisProcess = true;
                 promptEnableUnknownAppSourcesDialog();
-                return;
-            }
-
-            // 3) Isenção de Otimização de Bateria (p/ nunca interromper envio ou sincronização em 2º plano)
-            if (!sPromptedBatteryOptThisProcess && !isBatteryOptimizationIgnored()) {
-                sPromptedBatteryOptThisProcess = true;
-                sLastBatteryPromptMs = System.currentTimeMillis();
-                requestIgnoreBatteryOptimizationInternal(false);
             }
         }, delayMs);
     }
@@ -374,48 +364,13 @@ public class MainActivity extends Activity {
                     )
                     .setCancelable(false)
                     .setPositiveButton("Habilitar Agora", (dialog, which) -> openUnknownAppSourcesSettingsScreen())
-                    .setNegativeButton("Depois", (dialog, which) -> scheduleStartupPermissionsCheck(500L))
+                    .setNegativeButton("Depois", null)
                     .create();
                 unknownSourcesDialog.show();
             } catch (Exception e) {
                 openUnknownAppSourcesSettingsScreen();
             }
         });
-    }
-
-    private boolean isBatteryOptimizationIgnored() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            try {
-                PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-                return pm == null || pm.isIgnoringBatteryOptimizations(getPackageName());
-            } catch (Exception e) {
-                return true;
-            }
-        }
-        return true;
-    }
-
-    @SuppressLint("BatteryLife")
-    private void requestIgnoreBatteryOptimizationInternal(final boolean allowSettingsFallback) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            runOnUiThread(() -> {
-                try {
-                    PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-                    if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
-                        Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
-                        intent.setData(Uri.parse("package:" + getPackageName()));
-                        startActivity(intent);
-                    }
-                } catch (Exception e) {
-                    if (allowSettingsFallback) {
-                        try {
-                            Intent fallback = new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
-                            startActivity(fallback);
-                        } catch (Exception ignored) {}
-                    }
-                }
-            });
-        }
     }
 
     @Override
@@ -1002,24 +957,17 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public boolean isIgnoringBatteryOptimizations() {
-            return isBatteryOptimizationIgnored();
+            return true;
         }
 
         @JavascriptInterface
         public void requestIgnoreBatteryOptimizations() {
-            sLastBatteryPromptMs = System.currentTimeMillis();
-            requestIgnoreBatteryOptimizationInternal(true);
+            // Mantém o otimizador de bateria padrão do Android ativo para economizar bateria
         }
 
         @JavascriptInterface
         public void ensureBatteryOptimizationDisabled() {
-            if (!isBatteryOptimizationIgnored()) {
-                long now = System.currentTimeMillis();
-                if (now - sLastBatteryPromptMs > 180000L) {
-                    sLastBatteryPromptMs = now;
-                    requestIgnoreBatteryOptimizationInternal(false);
-                }
-            }
+            // Mantém o otimizador de bateria padrão do Android ativo para economizar bateria
         }
 
         @JavascriptInterface

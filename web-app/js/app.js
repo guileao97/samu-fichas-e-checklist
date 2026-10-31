@@ -320,9 +320,6 @@
 
   function enqueueBackgroundRecordSend(record, extraOpts) {
     if (!record) return;
-    if (window.SamuStorage && window.SamuStorage.ensureBatteryOptimizationDisabled) {
-      window.SamuStorage.ensureBatteryOptimizationDisabled();
-    }
     const opts = (extraOpts && typeof extraOpts === 'object') ? extraOpts : {};
     bgSendQueue.push({ type: 'record_upload', record, opts });
     const totalInFlight = bgSendQueue.length + (bgSendWorkerRunning ? 1 : 0);
@@ -345,9 +342,6 @@
 
   function enqueueBackgroundBasePrint(record, preGeneratedPdf) {
     if (!record) return;
-    if (window.SamuStorage && window.SamuStorage.ensureBatteryOptimizationDisabled) {
-      window.SamuStorage.ensureBatteryOptimizationDisabled();
-    }
     bgSendQueue.push({ type: 'base_print', record, preGeneratedPdf: preGeneratedPdf || null, opts: {} });
     const totalInFlight = bgSendQueue.length + (bgSendWorkerRunning ? 1 : 0);
     if (!bgSendWorkerRunning) {
@@ -717,9 +711,6 @@
 
   function runBackgroundCloudAction(cfg) {
     const c = (cfg && typeof cfg === 'object') ? cfg : {};
-    if (window.SamuStorage && window.SamuStorage.ensureBatteryOptimizationDisabled) {
-      window.SamuStorage.ensureBatteryOptimizationDisabled();
-    }
     bgActiveSyncCount++;
     const title = c.title || 'Sincronizando em 2º plano...';
     const detail = c.detail || 'Transmitindo atualização para o Google Drive da Central SAMU...';
@@ -11217,10 +11208,8 @@
           <span class="type-badge" style="${modCfg.enfermagemEnabled ? 'background:#dcfce7; color:#14532d;' : 'background:#fee2e2; color:#991b1b;'}">🩺 CK Enfermagem: ${modCfg.enfermagemEnabled ? 'Ativo' : 'Desativado'}</span>
           ${(() => {
             if (!window.AndroidBridge) return '';
-            const batFree = window.SamuStorage.isBatteryOptimizationDisabled ? window.SamuStorage.isBatteryOptimizationDisabled() : true;
             const unkOk = window.SamuStorage.canInstallUnknownApps ? window.SamuStorage.canInstallUnknownApps() : true;
             return `
-              <span class="type-badge" style="${batFree ? 'background:#dcfce7; color:#14532d;' : 'background:#fef3c7; color:#92400e;'}">${batFree ? '🔋 2º Plano: Sem Restrição de Bateria' : '⚠️ Bateria: Toque abaixo p/ liberar 2º plano'}</span>
               <span class="type-badge" style="${unkOk ? 'background:#dcfce7; color:#14532d;' : 'background:#fef3c7; color:#92400e;'}">${unkOk ? '📲 Auto-Update: Fontes Desconhecidas Liberado' : '⚠️ Auto-Update: Toque abaixo p/ liberar Fontes Desconhecidas'}</span>
             `;
           })()}
@@ -11229,10 +11218,8 @@
         ${(() => {
           if (!window.AndroidBridge) return '';
           const unkOk = window.SamuStorage.canInstallUnknownApps ? window.SamuStorage.canInstallUnknownApps() : true;
-          const batFree = window.SamuStorage.isBatteryOptimizationDisabled ? window.SamuStorage.isBatteryOptimizationDisabled() : true;
-          let banners = '';
           if (!unkOk) {
-            banners += `
+            return `
               <div style="background:#eff6ff; border:1.5px solid #0284c7; border-radius:10px; padding:10px 12px; margin-bottom:10px; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
                 <div style="font-size:0.81rem; color:#0c4a6e; font-weight:700;">
                   📲 <strong>Facilitar Atualizações Futuras:</strong> habilite instalar de fontes desconhecidas por este app (<em>Permitir desta fonte</em>) para as próximas versões atualizarem direto com 1 toque.
@@ -11241,17 +11228,7 @@
               </div>
             `;
           }
-          if (!batFree) {
-            banners += `
-              <div style="background:#fffbeb; border:1.5px solid #f59e0b; border-radius:10px; padding:10px 12px; margin-bottom:12px; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
-                <div style="font-size:0.81rem; color:#78350f; font-weight:700;">
-                  🔋 <strong>Garantir Envio Mesmo Fechando o APK:</strong> desative a otimização de bateria deste aparelho para o SAMU 192 nunca ser interrompido em segundo plano.
-                </div>
-                <button type="button" class="btn btn-orange btn-sm" id="btn-adm-battery-opt">🔋 Tirar Otimização de Bateria</button>
-              </div>
-            `;
-          }
-          return banners;
+          return '';
         })()}
 
         <div class="grid-3">
@@ -11571,13 +11548,6 @@
         if (window.__samuCheckAppUpdate) {
           await window.__samuCheckAppUpdate(true);
         }
-      });
-    }
-
-    const btnBatteryOpt = document.getElementById('btn-adm-battery-opt');
-    if (btnBatteryOpt && window.SamuStorage.requestDisableBatteryOptimization) {
-      btnBatteryOpt.addEventListener('click', () => {
-        window.SamuStorage.requestDisableBatteryOptimization();
       });
     }
 
