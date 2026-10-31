@@ -190,6 +190,66 @@
     return (Date.now() - lastNetworkFailureTs) < (Number(windowMs) || 12000);
   }
 
+  function decodeBasicHtmlEntities(str) {
+    return String(str || '')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;|&apos;/gi, "'")
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&amp;/gi, '&');
+  }
+
+  function buildNonJsonServerErrorMessage(rawText) {
+    const raw = String(rawText == null ? '' : rawText).trim();
+    if (!raw) {
+      return 'Servidor Google Drive retornou resposta vazia.';
+    }
+
+    const errDivMatch = raw.match(/class=["'][^"']*errorMessage[^"']*["'][^>]*>([\s\S]*?)<\/div>/i);
+    const extractedErr = errDivMatch
+      ? decodeBasicHtmlEntities(errDivMatch[1].replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim()
+      : '';
+
+    const titleMatch = raw.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    const extractedTitle = titleMatch
+      ? decodeBasicHtmlEntities(titleMatch[1].replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim()
+      : '';
+
+    const probeBlob = `${extractedErr} ${extractedTitle} ${raw.slice(0, 1200)}`;
+    if (/accounts\.google\.com|ServiceLogin/i.test(probeBlob)) {
+      return 'A URL do Google Apps Script exigiu login Google. Verifique em Base/Drive se a URL termina em /exec e está publicada com acesso "Qualquer pessoa".';
+    }
+    if (/50000\s*(?:caracteres|characters)/i.test(probeBlob)) {
+      return 'Limite de 50.000 caracteres por célula na Planilha Google excedido' + (extractedErr ? ` (${extractedErr})` : '.');
+    }
+    if (/Authorization is required|[ÉE]\s+necess[aá]ria\s+autoriza[cç][aã]o|autoriza[cç][aã]o\s+[eé]\s+necess[aá]ria/i.test(probeBlob)) {
+      return 'O Google Apps Script precisa de reautorização na conta Google proprietária do Drive' + (extractedErr ? ` (${extractedErr})` : '.');
+    }
+    if (/Service invoked too many times|quota|excedeu a cota/i.test(probeBlob)) {
+      return 'Limite temporário de uso do Google Apps Script atingido' + (extractedErr ? ` (${extractedErr})` : '.');
+    }
+    if (extractedErr) {
+      return 'Erro reportado pelo Google Apps Script: ' + extractedErr.slice(0, 220);
+    }
+
+    const stripped = decodeBasicHtmlEntities(
+      raw
+        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+    ).replace(/\s+/g, ' ').trim();
+
+    const snippet = (extractedTitle && stripped && !stripped.startsWith(extractedTitle))
+      ? `${extractedTitle} - ${stripped}`
+      : (stripped || extractedTitle);
+
+    if (snippet) {
+      return 'Resposta inválida recebida do servidor: ' + snippet.slice(0, 180);
+    }
+    return 'Resposta JSON inválida recebida do servidor.';
+  }
+
   window.__onAndroidHttpResult = function(reqId, ok, responseText) {
     const cb = pendingNativeCalls[reqId];
     if (!cb) return;
@@ -212,7 +272,7 @@
     try {
       cb.resolve(JSON.parse(responseText));
     } catch (err) {
-      cb.reject(new Error('Resposta JSON inválida recebida do servidor.'));
+      cb.reject(new Error(buildNonJsonServerErrorMessage(responseText)));
     }
   };
 
@@ -300,6 +360,24 @@
   const DEFAULT_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbw1rSjlmgqhQjKsSZSykzi4UAWYQGCvdIDStxDlbFGfln-GrTc2FP8h_R5J18C6Wbz3/exec';
   const DEFAULT_GITHUB_REPO = 'guileao97/samu-fichas-e-checklist';
 
+  function normalizeDriveScriptUrl(rawUrl, fallbackToDefault) {
+    const trimmed = String(rawUrl == null ? '' : rawUrl).trim();
+    if (!trimmed) {
+      return fallbackToDefault ? DEFAULT_SCRIPT_URL : '';
+    }
+    if (
+      trimmed.indexOf('DlbFGfIn-GrTc') !== -1 ||
+      /^https?:\/\/(?:drive|docs)\.google\.com\//i.test(trimmed)
+    ) {
+      return DEFAULT_SCRIPT_URL;
+    }
+    const devMatch = trimmed.match(/^(https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+)\/dev(\?.*)?$/i);
+    if (devMatch) {
+      return devMatch[1] + '/exec' + (devMatch[2] || '');
+    }
+    return trimmed;
+  }
+
   function getSettings() {
     const defaults = {
       scriptUrl: DEFAULT_SCRIPT_URL,
@@ -318,10 +396,13 @@
       if (!raw) return defaults;
       const parsed = JSON.parse(raw);
       const merged = Object.assign({}, defaults, parsed);
-      if (!merged.scriptUrl || !String(merged.scriptUrl).trim() || String(merged.scriptUrl).indexOf('DlbFGfIn-GrTc') !== -1) {
+      if (parsed._lastFactoryScriptUrl && parsed.scriptUrl === parsed._lastFactoryScriptUrl && parsed._lastFactoryScriptUrl !== DEFAULT_SCRIPT_URL) {
         merged.scriptUrl = DEFAULT_SCRIPT_URL;
-      } else if (parsed._lastFactoryScriptUrl && parsed.scriptUrl === parsed._lastFactoryScriptUrl && parsed._lastFactoryScriptUrl !== DEFAULT_SCRIPT_URL) {
-        merged.scriptUrl = DEFAULT_SCRIPT_URL;
+      } else {
+        const hadExplicitEmpty = Object.prototype.hasOwnProperty.call(parsed, 'scriptUrl') && String(parsed.scriptUrl || '').trim() === '';
+        merged.scriptUrl = hadExplicitEmpty
+          ? DEFAULT_SCRIPT_URL
+          : normalizeDriveScriptUrl(merged.scriptUrl, true);
       }
       merged._lastFactoryScriptUrl = DEFAULT_SCRIPT_URL;
       if (!merged.githubRepo || !String(merged.githubRepo).trim()) {
@@ -336,7 +417,9 @@
   function saveSettings(partial) {
     const cur = getSettings();
     const next = Object.assign({}, cur, partial);
-    if (next.scriptUrl) next.scriptUrl = next.scriptUrl.trim();
+    if (typeof next.scriptUrl === 'string') {
+      next.scriptUrl = normalizeDriveScriptUrl(next.scriptUrl, false);
+    }
     if (next.githubRepo) next.githubRepo = next.githubRepo.trim();
     if (next.githubBranch) next.githubBranch = next.githubBranch.trim() || 'main';
     if (next.githubFilePath) next.githubFilePath = next.githubFilePath.trim() || 'base_dados_samu.json';
@@ -4017,14 +4100,17 @@
       if (!resp.ok) {
         throw new Error(`Servidor Google Drive respondeu HTTP ${resp.status}.`);
       }
-      throw new Error('A URL do Google Drive não retornou JSON válido. Verifique se o Apps Script está publicado com acesso "Qualquer pessoa".');
+      throw new Error(buildNonJsonServerErrorMessage(text));
     }
   }
 
   function isTransientDriveApiFailure(errOrMsg) {
     const s = String((errOrMsg && errOrMsg.message) || errOrMsg || '');
     if (!s) return false;
-    return /HTTP\s+(?:429|5\d\d)\b|n[aã]o retornou JSON|Resposta JSON inv[aá]lida|Lock|server error occurred|Service invoked too many times|SocketTimeoutException|timed out|Software caused connection abort|Connection reset/i.test(s);
+    if (/50\.?000\s*caracteres|50000\s*characters|exigiu login Google|precisa de reautoriza[cç][aã]o/i.test(s)) {
+      return false;
+    }
+    return /HTTP\s+(?:429|5\d\d)\b|resposta vazia|n[aã]o retornou JSON|Resposta JSON inv[aá]lida|Lock|server error occurred|Service invoked too many times|SocketTimeoutException|timed out|Software caused connection abort|Connection reset/i.test(s);
   }
 
   async function apiPost(payload, customUrl) {
@@ -4043,9 +4129,26 @@
       }
       return firstRes;
     } catch (err) {
+      const errMsg = String((err && err.message) || '');
+      // Auto-cura de URL: se o aparelho tinha uma URL antiga/inválida salva localmente, restaura a URL oficial da Central SAMU
+      if (
+        !customUrl &&
+        url !== DEFAULT_SCRIPT_URL &&
+        !isNetworkErrorMessage(errMsg) &&
+        /exigiu login Google|HTTP\s+40[134]\b|Resposta inv[aá]lida|Resposta JSON inv[aá]lida/i.test(errMsg)
+      ) {
+        try {
+          const healedRes = await apiPostSingleAttempt(payload, DEFAULT_SCRIPT_URL);
+          if (healedRes && typeof healedRes === 'object') {
+            saveSettings({ scriptUrl: DEFAULT_SCRIPT_URL, _fromRemoteMerge: true });
+            return healedRes;
+          }
+        } catch (eHealUrl) {}
+      }
+
       const canRetryErr = allowRetry && (
         isTransientDriveApiFailure(err) ||
-        (typeof navigator !== 'undefined' && navigator.onLine && /Failed to fetch|NetworkError|Load failed/i.test(String((err && err.message) || '')))
+        (typeof navigator !== 'undefined' && navigator.onLine && /Failed to fetch|NetworkError|Load failed/i.test(errMsg))
       );
       if (canRetryErr) {
         await new Promise(r => setTimeout(r, 950));
@@ -4650,6 +4753,165 @@
     });
   }
 
+  const SHEET_DATAJSON_SAFE_MAX = 42000;
+
+  function compressSignatureForSheetCell(sigDataUrl, maxW, maxH) {
+    const raw = String(sigDataUrl || '').trim();
+    if (!raw || raw.indexOf('data:image/') !== 0) return Promise.resolve(raw);
+    if (raw.length <= 2800 || typeof document === 'undefined') return Promise.resolve(raw);
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (val) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          resolve(val);
+        }
+      };
+      const timer = setTimeout(() => done(raw), 1200);
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const limitW = maxW || 240;
+          const limitH = maxH || 82;
+          const sc = Math.min(1, limitW / Math.max(1, img.width), limitH / Math.max(1, img.height));
+          const w = Math.max(1, Math.round(img.width * sc));
+          const h = Math.max(1, Math.round(img.height * sc));
+          const cv = document.createElement('canvas');
+          cv.width = w;
+          cv.height = h;
+          const ctx = cv.getContext('2d');
+          ctx.clearRect(0, 0, w, h);
+          ctx.drawImage(img, 0, 0, w, h);
+          const pngOut = cv.toDataURL('image/png');
+          if (pngOut && pngOut.length <= 4800 && pngOut.length < raw.length) {
+            done(pngOut);
+            return;
+          }
+          // Fundo branco p/ JPEG ultraleve (~2 KB); drawSignatureFit no motor de PDF restaura fundo transparente e tinta azul
+          const cvJpg = document.createElement('canvas');
+          cvJpg.width = w;
+          cvJpg.height = h;
+          const jctx = cvJpg.getContext('2d');
+          jctx.fillStyle = '#ffffff';
+          jctx.fillRect(0, 0, w, h);
+          jctx.drawImage(img, 0, 0, w, h);
+          const jpgOut = cvJpg.toDataURL('image/jpeg', 0.74);
+          if (jpgOut && jpgOut.length < raw.length) {
+            done(jpgOut);
+            return;
+          }
+          done(pngOut && pngOut.length < raw.length ? pngOut : raw);
+        } catch (e) {
+          done(raw);
+        }
+      };
+      img.onerror = () => done(raw);
+      img.src = raw;
+    });
+  }
+
+  async function compactRecordDataForCloudSheet(rawData) {
+    let cloned;
+    try {
+      cloned = JSON.parse(JSON.stringify(rawData || {}));
+    } catch (e) {
+      return {};
+    }
+    if (!cloned || typeof cloned !== 'object') return {};
+
+    const collectStringRefs = (node, refs) => {
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node)) {
+        for (let i = 0; i < node.length; i++) {
+          if (typeof node[i] === 'string') {
+            refs.push({ holder: node, key: i });
+          } else if (node[i] && typeof node[i] === 'object') {
+            collectStringRefs(node[i], refs);
+          }
+        }
+        return;
+      }
+      const keys = Object.keys(node);
+      for (let i = 0; i < keys.length; i++) {
+        const k = keys[i];
+        const v = node[k];
+        if (typeof v === 'string') {
+          refs.push({ holder: node, key: k });
+        } else if (v && typeof v === 'object') {
+          collectStringRefs(v, refs);
+        }
+      }
+    };
+
+    const allRefs = [];
+    collectStringRefs(cloned, allRefs);
+
+    // 1ª Passagem: compacta assinaturas inline data:image/... p/ nunca estourar o limite de 50.000 caracteres/célula do Google Sheets
+    const imgRefs = allRefs.filter(r => {
+      const val = r.holder[r.key];
+      return typeof val === 'string' && val.indexOf('data:image/') === 0 && val.length > 2800;
+    });
+    if (imgRefs.length > 0) {
+      await Promise.all(imgRefs.map(async (r) => {
+        r.holder[r.key] = await compressSignatureForSheetCell(r.holder[r.key], 240, 82);
+      }));
+    }
+
+    let serialized = JSON.stringify(cloned);
+    if (serialized.length <= SHEET_DATAJSON_SAFE_MAX) {
+      return cloned;
+    }
+
+    // 2ª Passagem: se ainda ultrapassar 42.000 caracteres, limpa as maiores imagens inline (o PDF oficial já foi gerado em 200 DPI!)
+    const remainingImgs = allRefs
+      .filter(r => typeof r.holder[r.key] === 'string' && r.holder[r.key].indexOf('data:image/') === 0)
+      .sort((a, b) => b.holder[b.key].length - a.holder[a.key].length);
+
+    for (let i = 0; i < remainingImgs.length && serialized.length > SHEET_DATAJSON_SAFE_MAX; i++) {
+      remainingImgs[i].holder[remainingImgs[i].key] = '';
+      serialized = JSON.stringify(cloned);
+    }
+    if (serialized.length <= SHEET_DATAJSON_SAFE_MAX) {
+      return cloned;
+    }
+
+    // 3ª Passagem (garantia absoluta <= 42.000 caracteres): trunca campos de texto excepcionalmente longos
+    const longTexts = allRefs
+      .filter(r => typeof r.holder[r.key] === 'string' && r.holder[r.key].length > 1500)
+      .sort((a, b) => b.holder[b.key].length - a.holder[a.key].length);
+
+    for (let i = 0; i < longTexts.length && serialized.length > SHEET_DATAJSON_SAFE_MAX; i++) {
+      const curStr = longTexts[i].holder[longTexts[i].key];
+      const excess = serialized.length - SHEET_DATAJSON_SAFE_MAX + 200;
+      const keepLen = Math.max(500, curStr.length - excess);
+      longTexts[i].holder[longTexts[i].key] = curStr.slice(0, keepLen) + '...';
+      serialized = JSON.stringify(cloned);
+    }
+
+    if (serialized.length > SHEET_DATAJSON_SAFE_MAX) {
+      return {
+        vitimaNome: String(cloned.vitimaNome || '').slice(0, 200),
+        vitimaCpf: String(cloned.vitimaCpf || '').slice(0, 30),
+        data: String(cloned.data || '').slice(0, 30),
+        _compactFallback: true
+      };
+    }
+    return cloned;
+  }
+
+  async function buildCleanRecordForCloudUpload(record) {
+    const clean = Object.assign({}, record);
+    delete clean.pendingPdfBase64;
+    delete clean.pendingAutoPrint;
+    delete clean.lastSyncError;
+    if (typeof clean.summary === 'string' && clean.summary.length > 1500) {
+      clean.summary = clean.summary.slice(0, 1497) + '...';
+    }
+    clean.data = await compactRecordDataForCloudSheet(record && record.data);
+    return clean;
+  }
+
   async function uploadRecordToDrive(record, pdfBase64, opts) {
     const upOpts = (opts && typeof opts === 'object') ? opts : {};
     const settings = getSettings();
@@ -4678,10 +4940,7 @@
         effectivePdfB64 = (gen && gen.base64) || '';
       }
 
-      const cleanRecordForCloud = Object.assign({}, record);
-      delete cleanRecordForCloud.pendingPdfBase64;
-      delete cleanRecordForCloud.pendingAutoPrint;
-      delete cleanRecordForCloud.lastSyncError;
+      const cleanRecordForCloud = await buildCleanRecordForCloudUpload(record);
 
       const prtCfg = wantAutoPrint ? getRemotePrintConfig() : null;
       const autoPrintOpts = wantAutoPrint ? {

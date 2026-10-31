@@ -23,7 +23,7 @@ function doGet(e) {
     return jsonResponse_({
       ok: true,
       service: 'SAMU 192 Orlândia - Google Drive Sync',
-      version: 3,
+      version: 4,
       syncDatabaseReady: true,
       deleteRecordReady: true,
       rootFolderUrl: env.rootFolder.getUrl(),
@@ -763,6 +763,41 @@ function ensureRecordsSheet_(ss) {
   return sh;
 }
 
+function buildSafeSheetDataJson_(dataObj) {
+  var safeMax = 45000;
+  var rawStr = '{}';
+  try {
+    rawStr = JSON.stringify(dataObj || {});
+  } catch (e) {
+    return '{}';
+  }
+  if (rawStr.length <= safeMax) return rawStr;
+
+  // Remove imagens inline (assinaturas data:image/...) para respeitar o limite de 50.000 caracteres/célula do Google Sheets
+  var strippedStr = rawStr.replace(/"data:image\/[^"]*"/g, '""');
+  if (strippedStr.length <= safeMax) return strippedStr;
+
+  var src = (dataObj && typeof dataObj === 'object') ? dataObj : {};
+  return JSON.stringify({
+    vitimaNome: String(src.vitimaNome || '').slice(0, 200),
+    vitimaIdade: String(src.vitimaIdade || '').slice(0, 40),
+    vitimaDn: String(src.vitimaDn || '').slice(0, 30),
+    vitimaCpf: String(src.vitimaCpf || '').slice(0, 30),
+    vitimaRg: String(src.vitimaRg || '').slice(0, 40),
+    vitimaCns: String(src.vitimaCns || '').slice(0, 40),
+    vitimaEndereco: String(src.vitimaEndereco || '').slice(0, 200),
+    vitimaNumero: String(src.vitimaNumero || '').slice(0, 40),
+    vitimaBairro: String(src.vitimaBairro || '').slice(0, 120),
+    vitimaCidade: String(src.vitimaCidade || '').slice(0, 120),
+    vitimaCep: String(src.vitimaCep || '').slice(0, 20),
+    vitimaNaturalidade: String(src.vitimaNaturalidade || '').slice(0, 120),
+    vitimaPai: String(src.vitimaPai || '').slice(0, 160),
+    vitimaMae: String(src.vitimaMae || '').slice(0, 160),
+    data: String(src.data || '').slice(0, 30),
+    _truncatedForSheetCellLimit: true
+  });
+}
+
 function upsertRecord_(sh, rec, caller, driveFileId, driveFileUrl) {
   var syncedAt = new Date().toISOString();
   var callerAdm = isCallerAdmin_(caller);
@@ -785,20 +820,22 @@ function upsertRecord_(sh, rec, caller, driveFileId, driveFileUrl) {
     String(rec.incidentType || ''),
     String(rec.vehicle || ''),
     String(rec.shift || ''),
-    String(rec.summary || ''),
+    String(rec.summary || '').slice(0, 2000),
     String(driveFileId || ''),
     String(driveFileUrl || ''),
-    JSON.stringify(rec.data || {})
+    buildSafeSheetDataJson_(rec.data)
   ];
 
   var values = sh.getDataRange().getValues();
   for (var i = 1; i < values.length; i++) {
     if (String(values[i][0]) === String(rec.id)) {
       sh.getRange(i + 1, 1, 1, 18).setValues([rowValues]);
+      SpreadsheetApp.flush();
       return { syncedAt: syncedAt };
     }
   }
   sh.appendRow(rowValues);
+  SpreadsheetApp.flush();
   return { syncedAt: syncedAt };
 }
 

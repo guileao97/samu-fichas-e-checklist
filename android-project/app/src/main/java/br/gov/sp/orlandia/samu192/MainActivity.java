@@ -421,7 +421,9 @@ public class MainActivity extends Activity {
         return s.replace("\\", "\\\\")
                 .replace("'", "\\'")
                 .replace("\r", "\\r")
-                .replace("\n", "\\n");
+                .replace("\n", "\\n")
+                .replace("\u2028", "\\u2028")
+                .replace("\u2029", "\\u2029");
     }
 
     public class AndroidBridge {
@@ -741,7 +743,7 @@ public class MainActivity extends Activity {
                     String loc = conn.getHeaderField("Location");
                     conn.disconnect();
                     if (loc == null) throw new Exception("Redirecionamento sem destino.");
-                    currentUrl = loc;
+                    currentUrl = new URL(new URL(currentUrl), loc).toString();
                     method = "GET"; // Google Apps Script retorna o JSON via GET no Location 302
                     continue;
                 }
@@ -749,7 +751,7 @@ public class MainActivity extends Activity {
                     String loc = conn.getHeaderField("Location");
                     conn.disconnect();
                     if (loc == null) throw new Exception("Redirecionamento 307 sem destino.");
-                    currentUrl = loc;
+                    currentUrl = new URL(new URL(currentUrl), loc).toString();
                     continue;
                 }
 
