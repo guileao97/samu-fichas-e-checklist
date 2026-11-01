@@ -7,8 +7,13 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
@@ -29,6 +34,8 @@ import android.print.PrintManager;
 import android.provider.Settings;
 import android.util.Base64;
 import android.util.SparseArray;
+import android.util.TypedValue;
+import android.view.Gravity;
 import android.view.View;
 import android.view.ViewStructure;
 import android.view.Window;
@@ -42,8 +49,13 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.TextView;
 import android.widget.Toast;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
@@ -70,9 +82,11 @@ import java.util.Collections;
 import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -102,6 +116,7 @@ public class MainActivity extends Activity {
     private ConnectivityManager.NetworkCallback networkCallback;
     private File pendingApkInstallFile;
     private AlertDialog unknownSourcesDialog;
+    private AlertDialog whatsAppPickerDialog;
 
     private final Object nativeWsLock = new Object();
     private volatile int nativeWsGen = 0;
@@ -696,6 +711,465 @@ public class MainActivity extends Activity {
                 .replace("\u2029", "\\u2029");
     }
 
+    /* ===================== DESCOBERTA E SELETOR DE WHATSAPP (BUSINESS vs NORMAL / DUAL) ===================== */
+
+    private static final class WhatsAppShareTarget {
+        final String packageName;
+        final String activityName;
+        final String label;
+        final String subtitle;
+        final String kind; // "business", "normal", "other"
+        final Drawable icon;
+
+        WhatsAppShareTarget(String packageName, String activityName, String label, String subtitle, String kind, Drawable icon) {
+            this.packageName = packageName;
+            this.activityName = activityName;
+            this.label = label;
+            this.subtitle = subtitle;
+            this.kind = kind;
+            this.icon = icon;
+        }
+    }
+
+    private int dpToPx(final int dp) {
+        return Math.round(TypedValue.applyDimension(
+                TypedValue.COMPLEX_UNIT_DIP,
+                dp,
+                getResources().getDisplayMetrics()
+        ));
+    }
+
+    private static String safeCharSequence(final CharSequence cs) {
+        return (cs == null) ? "" : cs.toString().trim();
+    }
+
+    @SuppressWarnings("deprecation")
+    private List<ResolveInfo> queryImageSendActivitiesCompat(final PackageManager pm, final String optionalPackage) {
+        try {
+            Intent probe = new Intent(Intent.ACTION_SEND);
+            probe.setType("image/jpeg");
+            if (optionalPackage != null && !optionalPackage.isEmpty()) {
+                probe.setPackage(optionalPackage);
+            }
+            List<ResolveInfo> res;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                res = pm.queryIntentActivities(probe, PackageManager.ResolveInfoFlags.of(0));
+            } else {
+                res = pm.queryIntentActivities(probe, 0);
+            }
+            return (res != null) ? res : Collections.emptyList();
+        } catch (Exception e) {
+            return Collections.emptyList();
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private ApplicationInfo getEnabledAppInfoCompat(final PackageManager pm, final String pkg) {
+        try {
+            ApplicationInfo ai;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ai = pm.getApplicationInfo(pkg, PackageManager.ApplicationInfoFlags.of(0));
+            } else {
+                ai = pm.getApplicationInfo(pkg, 0);
+            }
+            return (ai != null && ai.enabled) ? ai : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private Drawable loadBestWhatsAppIcon(final PackageManager pm, final ResolveInfo ri,
+                                          final ApplicationInfo appInfo, final boolean preferResolveIcon) {
+        if (preferResolveIcon && ri != null) {
+            try {
+                Drawable d = ri.loadIcon(pm);
+                if (d != null) return d;
+            } catch (Exception ignored) {}
+        }
+        if (appInfo != null) {
+            try {
+                Drawable d = appInfo.loadIcon(pm);
+                if (d != null) return d;
+            } catch (Exception ignored) {}
+        }
+        if (ri != null) {
+            try {
+                if (ri.activityInfo != null && ri.activityInfo.applicationInfo != null) {
+                    Drawable d = ri.activityInfo.applicationInfo.loadIcon(pm);
+                    if (d != null) return d;
+                }
+            } catch (Exception ignored) {}
+            try {
+                Drawable d = ri.loadIcon(pm);
+                if (d != null) return d;
+            } catch (Exception ignored) {}
+        }
+        return null;
+    }
+
+    private String loadBestWhatsAppAppLabel(final PackageManager pm, final ResolveInfo ri, final ApplicationInfo appInfo) {
+        if (appInfo != null) {
+            try {
+                String lbl = safeCharSequence(pm.getApplicationLabel(appInfo));
+                if (!lbl.isEmpty()) return lbl;
+            } catch (Exception ignored) {}
+        }
+        if (ri != null && ri.activityInfo != null && ri.activityInfo.applicationInfo != null) {
+            try {
+                String lbl = safeCharSequence(pm.getApplicationLabel(ri.activityInfo.applicationInfo));
+                if (!lbl.isEmpty()) return lbl;
+            } catch (Exception ignored) {}
+        }
+        if (ri != null) {
+            try {
+                String lbl = safeCharSequence(ri.loadLabel(pm));
+                if (!lbl.isEmpty()) return lbl;
+            } catch (Exception ignored) {}
+        }
+        return "";
+    }
+
+    /**
+     * Descobre todos os WhatsApps instalados no aparelho, priorizando:
+     * 1º) WhatsApp Business (com.whatsapp.w4b) — geralmente utilizado para a Regulação Médica;
+     * 2º) WhatsApp Normal (com.whatsapp);
+     * 3º) Qualquer outro WhatsApp clonado / Dual Messenger (Samsung / Xiaomi / Motorola).
+     */
+    private List<WhatsAppShareTarget> discoverInstalledWhatsAppTargets() {
+        List<WhatsAppShareTarget> targets = new ArrayList<>();
+        PackageManager pm = getPackageManager();
+        if (pm == null) return targets;
+
+        Set<String> seenKeys = new LinkedHashSet<>();
+        Set<String> seenPrimaryPackages = new LinkedHashSet<>();
+
+        // 1º: WhatsApp Business (com.whatsapp.w4b)
+        List<ResolveInfo> w4bMatches = queryImageSendActivitiesCompat(pm, "com.whatsapp.w4b");
+        ApplicationInfo w4bAppInfo = getEnabledAppInfoCompat(pm, "com.whatsapp.w4b");
+        if (!w4bMatches.isEmpty() || w4bAppInfo != null) {
+            ResolveInfo ri = !w4bMatches.isEmpty() ? w4bMatches.get(0) : null;
+            String actName = (ri != null && ri.activityInfo != null && ri.activityInfo.name != null)
+                    ? ri.activityInfo.name
+                    : "";
+            Drawable icon = loadBestWhatsAppIcon(pm, ri, w4bAppInfo, false);
+            targets.add(new WhatsAppShareTarget(
+                    "com.whatsapp.w4b",
+                    actName,
+                    "WhatsApp Business",
+                    "Usado geralmente p/ Regulação",
+                    "business",
+                    icon
+            ));
+            seenPrimaryPackages.add("com.whatsapp.w4b");
+            seenKeys.add("com.whatsapp.w4b/" + actName);
+        }
+
+        // 2º: WhatsApp Normal (com.whatsapp)
+        List<ResolveInfo> waMatches = queryImageSendActivitiesCompat(pm, "com.whatsapp");
+        ApplicationInfo waAppInfo = getEnabledAppInfoCompat(pm, "com.whatsapp");
+        if (!waMatches.isEmpty() || waAppInfo != null) {
+            ResolveInfo ri = !waMatches.isEmpty() ? waMatches.get(0) : null;
+            String actName = (ri != null && ri.activityInfo != null && ri.activityInfo.name != null)
+                    ? ri.activityInfo.name
+                    : "";
+            Drawable icon = loadBestWhatsAppIcon(pm, ri, waAppInfo, false);
+            targets.add(new WhatsAppShareTarget(
+                    "com.whatsapp",
+                    actName,
+                    "WhatsApp Normal",
+                    "WhatsApp padrão / pessoal",
+                    "normal",
+                    icon
+            ));
+            seenPrimaryPackages.add("com.whatsapp");
+            seenKeys.add("com.whatsapp/" + actName);
+        }
+
+        // 3º: Varredura geral para WhatsApp Dual Messenger / Dual Apps / variantes
+        for (ResolveInfo ri : queryImageSendActivitiesCompat(pm, null)) {
+            if (ri == null || ri.activityInfo == null || ri.activityInfo.packageName == null) continue;
+            String pkg = ri.activityInfo.packageName;
+            String act = (ri.activityInfo.name != null) ? ri.activityInfo.name : "";
+            String key = pkg + "/" + act;
+            if (seenKeys.contains(key) || seenPrimaryPackages.contains(pkg)) continue;
+
+            String actLbl = "";
+            try { actLbl = safeCharSequence(ri.loadLabel(pm)); } catch (Exception ignored) {}
+            String appLbl = loadBestWhatsAppAppLabel(pm, ri, null);
+            String combinedLower = (pkg + " " + actLbl + " " + appLbl).toLowerCase(Locale.ROOT);
+            if (!combinedLower.contains("whatsapp")) continue;
+
+            String displayLbl = !actLbl.isEmpty() ? actLbl : (!appLbl.isEmpty() ? appLbl : "WhatsApp (Secundário)");
+            if ("whatsapp".equalsIgnoreCase(displayLbl) && seenPrimaryPackages.contains("com.whatsapp")) {
+                displayLbl = "WhatsApp (Dual / Clone)";
+            } else if ("whatsapp business".equalsIgnoreCase(displayLbl) && seenPrimaryPackages.contains("com.whatsapp.w4b")) {
+                displayLbl = "WhatsApp Business (Dual / Clone)";
+            }
+            Drawable icon = loadBestWhatsAppIcon(pm, ri, null, true);
+            targets.add(new WhatsAppShareTarget(
+                    pkg,
+                    act,
+                    displayLbl,
+                    "Conta secundária instalada no aparelho",
+                    "other",
+                    icon
+            ));
+            seenKeys.add(key);
+        }
+
+        return targets;
+    }
+
+    private static String sanitizeSharedJpegName(final String fileName) {
+        String safeName = (fileName == null || fileName.trim().isEmpty())
+                ? "Cabecalho_Regulacao_SAMU.jpg"
+                : fileName.replaceAll("[^a-zA-Z0-9._-]", "_");
+        String lower = safeName.toLowerCase(Locale.ROOT);
+        if (!lower.endsWith(".jpg") && !lower.endsWith(".jpeg")) {
+            safeName += ".jpg";
+        }
+        return safeName;
+    }
+
+    private Uri writeSharedJpegToCache(final String base64Image, final String safeName) throws Exception {
+        String cleanB64 = base64Image;
+        int commaIdx = (cleanB64 != null) ? cleanB64.indexOf(',') : -1;
+        if (commaIdx >= 0) {
+            cleanB64 = cleanB64.substring(commaIdx + 1);
+        }
+        byte[] imgBytes = Base64.decode(cleanB64, Base64.DEFAULT);
+        File dir = new File(getCacheDir(), "shared_pdfs");
+        if (!dir.exists()) dir.mkdirs();
+        File outFile = new File(dir, safeName);
+        try (FileOutputStream fos = new FileOutputStream(outFile)) {
+            fos.write(imgBytes);
+        }
+        return Uri.parse("content://" + PdfShareProvider.AUTHORITY + "/" + safeName);
+    }
+
+    private Intent buildImageSendIntent(final Uri contentUri, final String safeName, final String captionText) {
+        Intent intent = new Intent(Intent.ACTION_SEND);
+        intent.setType("image/jpeg");
+        intent.putExtra(Intent.EXTRA_STREAM, contentUri);
+        intent.setClipData(ClipData.newRawUri(safeName, contentUri));
+        if (captionText != null && !captionText.trim().isEmpty()) {
+            intent.putExtra(Intent.EXTRA_TEXT, captionText);
+        }
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        return intent;
+    }
+
+    private void launchSystemImageShareChooser(final Uri contentUri, final String safeName, final String captionText) {
+        Intent fallback = buildImageSendIntent(contentUri, safeName, captionText);
+        startActivity(Intent.createChooser(fallback, "Enviar Foto do Cabeçalho p/ Regulação"));
+    }
+
+    private boolean launchTargetedWhatsAppShare(final Uri contentUri, final String safeName, final String captionText,
+                                                final String targetPkg, final String targetActivity) {
+        if (targetPkg == null || targetPkg.trim().isEmpty()) return false;
+        String pkg = targetPkg.trim();
+        String act = (targetActivity != null) ? targetActivity.trim() : "";
+        boolean isStandardWaPkg = "com.whatsapp.w4b".equals(pkg) || "com.whatsapp".equals(pkg);
+
+        if (isStandardWaPkg) {
+            try {
+                Intent waIntent = buildImageSendIntent(contentUri, safeName, captionText);
+                waIntent.setPackage(pkg);
+                startActivity(waIntent);
+                return true;
+            } catch (Exception ignored) {}
+            if (!act.isEmpty()) {
+                try {
+                    Intent waCompIntent = buildImageSendIntent(contentUri, safeName, captionText);
+                    waCompIntent.setClassName(pkg, act);
+                    startActivity(waCompIntent);
+                    return true;
+                } catch (Exception ignored) {}
+            }
+            return false;
+        }
+
+        if (!act.isEmpty()) {
+            try {
+                Intent customCompIntent = buildImageSendIntent(contentUri, safeName, captionText);
+                customCompIntent.setClassName(pkg, act);
+                startActivity(customCompIntent);
+                return true;
+            } catch (Exception ignored) {}
+        }
+        try {
+            Intent customPkgIntent = buildImageSendIntent(contentUri, safeName, captionText);
+            customPkgIntent.setPackage(pkg);
+            startActivity(customPkgIntent);
+            return true;
+        } catch (Exception ignored) {}
+        return false;
+    }
+
+    private void showWhatsAppChooserDialog(final List<WhatsAppShareTarget> targets,
+                                           final Uri contentUri,
+                                           final String safeName,
+                                           final String captionText) {
+        if (isFinishing()) return;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && isDestroyed()) return;
+        try {
+            if (whatsAppPickerDialog != null && whatsAppPickerDialog.isShowing()) {
+                whatsAppPickerDialog.dismiss();
+            }
+        } catch (Exception ignored) {}
+
+        ScrollView scrollView = new ScrollView(this);
+        scrollView.setFillViewport(true);
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        int padH = dpToPx(18);
+        int padTop = dpToPx(18);
+        int padBottom = dpToPx(8);
+        root.setPadding(padH, padTop, padH, padBottom);
+        scrollView.addView(root);
+
+        TextView titleTv = new TextView(this);
+        titleTv.setText("📲 Escolher WhatsApp p/ Regulação");
+        titleTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17.5f);
+        titleTv.setTypeface(null, Typeface.BOLD);
+        titleTv.setTextColor(Color.parseColor("#0f172a"));
+        root.addView(titleTv);
+
+        TextView subTv = new TextView(this);
+        subTv.setText("Toque no WhatsApp instalado que deseja utilizar para enviar a foto do cabeçalho:");
+        subTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f);
+        subTv.setTextColor(Color.parseColor("#475569"));
+        LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        subLp.topMargin = dpToPx(5);
+        subLp.bottomMargin = dpToPx(14);
+        root.addView(subTv, subLp);
+
+        for (final WhatsAppShareTarget target : targets) {
+            boolean isBusiness = "business".equals(target.kind);
+
+            LinearLayout card = new LinearLayout(this);
+            card.setOrientation(LinearLayout.HORIZONTAL);
+            card.setGravity(Gravity.CENTER_VERTICAL);
+            card.setClickable(true);
+            card.setFocusable(true);
+            int cardPadH = dpToPx(14);
+            int cardPadV = dpToPx(12);
+            card.setPadding(cardPadH, cardPadV, cardPadH, cardPadV);
+
+            GradientDrawable bg = new GradientDrawable();
+            bg.setShape(GradientDrawable.RECTANGLE);
+            bg.setCornerRadius(dpToPx(14));
+            bg.setColor(Color.parseColor(isBusiness ? "#ecfdf5" : "#f8fafc"));
+            bg.setStroke(dpToPx(isBusiness ? 2 : 1), Color.parseColor(isBusiness ? "#059669" : "#cbd5e1"));
+            card.setBackground(bg);
+
+            LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+            );
+            cardLp.bottomMargin = dpToPx(10);
+
+            if (target.icon != null) {
+                ImageView iconIv = new ImageView(this);
+                iconIv.setImageDrawable(target.icon);
+                iconIv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                int iconPx = dpToPx(42);
+                LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(iconPx, iconPx);
+                iconLp.rightMargin = dpToPx(12);
+                card.addView(iconIv, iconLp);
+            }
+
+            LinearLayout textCol = new LinearLayout(this);
+            textCol.setOrientation(LinearLayout.VERTICAL);
+            LinearLayout.LayoutParams textColLp = new LinearLayout.LayoutParams(
+                    0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    1.0f
+            );
+
+            TextView nameTv = new TextView(this);
+            nameTv.setText(target.label);
+            nameTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15.5f);
+            nameTv.setTypeface(null, Typeface.BOLD);
+            nameTv.setTextColor(Color.parseColor(isBusiness ? "#064e3b" : "#0f172a"));
+            textCol.addView(nameTv);
+
+            if (target.subtitle != null && !target.subtitle.isEmpty()) {
+                TextView hintTv = new TextView(this);
+                hintTv.setText(target.subtitle);
+                hintTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.2f);
+                hintTv.setTextColor(Color.parseColor(isBusiness ? "#047857" : "#64748b"));
+                textCol.addView(hintTv);
+            }
+            card.addView(textCol, textColLp);
+
+            TextView actionTv = new TextView(this);
+            actionTv.setText("Abrir ›");
+            actionTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f);
+            actionTv.setTypeface(null, Typeface.BOLD);
+            actionTv.setTextColor(Color.parseColor(isBusiness ? "#059669" : "#2563eb"));
+            LinearLayout.LayoutParams actionLp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+            );
+            actionLp.leftMargin = dpToPx(8);
+            card.addView(actionTv, actionLp);
+
+            card.setOnClickListener(v -> {
+                try {
+                    if (whatsAppPickerDialog != null) whatsAppPickerDialog.dismiss();
+                } catch (Exception ignored) {}
+                boolean ok = launchTargetedWhatsAppShare(
+                        contentUri, safeName, captionText, target.packageName, target.activityName
+                );
+                if (!ok) {
+                    launchSystemImageShareChooser(contentUri, safeName, captionText);
+                }
+            });
+
+            root.addView(card, cardLp);
+        }
+
+        // Botão auxiliar p/ abrir a gaveta geral de compartilhamento do Android (caso usem outro app)
+        TextView otherAppsBtn = new TextView(this);
+        otherAppsBtn.setText("📤 Outros aplicativos do celular...");
+        otherAppsBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.2f);
+        otherAppsBtn.setTypeface(null, Typeface.BOLD);
+        otherAppsBtn.setTextColor(Color.parseColor("#334155"));
+        otherAppsBtn.setGravity(Gravity.CENTER);
+        otherAppsBtn.setClickable(true);
+        otherAppsBtn.setFocusable(true);
+        otherAppsBtn.setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10));
+        GradientDrawable otherBg = new GradientDrawable();
+        otherBg.setShape(GradientDrawable.RECTANGLE);
+        otherBg.setCornerRadius(dpToPx(10));
+        otherBg.setColor(Color.parseColor("#f1f5f9"));
+        otherBg.setStroke(dpToPx(1), Color.parseColor("#e2e8f0"));
+        otherAppsBtn.setBackground(otherBg);
+        LinearLayout.LayoutParams otherLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+        );
+        otherLp.topMargin = dpToPx(2);
+        otherAppsBtn.setOnClickListener(v -> {
+            try {
+                if (whatsAppPickerDialog != null) whatsAppPickerDialog.dismiss();
+            } catch (Exception ignored) {}
+            launchSystemImageShareChooser(contentUri, safeName, captionText);
+        });
+        root.addView(otherAppsBtn, otherLp);
+
+        whatsAppPickerDialog = new AlertDialog.Builder(this)
+                .setView(scrollView)
+                .setNegativeButton("Cancelar", null)
+                .create();
+        whatsAppPickerDialog.show();
+    }
+
     public class AndroidBridge {
 
         /* ===================== BANCO DE DADOS SQLITE NATIVO ANDROID ===================== */
@@ -797,6 +1271,7 @@ public class MainActivity extends Activity {
                     Intent shareIntent = new Intent(Intent.ACTION_SEND);
                     shareIntent.setType("application/pdf");
                     shareIntent.putExtra(Intent.EXTRA_STREAM, contentUri);
+                    shareIntent.setClipData(ClipData.newRawUri(safeName, contentUri));
                     shareIntent.putExtra(Intent.EXTRA_SUBJECT, safeName);
                     shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
 
@@ -808,60 +1283,76 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
-        public void shareImageToWhatsApp(final String base64Image, final String fileName, final String captionText) {
+        public String getInstalledWhatsAppsJson() {
+            try {
+                List<WhatsAppShareTarget> targets = discoverInstalledWhatsAppTargets();
+                JSONArray arr = new JSONArray();
+                for (WhatsAppShareTarget t : targets) {
+                    JSONObject obj = new JSONObject();
+                    obj.put("pkg", t.packageName);
+                    obj.put("activity", t.activityName != null ? t.activityName : "");
+                    obj.put("label", t.label != null ? t.label : "WhatsApp");
+                    obj.put("subtitle", t.subtitle != null ? t.subtitle : "");
+                    obj.put("kind", t.kind != null ? t.kind : "other");
+                    arr.put(obj);
+                }
+                return arr.toString();
+            } catch (Exception e) {
+                return "[]";
+            }
+        }
+
+        @JavascriptInterface
+        public void shareImageToWhatsAppTarget(final String base64Image,
+                                               final String fileName,
+                                               final String captionText,
+                                               final String targetPkg,
+                                               final String targetActivity) {
             runOnUiThread(() -> {
                 try {
-                    String cleanB64 = base64Image;
-                    int commaIdx = (cleanB64 != null) ? cleanB64.indexOf(',') : -1;
-                    if (commaIdx >= 0) {
-                        cleanB64 = cleanB64.substring(commaIdx + 1);
-                    }
-                    byte[] imgBytes = Base64.decode(cleanB64, Base64.DEFAULT);
-                    String safeName = (fileName == null || fileName.trim().isEmpty())
-                            ? "Cabecalho_Regulacao_SAMU.jpg"
-                            : fileName.replaceAll("[^a-zA-Z0-9._-]", "_");
-                    if (!safeName.toLowerCase().endsWith(".jpg") && !safeName.toLowerCase().endsWith(".jpeg")) {
-                        safeName += ".jpg";
+                    String safeName = sanitizeSharedJpegName(fileName);
+                    Uri contentUri = writeSharedJpegToCache(base64Image, safeName);
+                    String cleanTargetPkg = (targetPkg != null) ? targetPkg.trim() : "";
+
+                    if ("__chooser__".equals(cleanTargetPkg)) {
+                        launchSystemImageShareChooser(contentUri, safeName, captionText);
+                        return;
                     }
 
-                    File dir = new File(getCacheDir(), "shared_pdfs");
-                    if (!dir.exists()) dir.mkdirs();
-                    File outFile = new File(dir, safeName);
-                    try (FileOutputStream fos = new FileOutputStream(outFile)) {
-                        fos.write(imgBytes);
+                    if (!cleanTargetPkg.isEmpty()) {
+                        boolean ok = launchTargetedWhatsAppShare(
+                                contentUri, safeName, captionText, cleanTargetPkg, targetActivity
+                        );
+                        if (!ok) {
+                            launchSystemImageShareChooser(contentUri, safeName, captionText);
+                        }
+                        return;
                     }
 
-                    Uri contentUri = Uri.parse("content://" + PdfShareProvider.AUTHORITY + "/" + safeName);
-
-                    // Tenta abrir o WhatsApp direto com a foto anexada (ou WhatsApp Business, ou seletor do Android)
-                    String[] waPackages = new String[]{"com.whatsapp", "com.whatsapp.w4b"};
-                    for (String pkg : waPackages) {
-                        try {
-                            Intent waIntent = new Intent(Intent.ACTION_SEND);
-                            waIntent.setType("image/jpeg");
-                            waIntent.setPackage(pkg);
-                            waIntent.putExtra(Intent.EXTRA_STREAM, contentUri);
-                            if (captionText != null && !captionText.trim().isEmpty()) {
-                                waIntent.putExtra(Intent.EXTRA_TEXT, captionText);
-                            }
-                            waIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                            startActivity(waIntent);
-                            return;
-                        } catch (Exception ignored) {}
+                    List<WhatsAppShareTarget> targets = discoverInstalledWhatsAppTargets();
+                    if (targets.size() >= 2) {
+                        // Permite escolher qual dos WhatsApps instalados usar (WhatsApp Business vs Normal / Dual)
+                        showWhatsAppChooserDialog(targets, contentUri, safeName, captionText);
+                        return;
+                    }
+                    if (targets.size() == 1) {
+                        WhatsAppShareTarget only = targets.get(0);
+                        boolean ok = launchTargetedWhatsAppShare(
+                                contentUri, safeName, captionText, only.packageName, only.activityName
+                        );
+                        if (ok) return;
                     }
 
-                    Intent fallback = new Intent(Intent.ACTION_SEND);
-                    fallback.setType("image/jpeg");
-                    fallback.putExtra(Intent.EXTRA_STREAM, contentUri);
-                    if (captionText != null && !captionText.trim().isEmpty()) {
-                        fallback.putExtra(Intent.EXTRA_TEXT, captionText);
-                    }
-                    fallback.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                    startActivity(Intent.createChooser(fallback, "Enviar Foto do Cabeçalho p/ Regulação"));
+                    launchSystemImageShareChooser(contentUri, safeName, captionText);
                 } catch (Exception e) {
                     Toast.makeText(MainActivity.this, "Erro ao enviar foto p/ WhatsApp: " + e.getMessage(), Toast.LENGTH_LONG).show();
                 }
             });
+        }
+
+        @JavascriptInterface
+        public void shareImageToWhatsApp(final String base64Image, final String fileName, final String captionText) {
+            shareImageToWhatsAppTarget(base64Image, fileName, captionText, null, null);
         }
 
         @JavascriptInterface

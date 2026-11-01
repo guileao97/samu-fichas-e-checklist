@@ -1946,13 +1946,32 @@
     return true;
   }
 
-  async function shareRegulacaoHeaderWhatsApp(record, preGenerated) {
-    const img = preGenerated || await generateFichaRegulacaoHeaderImage(record);
+  function getInstalledWhatsApps() {
+    try {
+      if (window.AndroidBridge && typeof window.AndroidBridge.getInstalledWhatsAppsJson === 'function') {
+        const raw = window.AndroidBridge.getInstalledWhatsAppsJson();
+        const parsed = raw ? JSON.parse(raw) : [];
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch (e) {}
+    return [];
+  }
 
-    // 1. No APK Nativo Android: abre o WhatsApp direto já com a foto recortada e a legenda anexadas!
+  async function shareRegulacaoHeaderWhatsApp(record, preGenerated, targetOpt) {
+    const img = preGenerated || await generateFichaRegulacaoHeaderImage(record);
+    const targetPkg = (targetOpt && targetOpt.pkg) ? String(targetOpt.pkg).trim() : '';
+    const targetAct = (targetOpt && targetOpt.activity) ? String(targetOpt.activity).trim() : '';
+
+    // 1. No APK Nativo Android: abre o WhatsApp escolhido (WhatsApp Business ou Normal) ou exibe o seletor nativo
+    if (targetPkg && window.AndroidBridge && typeof window.AndroidBridge.shareImageToWhatsAppTarget === 'function') {
+      window.AndroidBridge.shareImageToWhatsAppTarget(img.base64, img.fileName, img.caption, targetPkg, targetAct);
+      return { mode: 'android_whatsapp_target', targetPkg, img };
+    }
+
     if (window.AndroidBridge && typeof window.AndroidBridge.shareImageToWhatsApp === 'function') {
+      const installed = getInstalledWhatsApps();
       window.AndroidBridge.shareImageToWhatsApp(img.base64, img.fileName, img.caption);
-      return { mode: 'android_whatsapp', img };
+      return { mode: installed.length >= 2 ? 'android_whatsapp_chooser' : 'android_whatsapp', img };
     }
 
     // 2. Navegador Mobile c/ suporte a Web Share de arquivos
@@ -1990,6 +2009,7 @@
     renderCanvasesForRecord,
     generatePdfForRecord,
     generateFichaRegulacaoHeaderImage,
+    getInstalledWhatsApps,
     shareRegulacaoHeaderWhatsApp,
     downloadRegulacaoHeaderJpg,
     copyRegulacaoHeaderToClipboard,

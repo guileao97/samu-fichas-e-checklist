@@ -2189,6 +2189,14 @@
       btnRegClose.addEventListener('click', () => regModal.classList.add('hidden'));
     }
     const btnRegSendWa = document.getElementById('btn-reg-send-whatsapp');
+    const getRegSendWaDefaultLabel = () => {
+      const list = (window.SamuPDF && typeof window.SamuPDF.getInstalledWhatsApps === 'function')
+        ? window.SamuPDF.getInstalledWhatsApps()
+        : [];
+      if (list.length >= 2) return '📲 Escolher WhatsApp e Enviar';
+      if (list.length === 1 && list[0] && list[0].label) return `📲 Enviar no ${list[0].label}`;
+      return '📲 Enviar no WhatsApp da Regulação';
+    };
     if (btnRegSendWa) {
       btnRegSendWa.addEventListener('click', async () => {
         if (!regPhotoCurrentRecord) return;
@@ -2207,7 +2215,7 @@
           samuAlert('Erro ao preparar foto para o WhatsApp: ' + err.message);
         } finally {
           btnRegSendWa.disabled = false;
-          btnRegSendWa.textContent = '📲 Enviar no WhatsApp da Regulação';
+          btnRegSendWa.textContent = getRegSendWaDefaultLabel();
         }
       });
     }
@@ -12270,6 +12278,20 @@
     const box = document.getElementById('regulacao-photo-container');
     if (!modal || !box) return;
 
+    const installedWas = (window.SamuPDF && typeof window.SamuPDF.getInstalledWhatsApps === 'function')
+      ? window.SamuPDF.getInstalledWhatsApps()
+      : [];
+    const btnTopSendWa = document.getElementById('btn-reg-send-whatsapp');
+    if (btnTopSendWa) {
+      if (installedWas.length >= 2) {
+        btnTopSendWa.textContent = '📲 Escolher WhatsApp e Enviar';
+      } else if (installedWas.length === 1 && installedWas[0] && installedWas[0].label) {
+        btnTopSendWa.textContent = `📲 Enviar no ${installedWas[0].label}`;
+      } else {
+        btnTopSendWa.textContent = '📲 Enviar no WhatsApp da Regulação';
+      }
+    }
+
     modal.classList.remove('hidden');
     box.innerHTML = `<div style="padding:36px; color:#cbd5e1;">Gerando foto nítida do cabeçalho até os horários...</div>`;
 
@@ -12277,12 +12299,93 @@
     regPhotoCurrentRecord = record;
     regPhotoGenerated = imgObj;
 
+    let directWaBarHtml = '';
+    const isOldNativeApk = Boolean(
+      window.AndroidBridge &&
+      typeof window.AndroidBridge.shareImageToWhatsApp === 'function' &&
+      typeof window.AndroidBridge.shareImageToWhatsAppTarget !== 'function'
+    );
+
+    if (installedWas.length >= 2) {
+      const btnsHtml = installedWas.map((wa, idx) => {
+        const isBiz = wa.kind === 'business' || String(wa.pkg || '') === 'com.whatsapp.w4b';
+        const iconEmoji = isBiz ? '💼' : '💬';
+        const bgStyle = isBiz
+          ? 'background:linear-gradient(135deg,#059669,#047857); color:#fff; border:2px solid #34d399; box-shadow:0 4px 12px rgba(5,150,105,0.38);'
+          : 'background:#0f172a; color:#f8fafc; border:1.5px solid #38bdf8;';
+        const badgeHtml = isBiz
+          ? `<span style="font-size:0.7rem; background:rgba(255,255,255,0.2); padding:2px 6px; border-radius:999px; font-weight:700;">Principal</span>`
+          : '';
+        return `
+          <button
+            type="button"
+            class="btn js-btn-direct-wa-target"
+            data-wa-idx="${idx}"
+            style="flex:1 1 210px; display:flex; align-items:center; justify-content:center; gap:7px; padding:10px 14px; border-radius:10px; font-weight:800; font-size:0.9rem; cursor:pointer; ${bgStyle}"
+          >
+            <span>${iconEmoji} Enviar c/ ${escapeHtml(wa.label || 'WhatsApp')}</span>
+            ${badgeHtml}
+          </button>
+        `;
+      }).join('');
+
+      directWaBarHtml = `
+        <div style="width:100%; max-width:780px; background:rgba(15,23,42,0.85); border:1px solid rgba(52,211,153,0.45); border-radius:12px; padding:12px; margin-bottom:4px; display:flex; flex-direction:column; gap:8px;">
+          <div style="font-size:0.8rem; color:#a7f3d0; font-weight:800; text-align:center;">
+            📲 ESCOLHA QUAL WHATSAPP INSTALADO DESEJA USAR:
+          </div>
+          <div style="display:flex; flex-wrap:wrap; gap:8px; justify-content:center;">
+            ${btnsHtml}
+          </div>
+        </div>
+      `;
+    } else if (isOldNativeApk) {
+      directWaBarHtml = `
+        <div style="width:100%; max-width:780px; background:rgba(120,53,15,0.45); border:1px solid #f59e0b; border-radius:10px; padding:10px 12px; margin-bottom:4px; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px;">
+          <span style="font-size:0.8rem; color:#fde68a; font-weight:700;">
+            📲 Para escolher entre <strong>WhatsApp Business</strong> e <strong>WhatsApp Normal</strong>, instale a atualização v1.0.14 do APK:
+          </span>
+          <button type="button" class="btn btn-orange btn-sm" id="btn-reg-upgrade-apk-wa">🚀 Atualizar APK Agora</button>
+        </div>
+      `;
+    }
+
     box.innerHTML = `
       <div style="width:100%; display:flex; flex-direction:column; align-items:center; gap:8px;">
+        ${directWaBarHtml}
         <small style="color:#86efac; font-weight:800;">FOTO PRONTA P/ WHATSAPP DA REGULAÇÃO MÉDICA (CABEÇALHO + VÍTIMA + HORÁRIOS)</small>
         <img src="${imgObj.dataUrl}" alt="Foto do Cabeçalho da Ficha p/ Regulação" style="width:100%; max-width:780px; background:#fff; border-radius:6px; box-shadow:0 8px 25px rgba(0,0,0,0.45);" />
       </div>
     `;
+
+    box.querySelectorAll('.js-btn-direct-wa-target').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const idx = Number(btn.getAttribute('data-wa-idx'));
+        const chosen = installedWas[idx];
+        if (!chosen || !regPhotoCurrentRecord) return;
+        try {
+          await window.SamuPDF.shareRegulacaoHeaderWhatsApp(regPhotoCurrentRecord, regPhotoGenerated, {
+            pkg: chosen.pkg,
+            activity: chosen.activity || ''
+          });
+          showToast(`📲 Abrindo ${chosen.label || 'WhatsApp'} c/ a foto do cabeçalho!`);
+        } catch (err) {
+          samuAlert('Erro ao enviar foto para o WhatsApp escolhido: ' + err.message);
+        }
+      });
+    });
+
+    const btnUpgradeWa = box.querySelector('#btn-reg-upgrade-apk-wa');
+    if (btnUpgradeWa) {
+      btnUpgradeWa.addEventListener('click', () => {
+        const repo = ((window.SamuStorage && window.SamuStorage.getSettings && window.SamuStorage.getSettings().githubRepo) || 'guileao97/samu-fichas-e-checklist').trim();
+        const dlUrl = `https://github.com/${repo}/releases/latest/download/SAMU_192_Orlandia.apk`;
+        if (window.SamuStorage && typeof window.SamuStorage.startNativeApkDownload === 'function') {
+          showToast('📥 Baixando novo APK v1.0.14...');
+          window.SamuStorage.startNativeApkDownload(dlUrl);
+        }
+      });
+    }
   }
 
   async function sendRecordToBasePrinter(record, preGeneratedPdf, triggerBtn) {

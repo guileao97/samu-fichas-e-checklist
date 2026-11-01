@@ -12,6 +12,16 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Visibilidade de pacotes no Android 11+ (API 30+) para detectar e escolher entre WhatsApp Business, WhatsApp Normal e clones -->
+    <queries>
+        <package android:name="com.whatsapp.w4b" />
+        <package android:name="com.whatsapp" />
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="image/*" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
