@@ -819,7 +819,52 @@
     return samuConfirm(message, true);
   }
 
-  function calcAgeFromDn(isoDate) {
+  function formatBirthDateInputBR(raw) {
+    const s = String(raw == null ? '' : raw).trim();
+    if (!s) return '';
+    const mIso = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (mIso) {
+      return `${mIso[3]}/${mIso[2]}/${mIso[1]}`;
+    }
+    const d = s.replace(/\D+/g, '').slice(0, 8);
+    if (d.length <= 2) return d;
+    if (d.length <= 4) return `${d.slice(0, 2)}/${d.slice(2)}`;
+    return `${d.slice(0, 2)}/${d.slice(2, 4)}/${d.slice(4, 8)}`;
+  }
+
+  function parseBirthDateToIso(raw) {
+    const s = String(raw == null ? '' : raw).trim();
+    if (!s) return '';
+    let yyyy = 0, mm = 0, dd = 0;
+    const mIso = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (mIso) {
+      yyyy = parseInt(mIso[1], 10);
+      mm = parseInt(mIso[2], 10);
+      dd = parseInt(mIso[3], 10);
+    } else {
+      const br = formatBirthDateInputBR(s);
+      const mBr = br.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+      if (!mBr) return '';
+      dd = parseInt(mBr[1], 10);
+      mm = parseInt(mBr[2], 10);
+      yyyy = parseInt(mBr[3], 10);
+    }
+    const curYear = new Date().getFullYear();
+    if (yyyy < 1890 || yyyy > curYear || mm < 1 || mm > 12 || dd < 1 || dd > 31) return '';
+    const check = new Date(yyyy, mm - 1, dd);
+    if (
+      isNaN(check.getTime()) ||
+      check.getFullYear() !== yyyy ||
+      (check.getMonth() + 1) !== mm ||
+      check.getDate() !== dd
+    ) {
+      return '';
+    }
+    return `${String(yyyy).padStart(4, '0')}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
+  }
+
+  function calcAgeFromDn(rawDate) {
+    const isoDate = parseBirthDateToIso(rawDate);
     if (!isoDate) return '';
     const birth = new Date(isoDate + 'T00:00:00');
     const today = new Date();
@@ -828,6 +873,45 @@
     const m = today.getMonth() - birth.getMonth();
     if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) age--;
     return (age >= 0 && age < 130) ? (age + ' anos') : '';
+  }
+
+  function formatTimeInputHHMM(raw) {
+    const s = String(raw == null ? '' : raw).trim();
+    if (!s) return '';
+    const mReady = s.match(/^(\d{1,2}):(\d{2})/);
+    if (mReady && s.replace(/\D+/g, '').length >= 3) {
+      const hh = Math.min(23, Math.max(0, parseInt(mReady[1], 10) || 0));
+      const mm = Math.min(59, Math.max(0, parseInt(mReady[2], 10) || 0));
+      return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+    }
+    const d = s.replace(/\D+/g, '').slice(0, 4);
+    if (!d) return '';
+    if (d.length <= 2) return d;
+    if (d.length === 3) return `${d.slice(0, 2)}:${d.slice(2)}`;
+    const hh = Math.min(23, Math.max(0, parseInt(d.slice(0, 2), 10) || 0));
+    const mm = Math.min(59, Math.max(0, parseInt(d.slice(2, 4), 10) || 0));
+    return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+  }
+
+  function finalizeTimeInputHHMM(raw) {
+    const s = String(raw == null ? '' : raw).trim();
+    if (!s) return '';
+    const d = s.replace(/\D+/g, '').slice(0, 4);
+    if (!d) return '';
+    let hh = 0, mm = 0;
+    if (d.length <= 2) {
+      hh = parseInt(d, 10) || 0;
+      mm = 0;
+    } else if (d.length === 3) {
+      hh = parseInt(d.slice(0, 1), 10) || 0;
+      mm = parseInt(d.slice(1, 3), 10) || 0;
+    } else {
+      hh = parseInt(d.slice(0, 2), 10) || 0;
+      mm = parseInt(d.slice(2, 4), 10) || 0;
+    }
+    hh = Math.min(23, Math.max(0, hh));
+    mm = Math.min(59, Math.max(0, mm));
+    return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
   }
 
   function formatCep(raw) {
@@ -3209,10 +3293,14 @@
     container.querySelectorAll('[data-f]').forEach(inp => {
       if (inp === activeEl) return;
       const k = inp.dataset.f;
-      if (fichaState[k] !== undefined && String(inp.value || '') !== String(fichaState[k] || '')) {
-        inp.value = fichaState[k] || '';
-        if (k === 'vitimaTelefone') {
-          refreshVictimPhoneKindBadge(fichaState.vitimaTelefone);
+      if (fichaState[k] !== undefined) {
+        const rawVal = fichaState[k] || '';
+        const dispVal = (k === 'vitimaDn') ? formatBirthDateInputBR(rawVal) : rawVal;
+        if (String(inp.value || '') !== String(dispVal)) {
+          inp.value = dispVal;
+          if (k === 'vitimaTelefone') {
+            refreshVictimPhoneKindBadge(fichaState.vitimaTelefone);
+          }
         }
       }
     });
@@ -4098,7 +4186,7 @@
     fichaState.vitimaCpf = savedPatient.vitimaCpf || fichaState.vitimaCpf;
     fichaState.vitimaRg = savedPatient.vitimaRg || '';
     fichaState.vitimaCns = savedPatient.vitimaCns || '';
-    fichaState.vitimaDn = savedPatient.vitimaDn || '';
+    fichaState.vitimaDn = formatBirthDateInputBR(savedPatient.vitimaDn || '');
     fichaState.vitimaIdade = savedPatient.vitimaIdade || '';
     fichaState.vitimaTelefone = savedPatient.vitimaTelefone ? formatPhoneBR(savedPatient.vitimaTelefone, true) : '';
     fichaState.vitimaCep = savedPatient.vitimaCep || '';
@@ -4145,7 +4233,7 @@
           </div>
           <div class="field">
             <label>Data de Nascimento (DN)</label>
-            <input type="date" id="cat-pat-nasc" autocomplete="off" value="${escapeHtml(seed.vitimaDn || '')}" />
+            <input type="text" inputmode="numeric" maxlength="10" placeholder="DD/MM/AAAA" id="cat-pat-nasc" autocomplete="off" value="${escapeHtml(formatBirthDateInputBR(seed.vitimaDn || ''))}" />
           </div>
         </div>
         <div class="grid-2">
@@ -4255,6 +4343,7 @@
       });
     }
     dnInp.addEventListener('input', () => {
+      dnInp.value = formatBirthDateInputBR(dnInp.value);
       const calc = calcAgeFromDn(dnInp.value);
       if (calc) ageInp.value = calc;
     });
@@ -4402,6 +4491,7 @@
   function normalizePersonalFieldForCompare(key, rawVal) {
     const v = collapseSpaces(rawVal);
     if (!v) return '';
+    if (key === 'vitimaDn') return formatBirthDateInputBR(v);
     if (key === 'vitimaCep') return formatCep(v);
     if (key === 'vitimaTelefone') return formatPhoneBR(v, true);
     return v;
@@ -4453,7 +4543,9 @@
     const setIfPresent = (stateKey, elId, rawVal) => {
       const val = stateKey === 'vitimaCep'
         ? formatCep(rawVal)
-        : (stateKey === 'vitimaTelefone' ? formatPhoneBR(rawVal, true) : collapseSpaces(rawVal));
+        : (stateKey === 'vitimaTelefone'
+            ? formatPhoneBR(rawVal, true)
+            : (stateKey === 'vitimaDn' ? formatBirthDateInputBR(rawVal) : collapseSpaces(rawVal)));
       if (val !== '') {
         fichaState[stateKey] = val;
         const el = elId ? document.getElementById(elId) : null;
@@ -6827,7 +6919,7 @@
               <div class="time-card">
                 <label>${h.label}</label>
                 <div class="time-input-row">
-                  <input type="time" autocomplete="off" data-horario="${h.key}" value="${escapeHtml((d.horarios && d.horarios[h.key]) || '')}" />
+                  <input type="text" inputmode="numeric" maxlength="5" placeholder="HH:MM" autocomplete="off" data-horario="${h.key}" value="${escapeHtml(formatTimeInputHHMM((d.horarios && d.horarios[h.key]) || ''))}" />
                   <button type="button" class="btn-now" data-now="${h.key}">⏱ AGORA</button>
                 </div>
               </div>
@@ -6925,7 +7017,7 @@
           <div class="grid-dn-age-cnt">
             <div class="field">
               <label>Data de Nascimento (DN)</label>
-              <input type="date" id="f-vit-nasc" autocomplete="off" data-f="vitimaDn" value="${escapeHtml(d.vitimaDn)}" />
+              <input type="text" inputmode="numeric" maxlength="10" placeholder="DD/MM/AAAA" id="f-vit-nasc" autocomplete="off" data-f="vitimaDn" value="${escapeHtml(formatBirthDateInputBR(d.vitimaDn))}" />
             </div>
             <div class="field">
               <label>Idade</label>
@@ -8059,6 +8151,21 @@
         const key = inp.dataset.f;
         let val = inp.value;
 
+        if (key === 'vitimaDn') {
+          val = formatBirthDateInputBR(val);
+          inp.value = val;
+          fichaState.vitimaDn = val;
+          const calc = calcAgeFromDn(val);
+          if (calc) {
+            fichaState.vitimaIdade = calc;
+            const ageEl = document.getElementById('f-vit-anos');
+            if (ageEl) ageEl.value = fichaState.vitimaIdade;
+          }
+          const isFullDn = val.replace(/\D+/g, '').length === 8;
+          persistTypedFieldWithJumpCheck(fieldKey, forceImm || isFullDn);
+          return;
+        }
+
         if (key === 'svTemp') {
           const prevVal = String(fichaState.svTemp || '');
           val = formatTempCelsius(val, prevVal, false);
@@ -8457,14 +8564,28 @@
 
     // Horários + botão AGORA
     container.querySelectorAll('[data-horario]').forEach(inp => {
-      const fieldKey = 'h:' + inp.dataset.horario;
+      const hKey = inp.dataset.horario;
+      const fieldKey = 'h:' + hKey;
       bindFieldJumpInstantSync(inp, fieldKey);
       inp.addEventListener('input', () => {
-        fichaState.horarios[inp.dataset.horario] = inp.value;
-        persistTypedFieldWithJumpCheck(fieldKey, false);
+        const formatted = formatTimeInputHHMM(inp.value);
+        if (inp.value !== formatted) inp.value = formatted;
+        fichaState.horarios[hKey] = formatted;
+        const isCompleteTime = formatted.replace(/\D+/g, '').length === 4;
+        persistTypedFieldWithJumpCheck(fieldKey, isCompleteTime);
+      });
+      inp.addEventListener('blur', () => {
+        const finalized = finalizeTimeInputHHMM(inp.value);
+        if (inp.value !== finalized || fichaState.horarios[hKey] !== finalized) {
+          inp.value = finalized;
+          fichaState.horarios[hKey] = finalized;
+          persistTypedFieldWithJumpCheck(fieldKey, true);
+        }
       });
       inp.addEventListener('change', () => {
-        fichaState.horarios[inp.dataset.horario] = inp.value;
+        const finalized = finalizeTimeInputHHMM(inp.value);
+        inp.value = finalized;
+        fichaState.horarios[hKey] = finalized;
         persistTypedFieldWithJumpCheck(fieldKey, true);
       });
     });
