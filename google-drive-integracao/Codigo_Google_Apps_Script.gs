@@ -17,15 +17,24 @@ var OPTIONAL_ROOT_FOLDER_ID = '';
 
 function doGet(e) {
   var action = (e && e.parameter && e.parameter.action) ? e.parameter.action : 'ping';
+  if (action === 'apkUpdateGetManifest') {
+    var chParam = (e && e.parameter && e.parameter.channel) ? String(e.parameter.channel) : '';
+    return jsonResponse_(handleApkUpdateGetManifest_({ channel: chParam }));
+  }
+  if (action === 'ocrBrainGet') {
+    return jsonResponse_(handleOcrBrainGet_());
+  }
   if (action === 'ping') {
     var env = ensureEnvironment_();
     migrateExistingPdfsToLinkView_(env);
     return jsonResponse_({
       ok: true,
       service: 'SAMU 192 Orlândia - Google Drive Sync',
-      version: 4,
+      version: 5,
       syncDatabaseReady: true,
       deleteRecordReady: true,
+      apkUpdatesReady: true,
+      ocrBrainReady: true,
       rootFolderUrl: env.rootFolder.getUrl(),
       spreadsheetUrl: env.ss.getUrl(),
       timestamp: new Date().toISOString()
@@ -159,9 +168,31 @@ function doPost(e) {
     }
   }
 
+  // FAST-PATH SEM LOCK E SEM ABRIR PLANILHA: consulta instantânea de manifesto de atualização APK e Memória OCR
+  if (action === 'apkUpdateGetManifest') {
+    return jsonResponse_(handleApkUpdateGetManifest_(body));
+  }
+  if (action === 'apkUpdateDownloadPart') {
+    return jsonResponse_(handleApkUpdateDownloadPart_(body));
+  }
+  if (action === 'ocrBrainGet') {
+    return jsonResponse_(handleOcrBrainGet_());
+  }
+
   var lock = LockService.getScriptLock();
   lock.tryLock(25000);
   try {
+    // Rotas de Atualização Tripla de APKs (com exclusão automática dos .APKs antigos) e Backup da Memória IA OCR
+    if (action === 'apkUpdateUploadPart') {
+      return jsonResponse_(handleApkUpdateUploadPart_(body));
+    }
+    if (action === 'apkUpdateCommit') {
+      return jsonResponse_(handleApkUpdateCommit_(body));
+    }
+    if (action === 'ocrBrainSave') {
+      return jsonResponse_(handleOcrBrainSave_(body));
+    }
+
     // Sincronização unificada em tempo real (usa abertura leve sem SpreadsheetApp quando não há alteração de planilha)
     if (action === 'syncDatabase') {
       return jsonResponse_(handleSyncDatabase_(null, body));
@@ -192,9 +223,11 @@ function doPost(e) {
       migrateExistingPdfsToLinkView_(env);
       return jsonResponse_({
         ok: true,
-        version: 4,
+        version: 5,
         syncDatabaseReady: true,
         deleteRecordReady: true,
+        apkUpdatesReady: true,
+        ocrBrainReady: true,
         rootFolderUrl: env.rootFolder.getUrl(),
         spreadsheetUrl: env.ss.getUrl()
       });
@@ -1778,4 +1811,330 @@ function jsonResponse_(obj) {
   return ContentService
     .createTextOutput(JSON.stringify(obj))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+// ============================================================================
+// ATUALIZAÇÃO TRIPLA DE APKs (GOOGLE DRIVE + EXCLUSÃO AUTOMÁTICA DE ANTIGOS)
+// & BACKUP DA MEMÓRIA EVOLUTIVA DA IA DE OCR
+// ============================================================================
+
+var SAMU_REALTIME_AUTH_KEY_ = 'samu192_orlandia_realtime_2026';
+var APK_UPDATES_FOLDER_NAME_ = 'Atualizacoes_APK';
+var APK_MANIFEST_FILENAME_ = 'manifest_updates.json';
+var OCR_BRAIN_FILENAME_ = 'ocr_learning_brain.json';
+var APK_MANIFEST_CACHE_KEY_ = 'SAMU_APK_UPDATES_MANIFEST_V5';
+var OCR_BRAIN_CACHE_KEY_ = 'SAMU_OCR_BRAIN_CACHE_V1';
+
+function sanitizeUpdateChannelName_(rawCh) {
+  var c = String(rawCh || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+  return c || '';
+}
+
+function getOrCreateApkUpdatesFolder_() {
+  var props = PropertiesService.getScriptProperties();
+  var savedId = props.getProperty('APK_UPDATES_FOLDER_ID') || '';
+  if (savedId) {
+    try {
+      var f = DriveApp.getFolderById(savedId);
+      if (!f.isTrashed()) return f;
+    } catch (e) {}
+  }
+  var root = ensureRootFolderOnly_();
+  var sub = getOrCreateSubfolder_(root, APK_UPDATES_FOLDER_NAME_);
+  props.setProperty('APK_UPDATES_FOLDER_ID', sub.getId());
+  return sub;
+}
+
+function loadApkUpdatesManifest_() {
+  var cache = CacheService.getScriptCache();
+  try {
+    var cachedStr = cache.get(APK_MANIFEST_CACHE_KEY_);
+    if (cachedStr) {
+      var parsedCache = JSON.parse(cachedStr);
+      if (parsedCache && typeof parsedCache === 'object') return parsedCache;
+    }
+  } catch (eCache) {}
+
+  var folder = getOrCreateApkUpdatesFolder_();
+  var it = folder.getFilesByName(APK_MANIFEST_FILENAME_);
+  if (it.hasNext()) {
+    try {
+      var file = it.next();
+      var txt = file.getBlob().getDataAsString('UTF-8');
+      var obj = JSON.parse(txt);
+      if (obj && typeof obj === 'object') {
+        if (!obj.channels) obj.channels = {};
+        try {
+          if (txt.length < 95000) cache.put(APK_MANIFEST_CACHE_KEY_, txt, 21600);
+        } catch (ePut) {}
+        return obj;
+      }
+    } catch (eRead) {}
+  }
+  return { schemaVersion: 1, updatedAt: new Date().toISOString(), channels: {} };
+}
+
+function saveApkUpdatesManifest_(manifestObj) {
+  manifestObj.updatedAt = new Date().toISOString();
+  if (!manifestObj.channels) manifestObj.channels = {};
+  var raw = JSON.stringify(manifestObj, null, 2);
+  var folder = getOrCreateApkUpdatesFolder_();
+  var it = folder.getFilesByName(APK_MANIFEST_FILENAME_);
+  if (it.hasNext()) {
+    var mainFile = it.next();
+    mainFile.setContent(raw);
+    while (it.hasNext()) {
+      try { it.next().setTrashed(true); } catch (eDup) {}
+    }
+  } else {
+    folder.createFile(APK_MANIFEST_FILENAME_, raw, 'application/json');
+  }
+  try {
+    if (raw.length < 95000) {
+      CacheService.getScriptCache().put(APK_MANIFEST_CACHE_KEY_, raw, 21600);
+    } else {
+      CacheService.getScriptCache().remove(APK_MANIFEST_CACHE_KEY_);
+    }
+  } catch (eCache) {}
+}
+
+function handleApkUpdateGetManifest_(body) {
+  try {
+    var manifest = loadApkUpdatesManifest_();
+    var ch = sanitizeUpdateChannelName_(body && body.channel);
+    if (ch) {
+      var entry = (manifest.channels && manifest.channels[ch]) ? manifest.channels[ch] : null;
+      return {
+        ok: true,
+        version: 5,
+        channel: ch,
+        found: !!entry,
+        release: entry,
+        updatedAt: manifest.updatedAt || ''
+      };
+    }
+    return {
+      ok: true,
+      version: 5,
+      channels: manifest.channels || {},
+      updatedAt: manifest.updatedAt || ''
+    };
+  } catch (err) {
+    return { ok: false, error: String(err && err.message ? err.message : err) };
+  }
+}
+
+function handleApkUpdateUploadPart_(body) {
+  if (!body || String(body.auth || '') !== SAMU_REALTIME_AUTH_KEY_) {
+    return { ok: false, error: 'Chave auth inválida para upload de atualização.' };
+  }
+  var ch = sanitizeUpdateChannelName_(body.channel);
+  if (!ch) {
+    return { ok: false, error: 'Canal de atualização inválido.' };
+  }
+  var b64 = String(body.dataBase64 || '').trim();
+  if (!b64) {
+    return { ok: false, error: 'Bloco dataBase64 vazio.' };
+  }
+  var partIndex = Number(body.partIndex || 0);
+  var buildId = String(body.buildId || 'local').replace(/[^A-Za-z0-9_-]/g, '');
+  var baseName = String(body.fileName || (ch + '.apk')).replace(/[^A-Za-z0-9._-]/g, '');
+  var totalParts = Math.max(1, Number(body.totalParts || 1));
+  var partFileName = totalParts === 1
+    ? (baseName.replace(/\.apk$/i, '') + '_' + buildId + '.apk')
+    : (baseName + '.' + buildId + '.part' + partIndex);
+
+  try {
+    var updatesRoot = getOrCreateApkUpdatesFolder_();
+    var chFolder = getOrCreateSubfolder_(updatesRoot, ch);
+    var rawBytes = Utilities.base64Decode(b64);
+    var blob = Utilities.newBlob(rawBytes, 'application/octet-stream', partFileName);
+    var created = chFolder.createFile(blob);
+    try {
+      created.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    } catch (eShare) {}
+    var fid = created.getId();
+    return {
+      ok: true,
+      channel: ch,
+      partIndex: partIndex,
+      fileId: fid,
+      fileName: partFileName,
+      sizeBytes: rawBytes.length,
+      directUrl: 'https://drive.google.com/uc?export=download&id=' + fid
+    };
+  } catch (err) {
+    return { ok: false, error: String(err && err.message ? err.message : err) };
+  }
+}
+
+function handleApkUpdateCommit_(body) {
+  if (!body || String(body.auth || '') !== SAMU_REALTIME_AUTH_KEY_) {
+    return { ok: false, error: 'Chave auth inválida para commit de atualização.' };
+  }
+  var ch = sanitizeUpdateChannelName_(body.channel);
+  if (!ch) {
+    return { ok: false, error: 'Canal de atualização inválido.' };
+  }
+  var parts = Array.isArray(body.parts) ? body.parts : [];
+  if (parts.length === 0) {
+    return { ok: false, error: 'Nenhuma parte informada no commit.' };
+  }
+
+  try {
+    var keepIds = {};
+    var cleanParts = [];
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i] || {};
+      var pid = String(p.fileId || '').trim();
+      if (!pid) return { ok: false, error: 'Parte sem fileId válido no índice ' + i };
+      keepIds[pid] = true;
+      cleanParts.push({
+        index: Number(p.index != null ? p.index : i),
+        fileId: pid,
+        sizeBytes: Number(p.sizeBytes || 0),
+        sha256: String(p.sha256 || '').toLowerCase(),
+        directUrl: 'https://drive.google.com/uc?export=download&id=' + pid
+      });
+    }
+    cleanParts.sort(function(a, b) { return a.index - b.index; });
+
+    var manifest = loadApkUpdatesManifest_();
+    var prevEntry = (manifest.channels && manifest.channels[ch]) ? manifest.channels[ch] : null;
+    var deletedCount = 0;
+
+    // 1. Exclui partes registradas na versão anterior desse canal
+    if (prevEntry && Array.isArray(prevEntry.parts)) {
+      for (var j = 0; j < prevEntry.parts.length; j++) {
+        var oldId = String((prevEntry.parts[j] && prevEntry.parts[j].fileId) || '').trim();
+        if (oldId && !keepIds[oldId]) {
+          try {
+            DriveApp.getFileById(oldId).setTrashed(true);
+            deletedCount++;
+          } catch (eOld) {}
+        }
+      }
+    }
+
+    // 2. Varre toda a subpasta do canal e exclui qualquer arquivo antigo restante (fica SEMPRE só a versão nova!)
+    var updatesRoot = getOrCreateApkUpdatesFolder_();
+    var chFolder = getOrCreateSubfolder_(updatesRoot, ch);
+    var fIt = chFolder.getFiles();
+    while (fIt.hasNext()) {
+      var fCur = fIt.next();
+      var cid = fCur.getId();
+      if (!keepIds[cid] && !fCur.isTrashed()) {
+        try {
+          fCur.setTrashed(true);
+          deletedCount++;
+        } catch (eClean) {}
+      }
+    }
+
+    var newEntry = {
+      channel: ch,
+      buildId: String(body.buildId || ''),
+      versionName: String(body.versionName || ''),
+      versionCode: Number(body.versionCode || 0),
+      otaRevision: Number(body.otaRevision || 0),
+      title: String(body.title || ''),
+      notes: String(body.notes || ''),
+      fileName: String(body.fileName || (ch + '.apk')),
+      totalBytes: Number(body.totalBytes || 0),
+      sha256: String(body.sha256 || '').toLowerCase(),
+      updatedAt: new Date().toISOString(),
+      parts: cleanParts
+    };
+
+    manifest.channels[ch] = newEntry;
+    saveApkUpdatesManifest_(manifest);
+
+    return {
+      ok: true,
+      channel: ch,
+      deletedOldFilesCount: deletedCount,
+      release: newEntry
+    };
+  } catch (err) {
+    return { ok: false, error: String(err && err.message ? err.message : err) };
+  }
+}
+
+function handleApkUpdateDownloadPart_(body) {
+  var fid = String((body && body.fileId) || '').trim();
+  if (!fid) {
+    return { ok: false, error: 'Informe fileId da parte.' };
+  }
+  try {
+    var f = DriveApp.getFileById(fid);
+    var raw = f.getBlob().getBytes();
+    return {
+      ok: true,
+      fileId: fid,
+      fileName: f.getName(),
+      sizeBytes: raw.length,
+      dataBase64: Utilities.base64Encode(raw)
+    };
+  } catch (err) {
+    return { ok: false, error: String(err && err.message ? err.message : err) };
+  }
+}
+
+function handleOcrBrainGet_() {
+  var cache = CacheService.getScriptCache();
+  try {
+    var c = cache.get(OCR_BRAIN_CACHE_KEY_);
+    if (c) {
+      return { ok: true, brain: JSON.parse(c), cached: true };
+    }
+  } catch (eC) {}
+
+  try {
+    var folder = getOrCreateApkUpdatesFolder_();
+    var it = folder.getFilesByName(OCR_BRAIN_FILENAME_);
+    if (it.hasNext()) {
+      var raw = it.next().getBlob().getDataAsString('UTF-8');
+      var parsed = JSON.parse(raw);
+      try {
+        if (raw.length < 95000) cache.put(OCR_BRAIN_CACHE_KEY_, raw, 21600);
+      } catch (eP) {}
+      return { ok: true, brain: parsed, cached: false };
+    }
+    return { ok: true, brain: null, cached: false };
+  } catch (err) {
+    return { ok: false, error: String(err && err.message ? err.message : err) };
+  }
+}
+
+function handleOcrBrainSave_(body) {
+  if (!body || String(body.auth || '') !== SAMU_REALTIME_AUTH_KEY_) {
+    return { ok: false, error: 'Chave auth inválida para salvar Memória IA OCR.' };
+  }
+  var brainObj = body.brain;
+  if (!brainObj || typeof brainObj !== 'object') {
+    return { ok: false, error: 'Objeto brain ausente.' };
+  }
+  try {
+    var raw = JSON.stringify(brainObj, null, 2);
+    var folder = getOrCreateApkUpdatesFolder_();
+    var it = folder.getFilesByName(OCR_BRAIN_FILENAME_);
+    if (it.hasNext()) {
+      it.next().setContent(raw);
+      while (it.hasNext()) {
+        try { it.next().setTrashed(true); } catch (eD) {}
+      }
+    } else {
+      folder.createFile(OCR_BRAIN_FILENAME_, raw, 'application/json');
+    }
+    try {
+      if (raw.length < 95000) {
+        CacheService.getScriptCache().put(OCR_BRAIN_CACHE_KEY_, raw, 21600);
+      } else {
+        CacheService.getScriptCache().remove(OCR_BRAIN_CACHE_KEY_);
+      }
+    } catch (eC) {}
+    return { ok: true, updatedAt: brainObj.updated_at || new Date().toISOString() };
+  } catch (err) {
+    return { ok: false, error: String(err && err.message ? err.message : err) };
+  }
 }

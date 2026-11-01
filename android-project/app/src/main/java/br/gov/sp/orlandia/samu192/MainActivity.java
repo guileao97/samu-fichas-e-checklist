@@ -152,6 +152,7 @@ public class MainActivity extends Activity {
         sqliteDb = SamuSqliteDb.getInstance(this);
         SamuSyncForegroundService.ensureChannels(this);
         reconcileOtaFolderWithApkAssets();
+        cleanupDownloadedUpdateApks();
 
         Window window = getWindow();
         if (window != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -502,6 +503,40 @@ public class MainActivity extends Activity {
             }
         } catch (Exception e) {
             deleteRecursive(new File(getFilesDir(), "ota_www"));
+        }
+    }
+
+    private void cleanupDownloadedUpdateApks() {
+        try {
+            if (pendingApkInstallFile != null && pendingApkInstallFile.exists()) return;
+            File[] dirs = new File[]{
+                    new File(getCacheDir(), "shared_pdfs"),
+                    getCacheDir(),
+                    getExternalCacheDir()
+            };
+            for (File d : dirs) {
+                if (d == null || !d.exists() || !d.isDirectory()) continue;
+                File[] files = d.listFiles();
+                if (files == null) continue;
+                for (File f : files) {
+                    if (f == null || !f.isFile()) continue;
+                    String nm = f.getName().toLowerCase(Locale.US);
+                    if (nm.endsWith(".apk") || nm.endsWith(".apk.part") || nm.endsWith("_update.part")) {
+                        try { f.delete(); } catch (Exception ignored) {}
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private static boolean hasValidApkZipMagic(File f) {
+        if (f == null || !f.exists() || f.length() < 50000L) return false;
+        try (FileInputStream fis = new FileInputStream(f)) {
+            byte[] hdr = new byte[4];
+            if (fis.read(hdr) != 4) return false;
+            return hdr[0] == 0x50 && hdr[1] == 0x4B && hdr[2] == 0x03 && hdr[3] == 0x04;
+        } catch (Exception e) {
+            return false;
         }
     }
 
@@ -1954,85 +1989,178 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void downloadAndInstallApk(final String downloadUrl, final String githubToken) {
             SamuSyncForegroundService.HTTP_POOL.execute(() -> {
-                try {
-                    notifyApkProgress(2, "Conectando ao GitHub Releases...");
-                    String currentUrl = downloadUrl;
-                    boolean sendAuth = (githubToken != null && !githubToken.trim().isEmpty());
-                    boolean isApiAsset = currentUrl != null && currentUrl.contains("api.github.com/");
+                File dir = new File(getCacheDir(), "shared_pdfs");
+                if (!dir.exists()) dir.mkdirs();
+                cleanupDownloadedUpdateApks();
+                File apkPart = new File(dir, "SAMU_192_Orlandia_Update.apk.part");
+                File apkOut = new File(dir, "SAMU_192_Orlandia_Update.apk");
 
-                    for (int hop = 0; hop < 8; hop++) {
-                        URL u = new URL(currentUrl);
-                        HttpURLConnection conn = (HttpURLConnection) u.openConnection();
-                        conn.setInstanceFollowRedirects(false);
-                        conn.setConnectTimeout(25000);
-                        conn.setReadTimeout(90000);
-                        conn.setRequestMethod("GET");
-                        conn.setRequestProperty("User-Agent", "SAMU192-Orlandia-APK/1.0");
-                        if (isApiAsset) {
-                            conn.setRequestProperty("Accept", "application/octet-stream");
-                        } else {
-                            conn.setRequestProperty("Accept", "*/*");
-                        }
-                        String host = u.getHost() != null ? u.getHost().toLowerCase() : "";
-                        boolean isGitHubAuthHost = "github.com".equals(host)
-                                || "api.github.com".equals(host)
-                                || "raw.githubusercontent.com".equals(host);
-                        if (sendAuth && isGitHubAuthHost) {
-                            conn.setRequestProperty("Authorization", "Bearer " + githubToken.trim());
+                String rawUrls = downloadUrl != null ? downloadUrl.trim() : "";
+                String[] rawCandidates = rawUrls.split("\\|\\|");
+                List<String> candidates = new ArrayList<>();
+                for (String c : rawCandidates) {
+                    if (c != null && !c.trim().isEmpty() && !candidates.contains(c.trim())) {
+                        candidates.add(c.trim());
+                    }
+                }
+                if (candidates.isEmpty()) {
+                    notifyApkProgress(-1, "URL de atualização vazia.");
+                    return;
+                }
+
+                String lastError = "Falha desconhecida";
+                boolean sendAuth = (githubToken != null && !githubToken.trim().isEmpty());
+
+                for (int cIdx = 0; cIdx < candidates.size(); cIdx++) {
+                    String candidateUrl = candidates.get(cIdx);
+                    try { apkPart.delete(); } catch (Exception ignored) {}
+
+                    String tierLabel = "GitHub Releases";
+                    if (candidateUrl.contains("/api/updates/download/") || candidateUrl.contains(":18920")) {
+                        tierLabel = "Servidor Central A14";
+                    } else if (candidateUrl.startsWith("gdrive-script://")
+                            || candidateUrl.contains("drive.google.com")
+                            || candidateUrl.contains("googleusercontent.com")
+                            || candidateUrl.contains("script.google.com")) {
+                        tierLabel = "Google Drive";
+                    }
+
+                    try {
+                        notifyApkProgress(2, "Conectando ao " + tierLabel + "...");
+
+                        if (candidateUrl.startsWith("gdrive-script://")) {
+                            String rest = candidateUrl.substring("gdrive-script://".length());
+                            int qIdx = rest.indexOf("?fileId=");
+                            if (qIdx <= 0) throw new Exception("Parâmetro fileId ausente no fallback Drive.");
+                            String scriptUrl = Uri.decode(rest.substring(0, qIdx));
+                            String fileId = Uri.decode(rest.substring(qIdx + "?fileId=".length()));
+                            notifyApkProgress(18, "Baixando pacote do Google Drive...");
+                            JSONObject reqObj = new JSONObject();
+                            reqObj.put("action", "apkUpdateDownloadPart");
+                            reqObj.put("fileId", fileId);
+                            String respTxt = SamuSyncForegroundService.executeHttpRequest(
+                                    scriptUrl, "POST", null, reqObj.toString()
+                            );
+                            JSONObject respJson = new JSONObject(respTxt);
+                            if (!respJson.optBoolean("ok", false)) {
+                                throw new Exception(respJson.optString("error", "Falha no Google Drive Apps Script"));
+                            }
+                            String b64 = respJson.optString("dataBase64", "");
+                            if (b64.isEmpty()) throw new Exception("Pacote Base64 vazio retornado pelo Google Drive.");
+                            notifyApkProgress(75, "Verificando pacote baixado do Google Drive...");
+                            byte[] decoded = Base64.decode(b64, Base64.DEFAULT);
+                            try (FileOutputStream fos = new FileOutputStream(apkPart)) {
+                                fos.write(decoded);
+                            }
+                            if (!hasValidApkZipMagic(apkPart)) {
+                                throw new Exception("Arquivo recebido do Google Drive não é um APK válido.");
+                            }
+                            if (apkOut.exists()) apkOut.delete();
+                            if (!apkPart.renameTo(apkOut)) {
+                                throw new Exception("Falha ao preparar instalador baixado.");
+                            }
+                            double finalMb = apkOut.length() / (1024.0 * 1024.0);
+                            notifyApkProgress(100, String.format(Locale.US, "Download concluído via %s (%.1f MB)! Abrindo instalador...", tierLabel, finalMb));
+                            launchApkInstaller(apkOut);
+                            return;
                         }
 
-                        int status = conn.getResponseCode();
-                        if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
-                            String loc = conn.getHeaderField("Location");
-                            conn.disconnect();
-                            if (loc == null) throw new Exception("Redirecionamento sem destino no download do APK.");
-                            currentUrl = loc;
-                            isApiAsset = false; // URL redirecionada (S3/CDN) não usa Accept octet-stream da API
-                            continue;
-                        }
-                        if (status < 200 || status >= 300) {
-                            conn.disconnect();
-                            throw new Exception("HTTP " + status + " ao baixar novo APK.");
-                        }
+                        String currentUrl = candidateUrl;
+                        boolean isApiAsset = currentUrl.contains("api.github.com/");
+                        boolean downloadedCandidate = false;
 
-                        int totalBytes = conn.getContentLength();
-                        File dir = new File(getCacheDir(), "shared_pdfs");
-                        if (!dir.exists()) dir.mkdirs();
-                        File apkOut = new File(dir, "SAMU_192_Orlandia_Update.apk");
+                        for (int hop = 0; hop < 8; hop++) {
+                            URL u = new URL(currentUrl);
+                            HttpURLConnection conn = (HttpURLConnection) u.openConnection();
+                            conn.setInstanceFollowRedirects(false);
+                            conn.setConnectTimeout(tierLabel.contains("Servidor") ? 8000 : 25000);
+                            conn.setReadTimeout(90000);
+                            conn.setRequestMethod("GET");
+                            conn.setRequestProperty("User-Agent", "SAMU192-Orlandia-APK/1.0");
+                            if (isApiAsset) {
+                                conn.setRequestProperty("Accept", "application/octet-stream");
+                            } else {
+                                conn.setRequestProperty("Accept", "*/*");
+                            }
+                            String host = u.getHost() != null ? u.getHost().toLowerCase(Locale.US) : "";
+                            boolean isGitHubAuthHost = "github.com".equals(host)
+                                    || "api.github.com".equals(host)
+                                    || "raw.githubusercontent.com".equals(host);
+                            if (sendAuth && isGitHubAuthHost) {
+                                conn.setRequestProperty("Authorization", "Bearer " + githubToken.trim());
+                            }
 
-                        try (InputStream is = conn.getInputStream();
-                             FileOutputStream fos = new FileOutputStream(apkOut)) {
-                            byte[] buf = new byte[16384];
-                            long downloaded = 0;
-                            int lastReportedPct = -1;
-                            int n;
-                            while ((n = is.read(buf)) != -1) {
-                                fos.write(buf, 0, n);
-                                downloaded += n;
-                                int pct = (totalBytes > 0)
-                                        ? (int) Math.min(99, (downloaded * 100L) / totalBytes)
-                                        : 50;
-                                if (pct != lastReportedPct && (pct % 4 == 0 || pct >= 98)) {
-                                    lastReportedPct = pct;
-                                    double mb = downloaded / (1024.0 * 1024.0);
-                                    notifyApkProgress(pct, String.format("Baixando atualização (%.1f MB)...", mb));
+                            int status = conn.getResponseCode();
+                            if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
+                                String loc = conn.getHeaderField("Location");
+                                conn.disconnect();
+                                if (loc == null) throw new Exception("Redirecionamento sem destino no download do APK.");
+                                currentUrl = new URL(u, loc).toString();
+                                isApiAsset = false;
+                                continue;
+                            }
+                            if (status < 200 || status >= 300) {
+                                conn.disconnect();
+                                throw new Exception("HTTP " + status + " em " + tierLabel);
+                            }
+
+                            long totalBytes = conn.getContentLengthLong();
+                            try (InputStream is = conn.getInputStream();
+                                 FileOutputStream fos = new FileOutputStream(apkPart)) {
+                                byte[] buf = new byte[32768];
+                                long downloaded = 0;
+                                int lastReportedPct = -1;
+                                long lastReportMs = 0L;
+                                int n;
+                                while ((n = is.read(buf)) != -1) {
+                                    fos.write(buf, 0, n);
+                                    downloaded += n;
+                                    int pct = (totalBytes > 0)
+                                            ? (int) Math.min(99, (downloaded * 100L) / totalBytes)
+                                            : 50;
+                                    long nowMs = System.currentTimeMillis();
+                                    if ((pct != lastReportedPct && (pct % 3 == 0 || pct >= 98))
+                                            || (totalBytes <= 0 && nowMs - lastReportMs >= 350L)) {
+                                        lastReportedPct = pct;
+                                        lastReportMs = nowMs;
+                                        double mb = downloaded / (1024.0 * 1024.0);
+                                        if (totalBytes > 0) {
+                                            double totMb = totalBytes / (1024.0 * 1024.0);
+                                            notifyApkProgress(pct, String.format(Locale.US, "Baixando de %s: %.1f / %.1f MB", tierLabel, mb, totMb));
+                                        } else {
+                                            notifyApkProgress(pct, String.format(Locale.US, "Baixando de %s: %.1f MB...", tierLabel, mb));
+                                        }
+                                    }
                                 }
                             }
-                        }
-                        conn.disconnect();
+                            conn.disconnect();
 
-                        if (apkOut.length() < 50000) {
-                            throw new Exception("Arquivo APK baixado parece incompleto.");
+                            if (!hasValidApkZipMagic(apkPart)) {
+                                throw new Exception("Resposta de " + tierLabel + " não é um pacote APK válido.");
+                            }
+                            if (apkOut.exists()) apkOut.delete();
+                            if (!apkPart.renameTo(apkOut)) {
+                                throw new Exception("Falha ao finalizar arquivo APK baixado.");
+                            }
+                            downloadedCandidate = true;
+                            break;
                         }
 
-                        notifyApkProgress(100, "Download concluído! Abrindo instalador...");
+                        if (!downloadedCandidate) {
+                            throw new Exception("Muitos redirecionamentos em " + tierLabel);
+                        }
+
+                        double finalMb = apkOut.length() / (1024.0 * 1024.0);
+                        notifyApkProgress(100, String.format(Locale.US, "Download concluído via %s (%.1f MB)! Abrindo instalador...", tierLabel, finalMb));
                         launchApkInstaller(apkOut);
                         return;
+                    } catch (Exception tierErr) {
+                        try { apkPart.delete(); } catch (Exception ignored) {}
+                        lastError = tierLabel + ": " + (tierErr.getMessage() != null ? tierErr.getMessage() : tierErr.toString());
                     }
-                    throw new Exception("Muitos redirecionamentos ao baixar o APK.");
-                } catch (Exception e) {
-                    notifyApkProgress(-1, "Erro ao baixar APK: " + (e.getMessage() != null ? e.getMessage() : e.toString()));
                 }
+
+                notifyApkProgress(-1, "Erro ao baixar APK (" + lastError + ")");
             });
         }
 

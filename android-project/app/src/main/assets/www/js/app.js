@@ -2505,10 +2505,11 @@
         }
 
         if (res.status === 'apk_update_available') {
-          const notes = res.remote.releaseNotes ? ` (${res.remote.releaseNotes})` : '';
+          const notes = (res.remote && res.remote.releaseNotes) ? ` (${res.remote.releaseNotes})` : '';
+          const srcLabel = res.sourceLabel || 'Servidor Central / Nuvem';
           setTopUpdateBtnVisual('has-update', `🚀 v${res.remote.apkVersionName}`);
           showAutoUpdateBanner(
-            `🚀 Novo APK v${res.remote.apkVersionName} disponível no GitHub!${notes}`,
+            `🚀 Novo APK v${res.remote.apkVersionName} disponível via ${srcLabel}!${notes}`,
             '📲 Atualizar APK Agora',
             () => {
               persistFichaDraft();
@@ -2516,7 +2517,7 @@
             }
           );
           if (interactive) {
-            if (await samuConfirm(`Nova versão v${res.remote.apkVersionName} do APK SAMU 192 encontrada no GitHub!\n\nDeseja baixar e instalar automaticamente agora?`)) {
+            if (await samuConfirm(`Nova versão v${res.remote.apkVersionName} do APK SAMU 192 encontrada (${srcLabel})!\n\nDeseja baixar e instalar automaticamente agora?`)) {
               persistFichaDraft();
               window.SamuStorage.startNativeApkDownload(res.downloadUrl);
             }

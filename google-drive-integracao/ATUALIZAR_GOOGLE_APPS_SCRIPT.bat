@@ -1,7 +1,7 @@
 @echo off
 setlocal
 chcp 65001 >nul
-title SAMU 192 Orlandia - Atualizar Google Apps Script v4
+title SAMU 192 Orlandia - Atualizar Google Apps Script v5
 
 set "GS_FILE=%~dp0Codigo_Google_Apps_Script.gs"
 if not exist "%GS_FILE%" (
@@ -13,11 +13,12 @@ if not exist "%GS_FILE%" (
 )
 
 echo ============================================================================
-echo   SAMU 192 - ORLANDIA-SP ^| ATUALIZADOR RAPIDO DO GOOGLE APPS SCRIPT (v4)
+echo   SAMU 192 - ORLANDIA-SP ^| ATUALIZADOR RAPIDO DO GOOGLE APPS SCRIPT (v5)
+echo   (PDFs + Fila Impressao + Atualizacao Tripla APKs + Memoria IA OCR)
 echo ============================================================================
 echo.
 echo Copiando todo o codigo de Codigo_Google_Apps_Script.gs para o Ctrl+V...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$c = Get-Content -LiteralPath $env:GS_FILE -Raw -Encoding UTF8; Set-Clipboard -Value $c; Write-Host ('[OK] Codigo v4 copiado para a Area de Transferencia (' + $c.Length + ' caracteres)!') -ForegroundColor Green"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$c = Get-Content -LiteralPath $env:GS_FILE -Raw -Encoding UTF8; Set-Clipboard -Value $c; Write-Host ('[OK] Codigo v5 copiado para a Area de Transferencia (' + $c.Length + ' caracteres)!') -ForegroundColor Green"
 
 if errorlevel 1 (
     echo [AVISO] Nao foi possivel copiar automaticamente. Abra o arquivo Codigo_Google_Apps_Script.gs no Bloco de Notas e copie manualmente.

@@ -4283,7 +4283,9 @@
 
   async function checkAndApplyAppUpdate() {
     const cfg = parseGitHubConfig();
-    if (!cfg || !cfg.owner || !cfg.repo) return { status: 'not_configured', local: getInstalledAppVersion() };
+    const curSettings = getSettings();
+    const hasAnyChannel = Boolean((cfg && cfg.owner && cfg.repo) || (curSettings && curSettings.scriptUrl) || runtimeServerState.activeBaseUrl);
+    if (!hasAnyChannel) return { status: 'not_configured', local: getInstalledAppVersion() };
 
     if (ongoingUpdateCheck) {
       try { return await ongoingUpdateCheck; } catch (e) {}
@@ -4294,48 +4296,157 @@
       if (!local.isNativeApk) {
         return { status: 'web_browser_mode', local };
       }
-      let remote = null;
-      try {
-        const verTxt = await fetchGitHubRepoFileText(cfg, 'version.json');
-        remote = JSON.parse(verTxt);
-      } catch (err) {
-        if (String(err.message || '').includes('404')) {
-          return { status: 'repo_empty_yet', local };
-        }
-        if (isNetworkErrorMessage(err && err.message)) {
-          return { status: 'offline', local };
-        }
-        throw err;
+
+      const apkCandidates = [];
+
+      // 1º NÍVEL (PRIORIDADE MÁXIMA): Servidor Central A14 (LAN Wi-Fi <5ms ou Túnel 4G)
+      let srvBase = runtimeServerState.activeBaseUrl || '';
+      if (!srvBase) {
+        try {
+          srvBase = await resolveActiveServerBaseUrl({ allowDiscovery: true });
+        } catch (eSrvDisc) {}
+      }
+      if (srvBase) {
+        try {
+          const srvMan = await genericHttpJson('GET', `${srvBase}/api/updates/manifest?channel=fichas&_=${Date.now()}`, {});
+          const chInfo = (srvMan && (srvMan.channelInfo || (srvMan.channels && srvMan.channels.fichas))) || null;
+          const srvCode = Number(chInfo && chInfo.versionCode) || 0;
+          if (srvMan && srvMan.ok && chInfo && srvCode > 0) {
+            apkCandidates.push({
+              tierOrder: 1,
+              sourceLabel: 'Servidor Central A14',
+              apkVersionCode: srvCode,
+              apkVersionName: String(chInfo.versionName || '').replace(/^v/i, '') || `${srvCode}`,
+              otaRevision: Number(chInfo.otaRevision) || local.otaRevision,
+              releaseNotes: '',
+              downloadUrls: [`${srvBase}/api/updates/download/fichas`]
+            });
+          }
+        } catch (eSrvUpd) {}
       }
 
-      const remoteApkCode = Number(remote.apkVersionCode) || 1;
-      const remoteOtaRev = Number(remote.otaRevision) || 1;
-
-      // 1. Verifica se saiu um novo instalador .APK compilado no GitHub Actions
-      if (remoteApkCode > local.apkVersionCode) {
-        let downloadUrl = remote.apkDownloadUrl || `https://github.com/${cfg.owner}/${cfg.repo}/releases/latest/download/SAMU_192_Orlandia.apk`;
-        if (cfg.token) {
-          try {
-            const relUrl = `https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/releases/latest?_=${Date.now()}`;
-            const relMeta = await genericHttpJson('GET', relUrl, {
-              'Accept': 'application/vnd.github+json',
-              'Authorization': `Bearer ${cfg.token}`
+      // 2º NÍVEL (FALLBACK EM NUVEM): Google Drive (Atualizacoes_APK/fichas)
+      const driveUrl = String((curSettings && curSettings.scriptUrl) || '').trim();
+      if (driveUrl) {
+        try {
+          const drvMan = await apiPostSingleAttempt({
+            action: 'apkUpdateGetManifest',
+            channel: 'fichas'
+          }, driveUrl);
+          const drvCh = (drvMan && (drvMan.channelInfo || (drvMan.manifest && drvMan.manifest.channels && drvMan.manifest.channels.fichas))) || null;
+          const drvCode = Number(drvCh && drvCh.versionCode) || 0;
+          const drvParts = (drvCh && Array.isArray(drvCh.parts)) ? drvCh.parts : [];
+          if (drvMan && drvMan.ok && drvCh && drvCode > 0 && drvParts.length === 1 && drvParts[0] && drvParts[0].fileId) {
+            const fid = String(drvParts[0].fileId).trim();
+            const directUrl = String(drvParts[0].directUrl || '').trim() || `https://drive.google.com/uc?export=download&id=${encodeURIComponent(fid)}`;
+            const scriptFallbackUrl = `gdrive-script://${encodeURIComponent(driveUrl)}?fileId=${encodeURIComponent(fid)}`;
+            apkCandidates.push({
+              tierOrder: 2,
+              sourceLabel: 'Google Drive',
+              apkVersionCode: drvCode,
+              apkVersionName: String(drvCh.versionName || '').replace(/^v/i, '') || `${drvCode}`,
+              otaRevision: Number(drvCh.otaRevision) || local.otaRevision,
+              releaseNotes: '',
+              downloadUrls: [directUrl, scriptFallbackUrl]
             });
-            if (relMeta && Array.isArray(relMeta.assets)) {
-              const apkAsset = relMeta.assets.find(a => a && String(a.name || '').toLowerCase().endsWith('.apk'));
-              if (apkAsset && apkAsset.url) {
-                downloadUrl = apkAsset.url;
+          }
+        } catch (eDrvUpd) {}
+      }
+
+      // 3º NÍVEL (FALLBACK GLOBAL): GitHub Releases + Manifesto Live OTA
+      let remote = null;
+      let githubErr = null;
+      if (cfg && cfg.owner && cfg.repo) {
+        try {
+          const verTxt = await fetchGitHubRepoFileText(cfg, 'version.json');
+          remote = JSON.parse(verTxt);
+          const remoteApkCode = Number(remote && remote.apkVersionCode) || 1;
+          let ghDownloadUrl = (remote && remote.apkDownloadUrl) || `https://github.com/${cfg.owner}/${cfg.repo}/releases/latest/download/SAMU_192_Orlandia.apk`;
+          if (remoteApkCode > local.apkVersionCode && cfg.token) {
+            try {
+              const relUrl = `https://api.github.com/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}/releases/latest?_=${Date.now()}`;
+              const relMeta = await genericHttpJson('GET', relUrl, {
+                'Accept': 'application/vnd.github+json',
+                'Authorization': `Bearer ${cfg.token}`
+              });
+              if (relMeta && Array.isArray(relMeta.assets)) {
+                const apkAsset = relMeta.assets.find(a => a && String(a.name || '').toLowerCase().endsWith('.apk'));
+                if (apkAsset && apkAsset.url) {
+                  ghDownloadUrl = apkAsset.url;
+                }
               }
-            }
-          } catch (eRel) {}
+            } catch (eRel) {}
+          }
+          apkCandidates.push({
+            tierOrder: 3,
+            sourceLabel: 'GitHub Releases',
+            apkVersionCode: remoteApkCode,
+            apkVersionName: String((remote && (remote.apkVersionName || remote.version)) || '').replace(/^v/i, '') || `${remoteApkCode}`,
+            otaRevision: Number(remote && remote.otaRevision) || 1,
+            releaseNotes: String((remote && remote.releaseNotes) || ''),
+            downloadUrls: [ghDownloadUrl]
+          });
+        } catch (err) {
+          githubErr = err;
         }
+      }
+
+      // Ordena pela versão mais nova e, em empate, pela cascata: 1º Servidor Central -> 2º Google Drive -> 3º GitHub
+      apkCandidates.sort((a, b) => {
+        if (b.apkVersionCode !== a.apkVersionCode) return b.apkVersionCode - a.apkVersionCode;
+        return a.tierOrder - b.tierOrder;
+      });
+
+      // 1. Verifica se saiu um novo instalador .APK em qualquer um dos 3 níveis
+      if (apkCandidates.length > 0 && apkCandidates[0].apkVersionCode > local.apkVersionCode) {
+        const best = apkCandidates[0];
+        const sameVerTiers = apkCandidates.filter(c => c.apkVersionCode === best.apkVersionCode);
+        const mergedUrls = [];
+        sameVerTiers.forEach(c => {
+          (c.downloadUrls || []).forEach(u => {
+            if (u && !mergedUrls.includes(u)) mergedUrls.push(u);
+          });
+        });
+        const effectiveRemote = Object.assign({}, remote || {}, {
+          apkVersionCode: best.apkVersionCode,
+          apkVersionName: best.apkVersionName,
+          otaRevision: Math.max(Number(remote && remote.otaRevision) || 0, Number(best.otaRevision) || 0, local.otaRevision),
+          releaseNotes: String((remote && remote.releaseNotes) || best.releaseNotes || '')
+        });
         return {
           status: 'apk_update_available',
           local,
-          remote,
-          downloadUrl
+          remote: effectiveRemote,
+          sourceLabel: best.sourceLabel,
+          downloadUrl: mergedUrls.join('||')
         };
       }
+
+      if (!remote) {
+        if (apkCandidates.length > 0) {
+          return {
+            status: 'up_to_date',
+            local,
+            remote: {
+              apkVersionCode: local.apkVersionCode,
+              apkVersionName: local.apkVersionName,
+              otaRevision: local.otaRevision
+            }
+          };
+        }
+        if (githubErr) {
+          if (String(githubErr.message || '').includes('404')) {
+            return { status: 'repo_empty_yet', local };
+          }
+          if (isNetworkErrorMessage(githubErr && githubErr.message)) {
+            return { status: 'offline', local };
+          }
+          throw githubErr;
+        }
+        return { status: 'offline', local };
+      }
+
+      const remoteOtaRev = Number(remote.otaRevision) || 1;
 
       // 2. Atualização silenciosa automática (Live OTA) de telas/regras/PDF sem precisar reinstalar o .APK!
       if (remoteOtaRev > local.otaRevision && local.isNativeApk && window.AndroidBridge && typeof window.AndroidBridge.applyOtaBundleJson === 'function') {
@@ -4380,12 +4491,16 @@
 
   function startNativeApkDownload(downloadUrl) {
     const s = getSettings();
-    const useToken = (downloadUrl && downloadUrl.includes('api.github.com/')) ? (s.githubToken || '') : '';
+    const rawStr = String(downloadUrl || '').trim();
+    const firstHttpUrl = rawStr.split('||').find(u => u && /^https?:\/\//i.test(u)) || rawStr.split('||')[0] || '';
+    const useToken = rawStr.includes('api.github.com/') ? (s.githubToken || '') : '';
     if (window.AndroidBridge && typeof window.AndroidBridge.downloadAndInstallApk === 'function') {
-      window.AndroidBridge.downloadAndInstallApk(downloadUrl, useToken);
+      window.AndroidBridge.downloadAndInstallApk(rawStr, useToken);
       return true;
     }
-    window.open(downloadUrl, '_blank', 'noopener');
+    if (firstHttpUrl) {
+      window.open(firstHttpUrl, '_blank', 'noopener');
+    }
     return false;
   }
 
