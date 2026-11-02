@@ -2025,8 +2025,32 @@ public class MainActivity extends Activity {
                         tierLabel = "Google Drive";
                     }
 
+                    final java.util.concurrent.atomic.AtomicLong lastDataAtMs = new java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis());
+                    final java.util.concurrent.atomic.AtomicBoolean candDone = new java.util.concurrent.atomic.AtomicBoolean(false);
+                    final java.util.concurrent.atomic.AtomicBoolean stalled60s = new java.util.concurrent.atomic.AtomicBoolean(false);
+                    final java.util.concurrent.atomic.AtomicReference<HttpURLConnection> activeConnRef = new java.util.concurrent.atomic.AtomicReference<>(null);
+                    final String tierLabelFinal = tierLabel;
+
+                    Thread watchdogThread = new Thread(() -> {
+                        while (!candDone.get()) {
+                            try { Thread.sleep(2000L); } catch (InterruptedException e) { break; }
+                            if (candDone.get()) break;
+                            if (System.currentTimeMillis() - lastDataAtMs.get() >= 60000L) {
+                                stalled60s.set(true);
+                                notifyApkProgress(0, tierLabelFinal + " sem receber dados por 60s. Alternando método...");
+                                HttpURLConnection c = activeConnRef.get();
+                                if (c != null) {
+                                    try { c.disconnect(); } catch (Exception ignored) {}
+                                }
+                                break;
+                            }
+                        }
+                    }, "SamuFichasDlWatchdog");
+                    watchdogThread.setDaemon(true);
+                    watchdogThread.start();
+
                     try {
-                        notifyApkProgress(2, "Conectando ao " + tierLabel + "...");
+                        notifyApkProgress(0, "Conectando ao " + tierLabel + "...");
 
                         if (candidateUrl.startsWith("gdrive-script://")) {
                             String rest = candidateUrl.substring("gdrive-script://".length());
@@ -2041,6 +2065,10 @@ public class MainActivity extends Activity {
                             String respTxt = SamuSyncForegroundService.executeHttpRequest(
                                     scriptUrl, "POST", null, reqObj.toString()
                             );
+                            if (stalled60s.get()) {
+                                throw new Exception("Inatividade > 60s no Google Drive");
+                            }
+                            lastDataAtMs.set(System.currentTimeMillis());
                             JSONObject respJson = new JSONObject(respTxt);
                             if (!respJson.optBoolean("ok", false)) {
                                 throw new Exception(respJson.optString("error", "Falha no Google Drive Apps Script"));
@@ -2066,15 +2094,22 @@ public class MainActivity extends Activity {
                         }
 
                         String currentUrl = candidateUrl;
+                        if (currentUrl.contains("drive.google.com/uc") && !currentUrl.contains("confirm=")) {
+                            currentUrl += "&confirm=t";
+                        }
                         boolean isApiAsset = currentUrl.contains("api.github.com/");
                         boolean downloadedCandidate = false;
 
                         for (int hop = 0; hop < 8; hop++) {
+                            if (stalled60s.get()) {
+                                throw new Exception("Sem receber dados por 60s em " + tierLabel);
+                            }
                             URL u = new URL(currentUrl);
                             HttpURLConnection conn = (HttpURLConnection) u.openConnection();
+                            activeConnRef.set(conn);
                             conn.setInstanceFollowRedirects(false);
-                            conn.setConnectTimeout(tierLabel.contains("Servidor") ? 8000 : 25000);
-                            conn.setReadTimeout(90000);
+                            conn.setConnectTimeout(tierLabel.contains("Servidor") ? 8000 : 20000);
+                            conn.setReadTimeout(60000);
                             conn.setRequestMethod("GET");
                             conn.setRequestProperty("User-Agent", "SAMU192-Orlandia-APK/1.0");
                             if (isApiAsset) {
@@ -2091,6 +2126,7 @@ public class MainActivity extends Activity {
                             }
 
                             int status = conn.getResponseCode();
+                            lastDataAtMs.set(System.currentTimeMillis());
                             if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
                                 String loc = conn.getHeaderField("Location");
                                 conn.disconnect();
@@ -2103,6 +2139,11 @@ public class MainActivity extends Activity {
                                 conn.disconnect();
                                 throw new Exception("HTTP " + status + " em " + tierLabel);
                             }
+                            String cType = conn.getContentType() != null ? conn.getContentType().toLowerCase(Locale.US) : "";
+                            if (cType.contains("text/html")) {
+                                conn.disconnect();
+                                throw new Exception("Página HTML intermediária em " + tierLabel);
+                            }
 
                             long totalBytes = conn.getContentLengthLong();
                             try (InputStream is = conn.getInputStream();
@@ -2113,12 +2154,16 @@ public class MainActivity extends Activity {
                                 long lastReportMs = 0L;
                                 int n;
                                 while ((n = is.read(buf)) != -1) {
+                                    if (stalled60s.get()) {
+                                        throw new Exception("Sem receber dados por 60s em " + tierLabel);
+                                    }
+                                    long nowMs = System.currentTimeMillis();
+                                    lastDataAtMs.set(nowMs);
                                     fos.write(buf, 0, n);
                                     downloaded += n;
                                     int pct = (totalBytes > 0)
                                             ? (int) Math.min(99, (downloaded * 100L) / totalBytes)
                                             : 50;
-                                    long nowMs = System.currentTimeMillis();
                                     if ((pct != lastReportedPct && (pct % 3 == 0 || pct >= 98))
                                             || (totalBytes <= 0 && nowMs - lastReportMs >= 350L)) {
                                         lastReportedPct = pct;
@@ -2157,6 +2202,10 @@ public class MainActivity extends Activity {
                     } catch (Exception tierErr) {
                         try { apkPart.delete(); } catch (Exception ignored) {}
                         lastError = tierLabel + ": " + (tierErr.getMessage() != null ? tierErr.getMessage() : tierErr.toString());
+                    } finally {
+                        candDone.set(true);
+                        activeConnRef.set(null);
+                        try { watchdogThread.interrupt(); } catch (Exception ignored) {}
                     }
                 }
 

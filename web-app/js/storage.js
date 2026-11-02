@@ -4317,7 +4317,10 @@
           const drvParts = (drvCh && Array.isArray(drvCh.parts)) ? drvCh.parts : [];
           if (drvMan && drvMan.ok && drvCh && drvCode > 0 && drvParts.length === 1 && drvParts[0] && drvParts[0].fileId) {
             const fid = String(drvParts[0].fileId).trim();
-            const directUrl = String(drvParts[0].directUrl || '').trim() || `https://drive.google.com/uc?export=download&id=${encodeURIComponent(fid)}`;
+            let directUrl = String(drvParts[0].directUrl || '').trim() || `https://drive.google.com/uc?export=download&id=${encodeURIComponent(fid)}&confirm=t`;
+            if (directUrl.indexOf('drive.google.com/uc') !== -1 && directUrl.indexOf('confirm=') === -1) {
+              directUrl += '&confirm=t';
+            }
             const scriptFallbackUrl = `gdrive-script://${encodeURIComponent(driveUrl)}?fileId=${encodeURIComponent(fid)}`;
             apkCandidates.push({
               tierOrder: 1,
