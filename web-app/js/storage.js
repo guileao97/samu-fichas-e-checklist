@@ -4299,33 +4299,7 @@
 
       const apkCandidates = [];
 
-      // 1º NÍVEL (PRIORIDADE MÁXIMA): Servidor Central A14 (LAN Wi-Fi <5ms ou Túnel 4G)
-      let srvBase = runtimeServerState.activeBaseUrl || '';
-      if (!srvBase) {
-        try {
-          srvBase = await resolveActiveServerBaseUrl({ allowDiscovery: true });
-        } catch (eSrvDisc) {}
-      }
-      if (srvBase) {
-        try {
-          const srvMan = await genericHttpJson('GET', `${srvBase}/api/updates/manifest?channel=fichas&_=${Date.now()}`, {});
-          const chInfo = (srvMan && (srvMan.channelInfo || (srvMan.channels && srvMan.channels.fichas))) || null;
-          const srvCode = Number(chInfo && chInfo.versionCode) || 0;
-          if (srvMan && srvMan.ok && chInfo && srvCode > 0) {
-            apkCandidates.push({
-              tierOrder: 1,
-              sourceLabel: 'Servidor Central A14',
-              apkVersionCode: srvCode,
-              apkVersionName: String(chInfo.versionName || '').replace(/^v/i, '') || `${srvCode}`,
-              otaRevision: Number(chInfo.otaRevision) || local.otaRevision,
-              releaseNotes: '',
-              downloadUrls: [`${srvBase}/api/updates/download/fichas`]
-            });
-          }
-        } catch (eSrvUpd) {}
-      }
-
-      // 2º NÍVEL (FALLBACK EM NUVEM): Google Drive (Atualizacoes_APK/fichas)
+      // 1º NÍVEL (PRIORIDADE MÁXIMA): Google Drive (Atualizacoes_APK/fichas)
       const driveUrl = String((curSettings && curSettings.scriptUrl) || '').trim();
       if (driveUrl) {
         try {
@@ -4346,8 +4320,8 @@
             const directUrl = String(drvParts[0].directUrl || '').trim() || `https://drive.google.com/uc?export=download&id=${encodeURIComponent(fid)}`;
             const scriptFallbackUrl = `gdrive-script://${encodeURIComponent(driveUrl)}?fileId=${encodeURIComponent(fid)}`;
             apkCandidates.push({
-              tierOrder: 2,
-              sourceLabel: 'Google Drive',
+              tierOrder: 1,
+              sourceLabel: '1º Google Drive',
               apkVersionCode: drvCode,
               apkVersionName: String(drvCh.versionName || '').replace(/^v/i, '') || `${drvCode}`,
               otaRevision: Number(drvCh.otaRevision) || local.otaRevision,
@@ -4356,6 +4330,32 @@
             });
           }
         } catch (eDrvUpd) {}
+      }
+
+      // 2º NÍVEL (FALLBACK LOCAL/TÚNEL): Servidor Central A14 (LAN Wi-Fi <5ms ou Túnel 4G)
+      let srvBase = runtimeServerState.activeBaseUrl || '';
+      if (!srvBase) {
+        try {
+          srvBase = await resolveActiveServerBaseUrl({ allowDiscovery: true });
+        } catch (eSrvDisc) {}
+      }
+      if (srvBase) {
+        try {
+          const srvMan = await genericHttpJson('GET', `${srvBase}/api/updates/manifest?channel=fichas&_=${Date.now()}`, {});
+          const chInfo = (srvMan && (srvMan.channelInfo || (srvMan.channels && srvMan.channels.fichas))) || null;
+          const srvCode = Number(chInfo && chInfo.versionCode) || 0;
+          if (srvMan && srvMan.ok && chInfo && srvCode > 0) {
+            apkCandidates.push({
+              tierOrder: 2,
+              sourceLabel: '2º Servidor Central A14',
+              apkVersionCode: srvCode,
+              apkVersionName: String(chInfo.versionName || '').replace(/^v/i, '') || `${srvCode}`,
+              otaRevision: Number(chInfo.otaRevision) || local.otaRevision,
+              releaseNotes: '',
+              downloadUrls: [`${srvBase}/api/updates/download/fichas`]
+            });
+          }
+        } catch (eSrvUpd) {}
       }
 
       // 3º NÍVEL (FALLBACK GLOBAL): GitHub Releases + Manifesto Live OTA
@@ -4384,7 +4384,7 @@
           }
           apkCandidates.push({
             tierOrder: 3,
-            sourceLabel: 'GitHub Releases',
+            sourceLabel: '3º GitHub Releases',
             apkVersionCode: remoteApkCode,
             apkVersionName: String((remote && (remote.apkVersionName || remote.version)) || '').replace(/^v/i, '') || `${remoteApkCode}`,
             otaRevision: Number(remote && remote.otaRevision) || 1,
@@ -4396,7 +4396,7 @@
         }
       }
 
-      // Ordena pela versão mais nova e, em empate, pela cascata: 1º Servidor Central -> 2º Google Drive -> 3º GitHub
+      // Ordena pela versão mais nova e, em empate, pela cascata: 1º Google Drive -> 2º Servidor Central -> 3º GitHub
       apkCandidates.sort((a, b) => {
         if (b.apkVersionCode !== a.apkVersionCode) return b.apkVersionCode - a.apkVersionCode;
         return a.tierOrder - b.tierOrder;
