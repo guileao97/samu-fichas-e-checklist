@@ -4333,7 +4333,12 @@
             action: 'apkUpdateGetManifest',
             channel: 'fichas'
           }, driveUrl);
-          const drvCh = (drvMan && (drvMan.channelInfo || (drvMan.manifest && drvMan.manifest.channels && drvMan.manifest.channels.fichas))) || null;
+          const drvCh = (drvMan && (
+            drvMan.release ||
+            drvMan.channelInfo ||
+            (drvMan.channels && drvMan.channels.fichas) ||
+            (drvMan.manifest && drvMan.manifest.channels && drvMan.manifest.channels.fichas)
+          )) || null;
           const drvCode = Number(drvCh && drvCh.versionCode) || 0;
           const drvParts = (drvCh && Array.isArray(drvCh.parts)) ? drvCh.parts : [];
           if (drvMan && drvMan.ok && drvCh && drvCode > 0 && drvParts.length === 1 && drvParts[0] && drvParts[0].fileId) {
