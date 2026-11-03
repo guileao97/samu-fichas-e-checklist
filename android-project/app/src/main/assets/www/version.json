@@ -1,8 +1,8 @@
 {
-  "apkVersionCode": 21,
-  "apkVersionName": "1.0.19",
-  "otaRevision": 42,
-  "updatedAt": "2026-11-02T07:10:06Z",
+  "apkVersionCode": 22,
+  "apkVersionName": "1.0.20",
+  "otaRevision": 43,
+  "updatedAt": "2026-11-03T14:35:50Z",
   "releaseNotes": "feat: seletor de modelo Gemini (gemini-2.5-flash padrao) no ADM e Telemetria e resumo compacto para ocorrencias digitadas no chat",
   "repo": "guileao97/samu-fichas-e-checklist",
   "branch": "main",

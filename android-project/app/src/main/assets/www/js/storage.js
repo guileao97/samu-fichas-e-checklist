@@ -393,6 +393,30 @@
     return s;
   }
 
+  function normalizeOtaUpdateOrder(raw) {
+    const allowed = [
+      'drive,servidor,github',
+      'drive,github,servidor',
+      'servidor,drive,github',
+      'servidor,github,drive',
+      'github,drive,servidor',
+      'github,servidor,drive'
+    ];
+    const clean = String(raw || '').trim().toLowerCase().replace(/\s+/g, '');
+    return allowed.includes(clean) ? clean : 'drive,servidor,github';
+  }
+
+  function getOtaTierOrderRank(orderCode, kind) {
+    const list = normalizeOtaUpdateOrder(orderCode).split(',');
+    const idx = list.indexOf(String(kind || '').toLowerCase());
+    return idx >= 0 ? (idx + 1) : 99;
+  }
+
+  function formatOtaSourceBadge(orderCode, kind, baseName) {
+    const rank = getOtaTierOrderRank(orderCode, kind);
+    return rank <= 3 ? `${rank}º ${baseName}` : baseName;
+  }
+
   function getSettings() {
     const defaults = {
       scriptUrl: DEFAULT_SCRIPT_URL,
@@ -405,6 +429,7 @@
       githubFilePath: 'base_dados_samu.json',
       githubToken: '',
       defaultHospital: 'HBSA',
+      otaUpdateOrder: 'drive,servidor,github',
       _lastFactoryScriptUrl: DEFAULT_SCRIPT_URL
     };
     try {
@@ -421,6 +446,7 @@
           : normalizeDriveScriptUrl(merged.scriptUrl, true);
       }
       merged.serverUrl = normalizeServerBaseUrl(merged.serverUrl);
+      merged.otaUpdateOrder = normalizeOtaUpdateOrder(merged.otaUpdateOrder);
       merged._lastFactoryScriptUrl = DEFAULT_SCRIPT_URL;
       if (!merged.githubRepo || !String(merged.githubRepo).trim()) {
         merged.githubRepo = DEFAULT_GITHUB_REPO;
@@ -440,6 +466,7 @@
     if (typeof next.serverUrl === 'string') {
       next.serverUrl = normalizeServerBaseUrl(next.serverUrl);
     }
+    next.otaUpdateOrder = normalizeOtaUpdateOrder(next.otaUpdateOrder);
     if (partial && Object.prototype.hasOwnProperty.call(partial, 'serverUrl') && next.serverUrl !== cur.serverUrl) {
       invalidateActiveServerCache();
     }
@@ -4298,8 +4325,9 @@
       }
 
       const apkCandidates = [];
+      const otaOrderCode = normalizeOtaUpdateOrder(curSettings && curSettings.otaUpdateOrder);
 
-      // 1º NÍVEL (PRIORIDADE MÁXIMA): Google Drive (Atualizacoes_APK/fichas)
+      // Google Drive (Atualizacoes_APK/fichas)
       const driveUrl = String((curSettings && curSettings.scriptUrl) || '').trim();
       if (driveUrl) {
         try {
@@ -4323,8 +4351,8 @@
             }
             const scriptFallbackUrl = `gdrive-script://${encodeURIComponent(driveUrl)}?fileId=${encodeURIComponent(fid)}`;
             apkCandidates.push({
-              tierOrder: 1,
-              sourceLabel: '1º Google Drive',
+              tierOrder: getOtaTierOrderRank(otaOrderCode, 'drive'),
+              sourceLabel: formatOtaSourceBadge(otaOrderCode, 'drive', 'Google Drive'),
               apkVersionCode: drvCode,
               apkVersionName: String(drvCh.versionName || '').replace(/^v/i, '') || `${drvCode}`,
               otaRevision: Number(drvCh.otaRevision) || local.otaRevision,
@@ -4335,7 +4363,7 @@
         } catch (eDrvUpd) {}
       }
 
-      // 2º NÍVEL (FALLBACK LOCAL/TÚNEL): Servidor Central A14 (LAN Wi-Fi <5ms ou Túnel 4G)
+      // Servidor Central A14 (LAN Wi-Fi <5ms ou Túnel 4G)
       let srvBase = runtimeServerState.activeBaseUrl || '';
       if (!srvBase) {
         try {
@@ -4349,8 +4377,8 @@
           const srvCode = Number(chInfo && chInfo.versionCode) || 0;
           if (srvMan && srvMan.ok && chInfo && srvCode > 0) {
             apkCandidates.push({
-              tierOrder: 2,
-              sourceLabel: '2º Servidor Central A14',
+              tierOrder: getOtaTierOrderRank(otaOrderCode, 'servidor'),
+              sourceLabel: formatOtaSourceBadge(otaOrderCode, 'servidor', 'Servidor Central A14'),
               apkVersionCode: srvCode,
               apkVersionName: String(chInfo.versionName || '').replace(/^v/i, '') || `${srvCode}`,
               otaRevision: Number(chInfo.otaRevision) || local.otaRevision,
@@ -4361,7 +4389,7 @@
         } catch (eSrvUpd) {}
       }
 
-      // 3º NÍVEL (FALLBACK GLOBAL): GitHub Releases + Manifesto Live OTA
+      // GitHub Releases + Manifesto Live OTA
       let remote = null;
       let githubErr = null;
       if (cfg && cfg.owner && cfg.repo) {
@@ -4386,8 +4414,8 @@
             } catch (eRel) {}
           }
           apkCandidates.push({
-            tierOrder: 3,
-            sourceLabel: '3º GitHub Releases',
+            tierOrder: getOtaTierOrderRank(otaOrderCode, 'github'),
+            sourceLabel: formatOtaSourceBadge(otaOrderCode, 'github', 'GitHub Releases'),
             apkVersionCode: remoteApkCode,
             apkVersionName: String((remote && (remote.apkVersionName || remote.version)) || '').replace(/^v/i, '') || `${remoteApkCode}`,
             otaRevision: Number(remote && remote.otaRevision) || 1,
@@ -4399,7 +4427,7 @@
         }
       }
 
-      // Ordena pela versão mais nova e, em empate, pela cascata: 1º Google Drive -> 2º Servidor Central -> 3º GitHub
+      // Ordena pela versão mais nova e, em empate, pela ordem escolhida nas configurações (Padrão: 1º Google Drive -> 2º Servidor Central -> 3º GitHub)
       apkCandidates.sort((a, b) => {
         if (b.apkVersionCode !== a.apkVersionCode) return b.apkVersionCode - a.apkVersionCode;
         return a.tierOrder - b.tierOrder;

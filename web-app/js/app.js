@@ -11375,6 +11375,17 @@
             <input type="text" id="adm-gh-branch" placeholder="main" value="${escapeHtml(settings.githubBranch || 'main')}" />
           </div>
         </div>
+        <div class="field" style="margin-top:6px;">
+          <label>⬆️ Ordem de Prioridade da Atualização OTA deste APK (Escolha a Ordem)</label>
+          <select id="adm-ota-order" autocomplete="off">
+            <option value="drive,servidor,github" ${(!settings.otaUpdateOrder || settings.otaUpdateOrder === 'drive,servidor,github') ? 'selected' : ''}>1º Google Drive ➔ 2º Servidor Central ➔ 3º GitHub (Padrão)</option>
+            <option value="drive,github,servidor" ${settings.otaUpdateOrder === 'drive,github,servidor' ? 'selected' : ''}>1º Google Drive ➔ 2º GitHub ➔ 3º Servidor Central</option>
+            <option value="servidor,drive,github" ${settings.otaUpdateOrder === 'servidor,drive,github' ? 'selected' : ''}>1º Servidor Central ➔ 2º Google Drive ➔ 3º GitHub</option>
+            <option value="servidor,github,drive" ${settings.otaUpdateOrder === 'servidor,github,drive' ? 'selected' : ''}>1º Servidor Central ➔ 2º GitHub ➔ 3º Google Drive</option>
+            <option value="github,drive,servidor" ${settings.otaUpdateOrder === 'github,drive,servidor' ? 'selected' : ''}>1º GitHub ➔ 2º Google Drive ➔ 3º Servidor Central</option>
+            <option value="github,servidor,drive" ${settings.otaUpdateOrder === 'github,servidor,drive' ? 'selected' : ''}>1º GitHub ➔ 2º Servidor Central ➔ 3º Google Drive</option>
+          </select>
+        </div>
         <input type="hidden" id="adm-gh-path" value="${escapeHtml(settings.githubFilePath || 'base_dados_samu.json')}" />
         <input type="hidden" id="adm-gh-token" value="" />
         ${ghMeta && ghMeta.lastSyncAt ? `
@@ -11667,6 +11678,15 @@
       });
     }
 
+    const admOtaOrderSel = document.getElementById('adm-ota-order');
+    if (admOtaOrderSel) {
+      admOtaOrderSel.addEventListener('change', () => {
+        const otaUpdateOrder = admOtaOrderSel.value || 'drive,servidor,github';
+        window.SamuStorage.saveSettings({ otaUpdateOrder });
+        showToast('✅ Ordem de atualização OTA salva neste aparelho!');
+      });
+    }
+
     // Buscar Atualização do APK / Live OTA no GitHub
     const btnCheckUpd = document.getElementById('btn-adm-check-update');
     if (btnCheckUpd) {
@@ -11674,7 +11694,8 @@
         const githubRepo = document.getElementById('adm-gh-repo').value.trim() || 'guileao97/samu-fichas-e-checklist';
         const githubBranch = document.getElementById('adm-gh-branch').value.trim() || 'main';
         const githubToken = document.getElementById('adm-gh-token').value.trim();
-        window.SamuStorage.saveSettings({ githubRepo, githubBranch, githubToken });
+        const otaUpdateOrder = (document.getElementById('adm-ota-order') && document.getElementById('adm-ota-order').value) || 'drive,servidor,github';
+        window.SamuStorage.saveSettings({ githubRepo, githubBranch, githubToken, otaUpdateOrder });
         if (window.__samuCheckAppUpdate) {
           await window.__samuCheckAppUpdate(true);
         }
@@ -11760,12 +11781,14 @@
         const githubBranch = document.getElementById('adm-gh-branch').value.trim() || 'main';
         const githubFilePath = (document.getElementById('adm-gh-path') && document.getElementById('adm-gh-path').value.trim()) || 'base_dados_samu.json';
         const defaultHospital = document.getElementById('adm-default-hospital').value.trim() || 'HBSA';
+        const otaUpdateOrder = (document.getElementById('adm-ota-order') && document.getElementById('adm-ota-order').value) || 'drive,servidor,github';
 
         window.SamuStorage.saveSettings({
           githubRepo,
           githubBranch,
           githubFilePath,
-          defaultHospital
+          defaultHospital,
+          otaUpdateOrder
         });
 
         if (!fichaState.destino || fichaState.destino === 'HBSA') {
