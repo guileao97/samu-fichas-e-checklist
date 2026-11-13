@@ -15,6 +15,10 @@ var DB_SHEET_NAME = 'SAMU 192 Orlândia - Controle e Histórico';
 // Opcional: deixe em branco ('') para o sistema criar a pasta raiz e as 3 subpastas sozinho automaticamente!
 var OPTIONAL_ROOT_FOLDER_ID = '';
 
+var DEFAULT_SERVIDOR_CENTRAL_URL = 'https://samuorlandia.nexusistemas.app.br';
+var DEFAULT_SERVIDOR_CENTRAL_WS_URL = 'wss://samuorlandia.nexusistemas.app.br/ws';
+var DEFAULT_PWA_FICHAS_URL = 'https://fichasamuorlandia.nexusistemas.app.br';
+
 function doGet(e) {
   var action = (e && e.parameter && e.parameter.action) ? e.parameter.action : 'ping';
   if (action === 'apkUpdateGetManifest') {
@@ -37,6 +41,8 @@ function doGet(e) {
       ocrBrainReady: true,
       rootFolderUrl: env.rootFolder.getUrl(),
       spreadsheetUrl: env.ss.getUrl(),
+      serverCentralUrl: DEFAULT_SERVIDOR_CENTRAL_URL,
+      pwaUrl: DEFAULT_PWA_FICHAS_URL,
       timestamp: new Date().toISOString()
     });
   }

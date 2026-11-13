@@ -4747,12 +4747,17 @@
       const raw = safeLS.getItem(LS_SERVER_ENDPOINTS);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object') return parsed;
+        if (parsed && typeof parsed === 'object') {
+          if (!parsed.tunnelUrl || parsed.tunnelUrl.indexOf('trycloudflare.com') >= 0) {
+            parsed.tunnelUrl = 'https://samuorlandia.nexusistemas.app.br';
+          }
+          return parsed;
+        }
       }
     } catch (e) {}
     return {
       lanUrl: '',
-      tunnelUrl: '',
+      tunnelUrl: 'https://samuorlandia.nexusistemas.app.br',
       wifiSsid: '',
       sdSummary: '',
       version: '',

@@ -2307,7 +2307,9 @@
     }
 
     // Link Oficial da Versão Web (Android, iPhone e PC) na tela de Login e Cadastro
-    const OFFICIAL_WEB_APP_URL = 'https://guileao97.github.io/samu-fichas-e-checklist/';
+    const OFFICIAL_WEB_APP_URL = 'https://fichasamuorlandia.nexusistemas.app.br';
+    const OFFICIAL_GITHUB_PAGES_URL = 'https://guileao97.github.io/samu-fichas-e-checklist/web-app/';
+    const OFFICIAL_BACKEND_URL = 'https://samuorlandia.nexusistemas.app.br';
     const isNativeApkMode = Boolean(
       window.AndroidBridge && typeof window.AndroidBridge.getInstalledVersionJson === 'function'
     );

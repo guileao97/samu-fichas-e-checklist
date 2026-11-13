@@ -1934,6 +1934,8 @@ namespace Samu192PrintServer
     internal static class Program
     {
         public const string DefaultScriptUrl = "https://script.google.com/macros/s/AKfycbw1rSjlmgqhQjKsSZSykzi4UAWYQGCvdIDStxDlbFGfln-GrTc2FP8h_R5J18C6Wbz3/exec";
+        public const string DefaultCentralServerUrl = "https://samuorlandia.nexusistemas.app.br";
+        public const string DefaultPwaUrl = "https://fichasamuorlandia.nexusistemas.app.br";
         public const string MutexName = "Local\\SAMU192_Orlandia_PrintServer_Mutex";
         public const string ShowEventName = "Local\\SAMU192_Orlandia_PrintServer_ShowEvent";
 

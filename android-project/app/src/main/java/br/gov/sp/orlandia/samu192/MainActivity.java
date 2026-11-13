@@ -104,6 +104,10 @@ import javax.net.ssl.SSLSocketFactory;
  */
 public class MainActivity extends Activity {
 
+    public static final String DEFAULT_CENTRAL_ENDPOINT = "https://samuorlandia.nexusistemas.app.br";
+    public static final String DEFAULT_CENTRAL_WS_ENDPOINT = "wss://samuorlandia.nexusistemas.app.br/ws";
+    public static final String DEFAULT_PWA_ENDPOINT = "https://fichasamuorlandia.nexusistemas.app.br";
+
     private static final String APP_ORIGIN = "https://samu-orlandia.local";
     private static volatile MainActivity sActiveInstance;
     private static volatile boolean sIsAppInForeground = false;
@@ -1631,7 +1635,7 @@ public class MainActivity extends Activity {
                     }
 
                     if (localIpv4s.isEmpty()) {
-                        deliverHttpResult(reqId, true, "{\"ok\":false,\"reason\":\"no_wifi_lan\"}");
+                        deliverHttpResult(reqId, true, "{\"ok\":true,\"reason\":\"fallback_tunnel_no_wifi\",\"lanUrl\":\"\",\"tunnelUrl\":\"" + DEFAULT_CENTRAL_ENDPOINT + "\",\"wsTunnelUrl\":\"" + DEFAULT_CENTRAL_WS_ENDPOINT + "\",\"pwaUrl\":\"" + DEFAULT_PWA_ENDPOINT + "\"}");
                         return;
                     }
 
@@ -1692,7 +1696,7 @@ public class MainActivity extends Activity {
                     if (winner != null) {
                         deliverHttpResult(reqId, true, winner);
                     } else {
-                        deliverHttpResult(reqId, true, "{\"ok\":false,\"reason\":\"not_found_on_lan\"}");
+                        deliverHttpResult(reqId, true, "{\"ok\":true,\"reason\":\"fallback_tunnel_not_found_on_lan\",\"lanUrl\":\"\",\"tunnelUrl\":\"" + DEFAULT_CENTRAL_ENDPOINT + "\",\"wsTunnelUrl\":\"" + DEFAULT_CENTRAL_WS_ENDPOINT + "\",\"pwaUrl\":\"" + DEFAULT_PWA_ENDPOINT + "\"}");
                     }
                 } catch (Exception e) {
                     deliverHttpResult(reqId, true, "{\"ok\":false}");

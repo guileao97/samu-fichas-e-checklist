@@ -49,6 +49,10 @@ public class SamuSyncForegroundService extends Service {
     private static final String ACTION_START_OR_UPDATE = "br.gov.sp.orlandia.samu192.BG_SYNC_UPDATE";
     private static final String ACTION_STOP_IF_IDLE = "br.gov.sp.orlandia.samu192.BG_SYNC_STOP_IDLE";
 
+    public static final String DEFAULT_CENTRAL_ENDPOINT = "https://samuorlandia.nexusistemas.app.br";
+    public static final String DEFAULT_CENTRAL_WS_ENDPOINT = "wss://samuorlandia.nexusistemas.app.br/ws";
+    public static final String DEFAULT_PWA_ENDPOINT = "https://fichasamuorlandia.nexusistemas.app.br";
+
     public static final ExecutorService HTTP_POOL = Executors.newCachedThreadPool();
     private static final Handler MAIN_HANDLER = new Handler(Looper.getMainLooper());
 
